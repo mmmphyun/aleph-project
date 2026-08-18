@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local and editor files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# AWS and secret material
+.aws/
+*.pem
+*.key
+secrets/
