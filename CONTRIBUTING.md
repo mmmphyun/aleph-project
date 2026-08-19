@@ -28,6 +28,8 @@ git switch -c feat/event-normalizer
 
 Python 3.12 이상 3.15 미만 환경을 사용합니다.
 
+팀원 온보딩 시에는 [LLM 로컬 개발 환경 세팅 프롬프트](docs/llm/로컬_개발환경_세팅_프롬프트.md)를 먼저 사용합니다. 프롬프트는 저장소를 확인하고 각자의 환경에 맞는 명령을 안내하지만, 비밀정보를 읽거나 AWS 리소스를 변경하지 않습니다.
+
 ```bash
 python -m venv .venv
 ```
