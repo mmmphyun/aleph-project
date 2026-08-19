@@ -62,6 +62,9 @@
 - 커밋: `<영문 type>: <한국어 설명>`
 - 기본적으로 커밋 본문과 불릿 포인트는 사용하지 않음
 - 현재 초기화 브랜치에는 PR/Issue 템플릿, Python 설정, CI, 협업·보안 문서가 Push됨
+- GitHub Issue의 `type:*` 라벨은 기존 템플릿에서 기본 지정
+- PR의 변경 경로에 따라 `area:cloud`, `area:iam`, `area:network`, `area:detection`, `area:response` 라벨을 GitHub Actions가 자동 지정
+- `priority:high`는 오판 방지를 위해 자동 지정하지 않고 사람이 판단
 
 ## 구현 완료
 
@@ -72,6 +75,8 @@
 - Python `pyproject.toml` 작성
 - Ruff·pytest·pre-commit 설정 추가
 - GitHub Actions CI 추가
+- PR 경로 기반 영역 라벨 자동화 추가 (`.github/labeler.yml`, `.github/workflows/labeler.yml`)
+- LLM용 로컬 개발 환경 세팅 프롬프트 추가 (`docs/llm/로컬_개발환경_세팅_프롬프트.md`)
 - 프로젝트 상세 계획·이벤트 스키마·보안 규칙·레드팀 계획 갱신
 - CloudTrail Fixture 폴더와 비식별화 규칙 문서 추가
 - 이 프로젝트 메모리 스냅샷 작성
@@ -80,9 +85,10 @@
 
 - `main` 직접 Push: 저장소 규칙과 안전 정책에 맞지 않아 중단. 초기화 브랜치 PR 방식으로 전환.
 - 초기 커밋 메시지 수정 시도: 기존 커밋이 원격에 Push되지 않은 상태라 로컬 이력을 재작성해 한국어 설명으로 정리.
-- 로컬 Ruff·pytest 실행: 현재 실행 환경에 도구가 설치되지 않아 실행하지 못함. GitHub Actions는 의존성을 설치하도록 구성.
+- 로컬 Ruff·pytest 실행: 처음에는 전역 환경에 도구가 없어 실행하지 못했지만, 프로젝트 `.venv`에 개발 의존성을 설치한 뒤 Ruff·pytest·pre-commit 검사를 모두 통과함.
 - Slack을 MVP 필수 승인 수단으로 채택하는 방안: Webhook·서명 검증·공개 엔드포인트 복잡도가 커서 승인 인터페이스를 먼저 만들고 Slack은 adapter로 미룸.
 - NACL 기반 C2 자동 차단: 서브넷 단위·상태 비저장 특성으로 오탐과 영향 범위가 커 MVP에서 제외.
+- pre-commit을 비활성 가상환경에서 실행: 전역 PATH에서 `ruff`·`pytest`를 찾지 못해 커밋 훅이 실패했으므로, 팀원은 `.venv`를 활성화한 뒤 커밋해야 함. 프로젝트 내부 캐시가 필요하면 `PRE_COMMIT_HOME=.pre-commit-cache`를 사용.
 
 ## 현재 저장소 규칙
 
@@ -99,7 +105,7 @@
 2. Fixture 기반 파서와 공통 이벤트 변환 테스트 작성
 3. 초기화 브랜치 PR 생성
 4. CI 상태 확인 후 `main` 보호 규칙에 필수 검사 연결
-5. GitHub Issue 라벨 확인: `type:feature`, `type:bug`, `type:task`
+5. CI와 PR 영역 라벨 자동화 동작 확인
 6. 팀원 로컬 온보딩
 7. Mock 이벤트 기반 최소 수직 흐름 구현
 
@@ -111,3 +117,5 @@
 - 긴급 세션 무효화는 같은 역할의 다른 세션에 영향을 줄 수 있습니다.
 - Fixture에 실제 계정 식별자·자격증명·개인정보를 넣지 않습니다.
 - AWS 테스트 리소스는 비용과 삭제 책임자를 정하고 사용 후 정리합니다.
+- GitHub Actions가 라벨을 추가하려면 저장소 Actions 권한과 `pull-requests: write` 권한이 필요합니다.
+- `area:*` 자동 라벨은 변경 경로 기반이므로 경로가 모호한 PR은 사람이 라벨을 보완합니다.
