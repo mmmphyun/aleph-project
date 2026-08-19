@@ -74,10 +74,10 @@ refactor  동작 변경 없는 구조 개선
 예시:
 
 ```text
-feat: add suspicious login event parser
-fix: revoke expired temporary role
-docs: document event schema
-chore: initialize project structure
+feat: 비정상 로그인 이벤트 파서 추가
+fix: 만료된 임시 역할 회수 오류 수정
+docs: 이벤트 스키마 문서화
+chore: 프로젝트 초기 구조 설정
 ```
 
 ## 브랜치 생성 예시

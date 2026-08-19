@@ -65,6 +65,8 @@
 - GitHub Issue의 `type:*` 라벨은 기존 템플릿에서 기본 지정
 - PR의 변경 경로에 따라 `area:cloud`, `area:iam`, `area:network`, `area:detection`, `area:response` 라벨을 GitHub Actions가 자동 지정
 - `priority:high`는 오판 방지를 위해 자동 지정하지 않고 사람이 판단
+- CI는 작업 브랜치 Push와 PR에서 중복 실행하지 않도록 `push`는 `main`, 작업 브랜치는 `pull_request`에서 검사
+- 커밋 메시지 설명은 한국어로 통일하고 type 구분자만 영어로 사용
 
 ## 구현 완료
 
@@ -77,6 +79,8 @@
 - GitHub Actions CI 추가
 - PR 경로 기반 영역 라벨 자동화 추가 (`.github/labeler.yml`, `.github/workflows/labeler.yml`)
 - LLM용 로컬 개발 환경 세팅 프롬프트 추가 (`docs/llm/로컬_개발환경_세팅_프롬프트.md`)
+- CI 작업 브랜치 Push 중복 실행 제거
+- 브랜치 전략 문서의 커밋 메시지 예시를 한국어 설명으로 통일
 - 프로젝트 상세 계획·이벤트 스키마·보안 규칙·레드팀 계획 갱신
 - CloudTrail Fixture 폴더와 비식별화 규칙 문서 추가
 - 이 프로젝트 메모리 스냅샷 작성
@@ -108,6 +112,13 @@
 5. CI와 PR 영역 라벨 자동화 동작 확인
 6. 팀원 로컬 온보딩
 7. Mock 이벤트 기반 최소 수직 흐름 구현
+
+## 실제 코드 구현 후 재검토
+
+- 이벤트 모델과 파서가 생기면 `mypy` 또는 `pyright` 도입 여부를 결정합니다.
+- 핵심 런타임·테스트 의존성이 확정되면 `uv` 또는 `pip-tools` 기반 lockfile 도입 여부를 결정합니다.
+- pre-commit 실행 시간이 병목이 되면 Ruff 훅 구조와 pytest 실행 위치(pre-commit, pre-push, CI)를 재검토합니다.
+- 기술적 결정이 누적되면 `docs/adr` 템플릿을 추가합니다.
 
 ## 다음 작업 주의사항
 
