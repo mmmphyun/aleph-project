@@ -78,6 +78,8 @@ PR을 만들 때 템플릿의 모든 항목을 작성합니다. 특히 다음 �
 
 리뷰어가 승인하기 전에는 PR을 직접 Merge하지 않습니다.
 
+PR의 변경 파일 경로가 `area:cloud`, `area:iam`, `area:network`, `area:detection`, `area:response` 규칙과 일치하면 GitHub Actions가 영역 라벨을 자동으로 추가합니다. 여러 영역에 걸친 변경은 여러 라벨이 붙을 수 있으며, `priority:high`는 사람이 판단해서 직접 지정합니다. Issue의 `type:*` 라벨은 Issue 템플릿에서 기본 지정됩니다.
+
 ## LLM 사용
 
 LLM은 코드·테스트·문서 초안 작성에 사용할 수 있습니다. 그러나 생성된 결과를 그대로 신뢰하지 않습니다.

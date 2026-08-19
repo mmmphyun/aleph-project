@@ -1,0 +1,36 @@
+"area:cloud":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "infra/**"
+          - "terraform/**"
+          - "src/**/aws/**"
+          - "src/**/cloud/**"
+
+"area:iam":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/**/iam/**"
+          - "src/**/auth/**"
+          - "docs/**iam**"
+
+"area:network":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/**/network/**"
+          - "infra/network/**"
+          - "terraform/network/**"
+          - "docs/**network**"
+
+"area:detection":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/**/detection/**"
+          - "src/**/rules/**"
+          - "docs/**detection**"
+
+"area:response":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/**/response/**"
+          - "src/**/playbook/**"
+          - "docs/**response**"
