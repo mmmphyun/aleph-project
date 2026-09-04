@@ -19,9 +19,9 @@
 
 ```text
 [비전공자 팀원 3인 고유 도메인 - 면접 핵심 무기: 침범 절대 금지]
-1. 네트워크: 모의 공격 스크립트, tcpdump/Wireshark L4 패킷 플래그 분석 보고서 (network/)
-2. 클라우드 B: CW Agent 수집 설정, Slack Block Kit 알림 모듈 (src/collector/, src/reporter/)
-3. 보안: 정규식 시그니처 룰(rules.py), LLM Few-shot 프롬프트/분석기 (src/detection/)
+1. 네트워크: 모의 공격 스크립트, tcpdump/Wireshark L4 패킷 플래그 분석 보고서 (network/, docs/roles/network/)
+2. 클라우드 B: CW Agent 수집 설정, Slack Block Kit 알림 모듈 (src/collector/, src/reporter/, docs/roles/cloud-b/)
+3. 보안: 정규식 시그니처 룰(rules.py), LLM Few-shot 프롬프트/분석기 (src/detection/, docs/roles/security/)
 
 [전공자 클라우드 A 독점 플랫폼 영역 - 엔지니어링 깊이 확보]
 - 공통 데이터 인터페이스 계약 (src/contracts/)
@@ -29,6 +29,11 @@
 - Terraform IaC 모듈화 및 Trivy 검증 (infra/)
 - GitHub Actions OIDC 무인증 CI/CD 파이프라인 (.github/)
 - moto 기반 가상 AWS 테스트베드 및 개발 하네스 (tests/)
+- 플랫폼 아키텍처 문서 (docs/roles/cloud-a/)
+
+[팀 공통 협업 문서 영역 - 자유 작성 허용]
+- 팀 회의록 (docs/shared/meetings/)
+- 아이디어 및 기획 (docs/shared/ideas/)
 ```
 
 ### 2.1 세션 시작 시 역할 자동 인식 및 스코프 잠금 (Role-Lock)

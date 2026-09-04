@@ -8,22 +8,26 @@
           - "src/remediation/**"
           - "infra/**"
           - ".github/**"
+          - "docs/roles/cloud-a/**"
 
 "role:cloud-b":
   - changed-files:
       - any-glob-to-any-file:
           - "src/collector/**"
           - "src/reporter/**"
+          - "docs/roles/cloud-b/**"
 
 "role:security":
   - changed-files:
       - any-glob-to-any-file:
           - "src/detection/**"
+          - "docs/roles/security/**"
 
 "role:network":
   - changed-files:
       - any-glob-to-any-file:
           - "network/**"
+          - "docs/roles/network/**"
 
 "area:contract":
   - changed-files:
