@@ -31,6 +31,8 @@ def test_incident_report_from_mock_json() -> None:
     assert report.source_ip == "198.51.100.50"
     assert report.target_identifier == "i-0abcd1234ef567890"
     assert "admin" in report.target_accounts
+    assert isinstance(report.target_accounts, tuple)
+    assert isinstance(report.recommendations, tuple)
     assert report.action_required == "BLOCK_AND_QUARANTINE"
     assert len(report.recommendations) >= 1
 
@@ -117,6 +119,22 @@ def test_syslog_auth_log_parsing() -> None:
     assert e2.username == "root"
     assert e2.source_ip == "198.51.100.50"
     assert e2.port == 49154
+
+
+def test_syslog_auth_log_parsing_iso8601() -> None:
+    """Ubuntu 22.04/24.04 최신 ISO 8601 타임스탬프 로그 파싱 검증."""
+    iso_line = (
+        "2026-09-04T14:20:01.123456+00:00 target-ec2 sshd[12341]: "
+        "Failed password for invalid user admin from 198.51.100.50 port 49152 ssh2"
+    )
+    event = SyslogAuthEvent.parse_line(iso_line)
+    assert event is not None
+    assert event.timestamp_str == "2026-09-04T14:20:01.123456+00:00"
+    assert event.hostname == "target-ec2"
+    assert event.username == "admin"
+    assert event.is_invalid_user is True
+    assert event.source_ip == "198.51.100.50"
+    assert event.port == 49152
 
 
 def test_cw_event_from_mock_json_and_roundtrip() -> None:

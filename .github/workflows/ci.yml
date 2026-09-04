@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, chore/initialize-project-structure]
+    branches: [main, "feat/**", "fix/**"]
   pull_request:
-    branches: [main, chore/initialize-project-structure]
+    branches: [main]
 
 permissions:
   contents: read

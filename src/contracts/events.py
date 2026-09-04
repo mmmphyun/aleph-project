@@ -54,8 +54,13 @@ class SyslogAuthEvent(BaseModel):
             return None
 
         # Syslog 표준 SSH 실패 로그 정규식 패턴
+        # Why: 전통적 BSD Syslog 포맷(Sep 03 14:20:01) 및
+        #      최신 Linux systemd/rsyslog ISO 8601 포맷 동시 지원
+        # Constraints: IPv4 옥텟 형식 및 sshd 프로세스 실패 이벤트에 한함
+        # Edge-cases: 타깃 EC2 OS 버전에 따른 타임스탬프 포맷 불일치로 인한
+        #             이벤트 무음 누락(Silent Drop) 방지
         pattern = (
-            r"^(?P<time>[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+"
+            r"^(?P<time>(?:[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T[^\s]+))\s+"
             r"(?P<host>[^\s]+)\s+"
             r"(?P<proc>[^\[:]+)\[(?P<pid>\d+)\]:\s+"
             r"Failed password for (?P<invalid>invalid user )?(?P<user>[^\s]+)\s+"
