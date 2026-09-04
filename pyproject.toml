@@ -3,12 +3,14 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sentinelhub"
+name = "cloudshield"
 version = "0.1.0"
-description = "멀티 계정 AWS 보안 대응 자동화 플랫폼"
+description = "CloudShield: 클라우드 하이브리드 위협 탐지·자동 대응 및 SecOps 파이프라인"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
-dependencies = []
+dependencies = [
+    "pydantic>=2.0",
+]
 
 [project.optional-dependencies]
 dev = [

@@ -1,36 +1,81 @@
-"area:cloud":
+# CloudShield PR 라벨 자동 부착 규칙 (actions/labeler@v5)
+# 목적: 휴먼 에러를 방지하고 파일 변경 경로에 따라 직무(role) 및 도메인(area) 라벨을 100% 자동 부착
+
+"role:cloud-a":
   - changed-files:
       - any-glob-to-any-file:
+          - "src/contracts/**"
+          - "src/remediation/**"
           - "infra/**"
-          - "terraform/**"
-          - "src/**/aws/**"
-          - "src/**/cloud/**"
+          - ".github/**"
 
-"area:iam":
+"role:cloud-b":
   - changed-files:
       - any-glob-to-any-file:
-          - "src/**/iam/**"
-          - "src/**/auth/**"
-          - "docs/**iam**"
+          - "src/collector/**"
+          - "src/reporter/**"
 
-"area:network":
+"role:security":
   - changed-files:
       - any-glob-to-any-file:
-          - "src/**/network/**"
-          - "infra/network/**"
-          - "terraform/network/**"
-          - "docs/**network**"
+          - "src/detection/**"
+
+"role:network":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "network/**"
+
+"area:contract":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/contracts/**"
+
+"area:remediation":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/remediation/**"
+
+"area:collector":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/collector/**"
+
+"area:reporter":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/reporter/**"
 
 "area:detection":
   - changed-files:
       - any-glob-to-any-file:
-          - "src/**/detection/**"
-          - "src/**/rules/**"
-          - "docs/**detection**"
+          - "src/detection/**"
 
-"area:response":
+"area:network":
   - changed-files:
       - any-glob-to-any-file:
-          - "src/**/response/**"
-          - "src/**/playbook/**"
-          - "docs/**response**"
+          - "network/**"
+
+"area:infra":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "infra/**"
+
+"type:test":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
+
+"type:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "*.md"
+
+"type:chore":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "pyproject.toml"
+          - "uv.lock"
+          - ".pre-commit-config.yaml"
+          - "scripts/**"

@@ -1,0 +1,22 @@
+# CloudShield CODEOWNERS 정책
+# 각 직무별 포트폴리오 지분을 보호하고 무단 수정을 원천 차단함
+
+# 전역 기본 리뷰어
+* @mmmphyun
+
+# [클라우드 A (전공자 / 테크 리드) 독점 영역 - 임의 수정 절대 금지]
+/src/contracts/     @mmmphyun
+/infra/             @mmmphyun
+/.github/           @mmmphyun
+/src/remediation/   @mmmphyun
+/pyproject.toml     @mmmphyun
+
+# [클라우드 B 담당 영역]
+/src/collector/     @mmmphyun
+/src/reporter/      @mmmphyun
+
+# [보안 담당 영역]
+/src/detection/     @mmmphyun
+
+# [네트워크 담당 영역]
+/network/           @mmmphyun

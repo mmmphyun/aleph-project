@@ -1,0 +1,16 @@
+{
+  "messageType": "DATA_MESSAGE",
+  "owner": "123456789012",
+  "logGroup": "/cloudshield/target/auth-log",
+  "logStream": "i-0abcd1234ef567890",
+  "subscriptionFilters": [
+    "CloudShield-FailedPassword-Filter"
+  ],
+  "logEvents": [
+    {
+      "id": "382910293810293810293810293810293810",
+      "timestamp": 1725344405000,
+      "message": "Sep 03 14:20:05 target-ec2 sshd[12345]: Failed password for guest from 198.51.100.50 port 49156 ssh2"
+    }
+  ]
+}

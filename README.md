@@ -1,29 +1,51 @@
-# SentinelHub
+# CloudShield: Cloud Hybrid Threat Detection & Auto-Response Pipeline
 
-멀티 계정 AWS 환경에서 세 가지 클라우드 보안 시나리오를 공통 흐름으로 목업 검증하고, 그중 선정한 하나의 대표 시나리오는 테스트 AWS 환경에서 자동 대응까지 검증하는 프로젝트입니다.
+**클라우드 하이브리드 위협 탐지·자동 대응 및 SecOps 파이프라인**
 
-## 현재 단계
+클라우드 워크로드 대상 침해 공격 발생 시, 10초 이내에 **로그 수집 → 위험도 판단(시그니처/LLM) → 복합 원자적 차단(L4 SG 격리 / L7 WAF IPSet 차단 / IAM 세션 무효화) → Slack 상황 전파**를 수행하는 엔드투엔드 보안 자동화 파이프라인입니다.
 
-현재 저장소는 프로젝트 시작을 위한 문서와 디렉터리 구조를 준비한 상태입니다.
+---
 
-- [프로젝트 상세 계획](docs/프로젝트_상세계획.md)
-- [프로젝트 쉬운 설명](docs/llm/프로젝트_기획서.md)
-- [레드팀 검증 계획](docs/llm/레드팀_검증계획.md)
-
-## 목표 흐름
+## 1. 핵심 관통 파이프라인
 
 ```text
-세 가지 시나리오 목업:
-이벤트 수집 → 위험도 판단 → 승인 또는 대응 결정 → 결과 기록 → 보고서
-
-대표 시나리오 하나:
-동일한 흐름 → 실제 AWS 자동 대응 → 결과 검증
+[네트워크 공격 시뮬레이션 (Hydra/Nmap)]
+               │
+               ▼
+[타깃 서버 (EC2 / auth.log, Nginx access.log)]
+               │
+               ▼ (< 3초)
+[CloudWatch Agent 수집 & 중앙 전송]
+               │ (Subscription Filter)
+               ▼
+[Lambda 런타임 오케스트레이터 & 보안 엔진]
+       ├─ 1차: 정규식 시그니처 룰 (rules.py)
+       └─ 2차: Few-shot LLM 분석 (IncidentReport 생성)
+               │
+               ▼ (< 5초)
+[Boto3 다중 계층 원자적 차단 엔진 (remediation.py)]
+       ├─ L4: EC2 격리 보안 그룹 (Quarantine SG) 단독 교체
+       ├─ L7: AWS WAF IPSet 공격자 IP (/32) 등록
+       └─ Identity: 침해 의심 IAM Role 임시 세션 무효화
+               │
+               ▼ (< 2초)
+[SecOps 전파: Slack Block Kit 알림 (slack_notifier.py)]
 ```
 
-## 개발 원칙
+---
 
-- 모든 작업은 Issue와 브랜치에서 시작합니다.
-- 변경사항은 PR 리뷰 후 `main`에 병합합니다.
-- LLM 생성 코드는 테스트와 사람이 검증합니다.
-- AWS 자격증명과 비밀정보는 저장소에 올리지 않습니다.
-- 실제 공격 테스트는 별도 테스트 계정과 더미 리소스에서만 수행합니다.
+## 2. 주요 문서
+
+* [팀 프로젝트 메모리 스냅샷 (Project Memory)](docs/project-memory.md)
+* [개발 하네스 및 협업 체계 계획](docs/07_collaboration_and_agent_setup.md)
+* [직무 간 인터페이스 데이터 규격서](docs/08_interface_contracts.md)
+
+---
+
+## 3. 개발 원칙 및 협업
+
+* **브랜치 전략**: GitHub Flow 기반 (`feat/<직무>-<기능>`, `fix/*`, `chore/*`)
+* **커밋 메시지**: `<type>(<scope>): <한글 요약>` (scope: `contract`, `cloud-a`, `cloud-b`, `security`, `network`, `infra`)
+* **코드 품질 검증**: `uv run ruff check .`, `uv run ruff format --check .`, `uv run pytest`
+* **계약 준수**: `src/contracts/` 인터페이스 스키마는 절대 임의 수정 불가 (클라우드 A 전담)
+

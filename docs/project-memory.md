@@ -1,148 +1,105 @@
-# 프로젝트 메모리 스냅샷
+# CloudShield: 팀 프로젝트 메모리 스냅샷 (Project Context & Decisions)
 
-작성 시점: 2026-08-20
+> **최종 갱신일**: 2026-09-04  
+> **용도**: 프로젝트 영구 지속성 메모리. 아키텍처 결정 사항(ADR), R&R 경계선, 기술 제약조건 및 개발 가이드라인을 추적함.
 
-## 기억 저장 규칙
+---
 
-이 파일은 `C:\work\project` 프로젝트의 작업 맥락만 저장합니다.
+## 1. 프로젝트 배경 및 기본 정보
 
-- 중요한 결정과 결정 이유를 저장합니다.
-- 구현 완료 내용, 실패한 접근과 원인을 저장합니다.
-- 다음 작업 TODO와 주의사항을 저장합니다.
-- API 키, 비밀번호, 토큰, `.env` 내용은 저장하지 않습니다.
-- 불필요한 전체 로그와 민감한 개인정보는 저장하지 않습니다.
-- 외부 LLM의 전체 검증 원문은 저장하지 않고, 프로젝트에 필요한 결정과 후속 조치만 요약합니다.
+* **프로젝트명**: CloudShield (클라우드 하이브리드 위협 탐지·자동 대응 및 SecOps 파이프라인)
+* **교육과정**: SKT ALEPH 보안 자동화 교육과정 (AI·자동화, 네트워크·ZT, 접근통제, 이상탐지, SOAR)
+* **목표 일정**: 총 30일 (조기 개인 시간 20일 + 공식 강의 프로젝트 10일)
+* **프로젝트 형태**: '단일 소프트웨어/웹 프로그램'이 아닌 **'침해 공격 $\rightarrow$ 실시간 탐지 $\rightarrow$ 복합 차단/격리 $\rightarrow$ 상황 전파' 10초 관통 데모 파이프라인**
+  * *결정 사유*: 팀원 목표 직무가 클라우드/네트워크/보안 엔지니어이므로 웹/UI 코딩 매몰을 방지하고 실제 인프라 트래픽 제어 역량을 증빙함.
 
-## 프로젝트
+---
 
-- 저장소: `C:\work\project`
-- 원격: `https://github.com/mmmphyun/aleph-project.git`
-- 현재 작업 브랜치: `chore/initialize-project-structure`
-- 프로젝트: SentinelHub
-- 목표: 멀티 계정 AWS 환경에서 세 가지 보안 시나리오를 공통 흐름으로 목업 검증하고, 그중 선정한 하나의 대표 시나리오를 테스트 AWS 환경에서 자동 대응까지 검증
+## 2. 팀 구성 및 R&R 경계선 (Non-infringement Principle)
 
-## 팀
+전공자가 고난이도를 주도하되, **비전공자 팀원 3인의 취업 포트폴리오 핵심 지분을 절대 침범하지 않는다.**
 
-- 4인 팀
-- 보안 2명, 클라우드 1명, 네트워크 1명
-- 모든 팀원이 LLM을 사용
-- 코드는 LLM이 생성할 수 있지만, 담당자가 동작·보안 영향·테스트를 검증
+```mermaid
+flowchart TD
+    subgraph S1 ["비전공자 팀원 고유 도메인 (면접 핵심 무기: 침범 금지)"]
+        NET["네트워크: 모의 공격 재현 & L4 패킷 플래그 분석 보고서"]
+        SEC["보안: rules.py 1차 룰 & Pydantic LLM 프롬프트"]
+        CLB["클라우드 B: CW Agent 중앙 수집 & slack_notifier.py"]
+    end
 
-## 확정된 설계
+    subgraph S2 ["전공자 클라우드 A 독점 플랫폼 영역 (엔지니어링 깊이 확보)"]
+        TF["1. Terraform IaC 모듈화 & Trivy 보안 검증"]
+        CICD["2. GitHub OIDC 기반 무인증 CI/CD 파이프라인"]
+        ORCH["3. Lambda 오케스트레이터 & Boto3 원자적 차단 엔진"]
+        HARNESS["4. moto 기반 로컬 테스트베드 & 개발 하네스 구축"]
+    end
 
-- 관리·보안·업무 AWS 3계정 구조
-- Terraform 기반 재현 가능한 인프라
-- CloudTrail S3 경로는 감사·재분석용
-- EventBridge와 AWS Config 이벤트 경로는 탐지·대응용
-- 이벤트 전달은 best effort이며 “수초 내 대응”을 보장하지 않음
-- 이벤트 발생부터 대응 완료까지 실제 지연을 측정
-- 공통 이벤트 스키마에 `region`, `event_name`, `event_source`, `outcome`, `user_agent`, `risk` 포함
-- 수집·정규화와 위험도 평가를 분리
-- JIT는 역할 정책 + Session Policy + TTL 만료로 구현
-- 긴급 세션 무효화는 역할 단위 영향 범위를 문서화
-- 승인 인터페이스는 MVP 필수
-- 세 가지 시나리오는 모두 이벤트 수집·정규화·룰 기반 위험도 판단·승인·대응 기록·리포트의 목업 흐름으로 구현
-- 실제 AWS 자동 대응은 안전성·원복 가능성·재현성·팀 기여도·구현 난이도를 기준으로 대표 시나리오 하나를 추후 선정
-- 대표 시나리오의 실제 대응 방식은 JIT 권한, Session Policy·TTL, 보안 그룹 원복 등 후보를 비교한 뒤 결정
-- Slack·Discord는 선택형 adapter
-- 네트워크 MVP는 보안 그룹 노출 탐지와 안전한 원복
-- NACL 기반 C2 자동 차단은 후순위 또는 제외
+    NET -.->|정책 명세| TF
+    NET -.->|SG ID 전달| ORCH
+    SEC -.->|라이브러리 제공| ORCH
+    CLB -.->|템플릿 전달| TF
+    CLB -.->|알림 모듈 제공| ORCH
 
-## MVP 필수 항목
+    HARNESS ==>|독립 개발 환경 제공| NET
+    HARNESS ==>|독립 개발 환경 제공| SEC
+    HARNESS ==>|독립 개발 환경 제공| CLB
+```
 
-- 비식별화한 CloudTrail Fixture 3종: `AssumeRole`, `PutBucketAcl`, `AuthorizeSecurityGroupIngress`
-- Fixture 기반 파서 테스트
-- 승인 인터페이스 1개: CLI 또는 간단한 웹
-- 세 시나리오 목업 대응 흐름과 결과 기록
-- 대표 시나리오 1개의 실제 AWS 자동 대응과 결과 검증
-- 이벤트 지연 측정
-- 레드팀 시나리오 3개
+### [직무별 단독 포트폴리오 자산]
+1. **네트워크 담당 (비전공자)**:
+   * Hydra/Nmap 기반 공격 시뮬레이션 환경 및 스크립트 작성.
+   * `tcpdump` 패킷 캡처 및 Wireshark L4 TCP 플래그/핸드셰이크 분석 보고서.
+   * VPC Flow Logs CloudWatch Insights 쿼리 설계.
+   * 침해 인스턴스 격리 Security Group(인/아웃바운드) 규칙 명세.
+2. **클라우드 B 담당 (비전공자)**:
+   * 타깃 인스턴스(Ubuntu/Nginx) 환경 구축.
+   * `amazon-cloudwatch-agent.json` 설정 및 OS/Web 로그 중앙 인제스트 파이프라인.
+   * CloudWatch Logs 구독 필터(Subscription Filter) 패턴 정의.
+   * Slack Incoming Webhook + Block Kit 카드 전송 모듈(`slack_notifier.py`).
+3. **보안 담당 (비전공자)**:
+   * 정규표현식 기반 1차 시그니처 룰 엔진(`rules.py`).
+   * MITRE ATT&CK TTP(T1110 등) 1:1 매핑 테이블 정의.
+   * Pydantic 기반 정형 침해사고 스키마 설계.
+   * LLM 프롬프트 Few-shot 엔지니어링 및 오탐/정탐 검증 테스트.
+4. **클라우드 A 담당 (전공자 / 테크 리드 & 플랫폼)**:
+   * 팀원 모듈이 단 한 줄 수정 없이 플러그인처럼 결합되는 **Lambda 오케스트레이터**.
+   * Boto3 기반 다중 계층(L4 SG 격리 + L7 WAF IPSet + Identity IAM 세션 취소) 원자적 차단 엔진(`remediation.py`).
+   * 전체 AWS 인프라 Terraform IaC 모듈화.
+   * GitHub Actions OIDC 무인증 배포 CI/CD 파이프라인.
+   * `moto` 기반 로컬 가상 AWS 테스트베드 및 개발 하네스 구축.
 
-## 협업·Git
+---
 
-- `main` 직접 Push 금지
-- Issue → 작업 브랜치 → 작은 커밋 → PR → 리뷰 → CI → `main` 병합
-- 브랜치: `feat/*`, `fix/*`, `test/*`, `docs/*`, `chore/*`
-- 커밋: `<영문 type>: <한국어 설명>`
-- 기본적으로 커밋 본문과 불릿 포인트는 사용하지 않음
-- 현재 초기화 브랜치에는 PR/Issue 템플릿, Python 설정, CI, 협업·보안 문서가 Push됨
-- GitHub Issue의 `type:*` 라벨은 기존 템플릿에서 기본 지정
-- PR의 변경 경로에 따라 `area:cloud`, `area:iam`, `area:network`, `area:detection`, `area:response` 라벨을 GitHub Actions가 자동 지정
-- `priority:high`는 오판 방지를 위해 자동 지정하지 않고 사람이 판단
-- CI는 작업 브랜치 Push와 PR에서 중복 실행하지 않도록 `push`는 `main`, 작업 브랜치는 `pull_request`에서 검사
-- 커밋 메시지 설명은 한국어로 통일하고 type 구분자만 영어로 사용
+## 3. 핵심 아키텍처 결정 사항 (ADR)
 
-## 구현 완료
+1. **단일 AWS 계정 내 VPC 격리 채택**:
+   * 멀티 계정 간 AssumeRole/조직 구성은 비전공자 테스트 병목을 유발하므로 배제하고, 단일 계정 내 Public/Private Subnet 및 Bastion 구조로 명확화.
+2. **다중 계층 원자적 차단(Remediation) 아키텍처**:
+   * L4 SSH 공격과 L7 WAF 간의 프로토콜 불일치 모순을 해결하기 위해:
+     * L4 차단: EC2 Quarantine SG 단독 교체.
+     * L7 차단: Nginx Web 공격자 IP 대상 AWS WAF IPSet 추가 (`/32` 강제).
+     * Identity 차단: 탈취 의심 IAM Role의 임시 세션 무효화(`revoke_security_tokens`).
+3. **Lambda 동시성 통제**:
+   * 무차별 공격 유입 시 동시 기동으로 인한 LLM API 비용 폭증을 방지하기 위해 Lambda `Reserved Concurrency`를 5~10으로 제한.
+4. **선(先) 하네스 구축, 후(後) 노션 연동**:
+   * 팀원 작업 차단(Blocking)을 해소하기 위해 Day 1~2에 디렉토리/Contract/Mock 테스트베드를 먼저 배포.
+   * 노션 연동은 GitHub Actions 단방향(One-way) 푸시로 Day 3에 구성.
 
-- 초기 저장소 디렉터리 구조 생성
-- `AGENTS.md`와 `CONTRIBUTING.md` 작성
-- 브랜치·커밋 메시지 컨벤션 작성
-- PR·Feature·Bug·Task 템플릿 추가
-- Python `pyproject.toml` 작성
-- Ruff·pytest·pre-commit 설정 추가
-- GitHub Actions CI 추가
-- PR 경로 기반 영역 라벨 자동화 추가 (`.github/labeler.yml`, `.github/workflows/labeler.yml`)
-- LLM용 로컬 개발 환경 세팅 프롬프트 추가 (`docs/llm/로컬_개발환경_세팅_프롬프트.md`)
-- CI 작업 브랜치 Push 중복 실행 제거
-- 브랜치 전략 문서의 커밋 메시지 예시를 한국어 설명으로 통일
-- 프로젝트 상세 계획·이벤트 스키마·보안 규칙·레드팀 계획 갱신
-- CloudTrail Fixture 폴더와 비식별화 규칙 문서 추가
-- 이 프로젝트 메모리 스냅샷 작성
+---
 
-## 실패한 접근과 원인
+## 4. 직무 간 인터페이스 계약 (Data Contracts)
 
-- `main` 직접 Push: 저장소 규칙과 안전 정책에 맞지 않아 중단. 초기화 브랜치 PR 방식으로 전환.
-- 초기 커밋 메시지 수정 시도: 기존 커밋이 원격에 Push되지 않은 상태라 로컬 이력을 재작성해 한국어 설명으로 정리.
-- 로컬 Ruff·pytest 실행: 처음에는 전역 환경에 도구가 없어 실행하지 못했지만, 프로젝트 `.venv`에 개발 의존성을 설치한 뒤 Ruff·pytest·pre-commit 검사를 모두 통과함.
-- Slack을 MVP 필수 승인 수단으로 채택하는 방안: Webhook·서명 검증·공개 엔드포인트 복잡도가 커서 승인 인터페이스를 먼저 만들고 Slack은 adapter로 미룸.
-- NACL 기반 C2 자동 차단: 서브넷 단위·상태 비저장 특성으로 오탐과 영향 범위가 커 MVP에서 제외.
-- pre-commit을 비활성 가상환경에서 실행: 전역 PATH에서 `ruff`·`pytest`를 찾지 못해 커밋 훅이 실패했으므로, 팀원은 `.venv`를 활성화한 뒤 커밋해야 함. 프로젝트 내부 캐시가 필요하면 `PRE_COMMIT_HOME=.pre-commit-cache`를 사용.
-- 문서 변경 후 직접 Ruff·포맷·pytest는 통과했으나 pre-commit은 `language: system` 훅이 실행 환경의 PATH에서 도구를 찾지 못해 실패함. 팀 환경에서 반복되면 실제 코드 도입 후 훅 구조를 재검토함.
+* **규격 1 (네트워크 $\rightarrow$ 타깃 서버)**:
+  * 리눅스 표준 Syslog: `<월> <일> <시:분:초> <호스트> sshd[<PID>]: Failed password for <계정> from <IP> port <포트> ssh2`
+* **규격 2 (타깃 서버 $\rightarrow$ Lambda)**:
+  * CloudWatch Logs Subscription Filter 페이로드 (Base64 인코딩 및 Gzip 압축된 JSON).
+* **규격 3 (보안 엔진 $\rightarrow$ 클라우드 A & B)**:
+  * Pydantic V2 기반 `IncidentReport` (IPv4 정규식 및 EC2 Instance ID 유효성 검사기 내장).
 
-## 현재 저장소 규칙
+---
 
-- `AGENTS.md`: LLM 공통 작업 규칙
-- `CONTRIBUTING.md`: 사람용 협업 가이드
-- `docs/event-schema.md`: 공통 이벤트 계약
-- `docs/security-rules.md`: 보안·레드팀 안전 규칙
-- `docs/프로젝트_상세계획.md`: 전체 실행 계획
-- `docs/llm/`: 비전공자용 설명과 레드팀 계획
+## 5. 실행 로드맵 (전공자 주도 하네스 구축 3일)
 
-## 다음 작업
-
-1. `assume_role.json`, `put_bucket_acl.json`, `authorize_security_group_ingress.json` Fixture 추가
-2. Fixture 기반 파서와 공통 이벤트 변환 테스트 작성
-3. 세 시나리오 목업 흐름과 공통 결과 모델 구현
-4. 대표 시나리오 선정 기준표 작성 후 하나를 선택
-5. 선정한 대표 시나리오의 실제 AWS 자동 대응 범위 확정
-6. 초기화 브랜치 PR 생성 및 CI·라벨 자동화 확인
-7. 팀원 로컬 온보딩
-
-## 실제 코드 구현 후 재검토
-
-- 이벤트 모델과 파서가 생기면 `mypy` 또는 `pyright` 도입 여부를 결정합니다.
-- 핵심 런타임·테스트 의존성이 확정되면 `uv` 또는 `pip-tools` 기반 lockfile 도입 여부를 결정합니다.
-- pre-commit 실행 시간이 병목이 되면 Ruff 훅 구조와 pytest 실행 위치(pre-commit, pre-push, CI)를 재검토합니다.
-- 기술적 결정이 누적되면 `docs/adr` 템플릿을 추가합니다.
-
-## 다음 작업 주의사항
-
-- CloudTrail S3 전달과 EventBridge 이벤트 수신을 같은 지연 특성으로 설명하지 않습니다.
-- “실시간” 대신 실제 이벤트 지연을 측정하고 결과를 기록합니다.
-- Session Policy는 권한 축소용이며 이미 발급된 세션의 중간 회수를 대체하지 않습니다.
-- 긴급 세션 무효화는 같은 역할의 다른 세션에 영향을 줄 수 있습니다.
-- Fixture에 실제 계정 식별자·자격증명·개인정보를 넣지 않습니다.
-- AWS 테스트 리소스는 비용과 삭제 책임자를 정하고 사용 후 정리합니다.
-- GitHub Actions가 라벨을 추가하려면 저장소 Actions 권한과 `pull-requests: write` 권한이 필요합니다.
-- `area:*` 자동 라벨은 변경 경로 기반이므로 경로가 모호한 PR은 사람이 라벨을 보완합니다.
-- 대표 시나리오가 확정되기 전에는 특정 AWS 자동 대응을 필수 범위로 고정하지 않습니다.
-
-## 최근 교차검증 결과
-
-- 초기 저장소 구조와 협업 자동화에 대해 추가적인 치명적 문제는 확인되지 않음.
-- CI 작업 브랜치 중복 실행 제거, 커밋 메시지 예시 통일, 라벨 자동화, 로컬 온보딩 문서화가 현재 기준으로 완료됨.
-- 타입 검사, lockfile, pre-commit 구조 변경, ADR 템플릿은 실제 코드와 의존성이 생긴 뒤 재검토하기로 함.
-- 검증 원문이나 외부 LLM 대화 전체는 프로젝트 메모리에 저장하지 않음.
-- 관련 커밋: `ed3ee00 chore: CI와 협업 문서 규칙 정비`
-- 문서 범위 재정의: 세 시나리오 목업 + 대표 시나리오 하나의 실제 AWS 자동 대응
-- 대표 시나리오는 아직 확정하지 않음
+* **Day 1**: 레거시(SentinelHub) 정리, `src/contracts/` 확정, `tests/mock_data/` 3종 생성, `AGENTS.md` 헌법 개정. (팀원 클론 및 작업 착수 가능 시점)
+* **Day 2**: `moto` 기반 가상 AWS 테스트베드(`tests/conftest.py`) 및 계약 검증 테스트 작성.
+* **Day 3**: `.github/workflows/ci.yml` (Ruff, Pytest, Trivy), PR 템플릿 배포, 노션 단방향 연동(`notion_sync.yml`).

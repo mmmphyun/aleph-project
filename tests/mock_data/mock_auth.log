@@ -1,0 +1,5 @@
+Sep 03 14:20:01 target-ec2 sshd[12341]: Failed password for invalid user admin from 198.51.100.50 port 49152 ssh2
+Sep 03 14:20:02 target-ec2 sshd[12342]: Failed password for invalid user admin from 198.51.100.50 port 49153 ssh2
+Sep 03 14:20:03 target-ec2 sshd[12343]: Failed password for root from 198.51.100.50 port 49154 ssh2
+Sep 03 14:20:04 target-ec2 sshd[12344]: Failed password for root from 198.51.100.50 port 49155 ssh2
+Sep 03 14:20:05 target-ec2 sshd[12345]: Failed password for guest from 198.51.100.50 port 49156 ssh2

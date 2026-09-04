@@ -1,0 +1,20 @@
+{
+  "incident_id": "INC-20260904-001",
+  "attack_type": "SSH Brute Force",
+  "mitre_id": "T1110.001",
+  "risk_level": "HIGH",
+  "source_ip": "198.51.100.50",
+  "target_identifier": "i-0abcd1234ef567890",
+  "target_accounts": [
+    "admin",
+    "root",
+    "guest"
+  ],
+  "summary_ko": "출발지 IP 198.51.100.50에서 다수의 관리자 계정(admin, root, guest)을 대상으로 SSH 무차별 대입 공격이 감지되었습니다.",
+  "action_required": "BLOCK_AND_QUARANTINE",
+  "recommendations": [
+    "AWS WAF IPSet에 198.51.100.50 등록 및 차단",
+    "타깃 EC2 인스턴스(i-0abcd1234ef567890)에 Quarantine 보안 그룹 단독 교체 적용",
+    "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제"
+  ]
+}

@@ -1,5 +1,5 @@
-from sentinelhub import __version__
+from importlib.metadata import version
 
 
 def test_package_version() -> None:
-    assert __version__ == "0.1.0"
+    assert version("cloudshield") == "0.1.0"
