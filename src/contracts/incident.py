@@ -59,8 +59,8 @@ class IncidentReport(BaseModel):
         description="침해 타깃 식별자 (EC2 Instance ID)",
         examples=["i-0abcd1234ef567890"],
     )
-    target_accounts: list[str] = Field(
-        default_factory=list,
+    target_accounts: tuple[str, ...] = Field(
+        default_factory=tuple,
         description="공격 대상 시스템 계정 목록 (예: admin, root)",
     )
     summary_ko: str = Field(
@@ -79,8 +79,8 @@ class IncidentReport(BaseModel):
         ...,
         description="인프라 대응 오케스트레이터 지시 액션",
     )
-    recommendations: list[str] = Field(
-        default_factory=list,
+    recommendations: tuple[str, ...] = Field(
+        default_factory=tuple,
         description="SecOps 관리자 권고 조치 항목 리스트",
     )
 
@@ -89,16 +89,21 @@ class IncidentReport(BaseModel):
     def validate_source_ip(cls, v: str) -> str:
         """IPv4 유효성 및 형식 검증.
 
+        Why:
+            정규식 중복 검사를 배제하고 파이썬 표준 라이브러리(stdlib) ipaddress를 활용하여
+            0~255 옥텟 범위 및 IPv4 형식 무결성을 보장함.
+
+        Constraints:
+            단일 IPv4 주소 문자열만 허용하며 서브넷 마스크(/24 등) 및 포트 번호 포함 불가.
+
         Side-effects / Edge-cases:
-            옥텟 범위를 벗어난 비정상 IP("999.999.999.999") 또는 서브넷 마스크 표기 거부.
+            옥텟 범위를 벗어난 비정상 IP("999.999.999.999") 또는
+            알파벳 문자열 입력 시 ValueError 발생.
         """
-        pattern = r"^(\d{1,3}\.){3}\d{1,3}$"
-        if not re.match(pattern, v):
-            raise ValueError(f"유효하지 않은 IPv4 정규식 패턴: {v}")
         try:
             ipaddress.IPv4Address(v)
         except ValueError as exc:
-            raise ValueError(f"유효하지 않은 IPv4 주소 범위: {v}") from exc
+            raise ValueError(f"유효하지 않은 IPv4 주소: {v}") from exc
         return v
 
     @field_validator("target_identifier")
