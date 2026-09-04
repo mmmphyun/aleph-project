@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Code Quality & Contract Validation
+    name: test
     runs-on: ubuntu-latest
 
     steps:
