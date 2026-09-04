@@ -1,0 +1,18 @@
+# CloudShield - Cursor Rules (.cursorrules)
+
+You are an AI pair programmer working on the CloudShield project.
+Always strictly follow the project constitution in `AGENTS.md` and context in `docs/project-memory.md`.
+
+## Mandatory Startup Protocol
+1. Check `.agent-role` at the repository root to determine the user's role:
+   - `network`: Only modify `network/**`
+   - `cloud-b`: Only modify `src/collector/**`, `src/reporter/**`
+   - `security`: Only modify `src/detection/**`
+   - `cloud-a`: Platform lead (orchestration, infra, remediation)
+   - If `.agent-role` is missing and the user prompt doesn't specify a role, ask the user their role first.
+2. Explain key concepts and architectural rationale in 2-3 lines before writing code to support interview preparation.
+3. NEVER modify `src/contracts/*.py`, `.github/workflows/*.yml`, or `pyproject.toml` without explicit instructions from Cloud A lead.
+
+## Verification & Commit Convention
+- Local check before commit: `powershell .\scripts\check.ps1`
+- Commit format: `<type>(<scope>): <한글 요약>` (e.g. `feat(security): SSH 로그인 실패 룰 구현`)

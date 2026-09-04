@@ -14,27 +14,35 @@
 
 ---
 
-## 2. 작업 시작 시 복사해서 쓸 프롬프트 (Starter Prompt)
+## 2. 최초 1회 로컬 역할 고정 (Initial Setup)
 
-새 대화창을 열고, 아래 텍스트에서 `[ ]` 부분을 본인 상황에 맞게 수정한 뒤 에이전트에게 입력하십시오:
+프로젝트를 클론받은 후, 터미널(PowerShell)에서 **본인 직무에 맞는 명령어 단 한 줄**을 실행하십시오 (이후 다시 입력할 필요 없음):
 
-```text
-너는 CloudShield 프로젝트의 팀원이야.
-루트의 AGENTS.md 파일과 docs/project-memory.md를 먼저 읽고 본 프로젝트의 규칙을 확인해.
+```powershell
+# 네트워크 담당자
+"network" | Set-Content .agent-role
 
-[작업 기본 정보]
-- 내 담당 직무: [네트워크 / 클라우드 B / 보안 / 클라우드 A]
-- 해결할 GitHub 이슈 번호: #[이슈번호]
-- 연관된 노션 카드 링크: [노션URL]
-- 이번 작업 목표: [예: auth.log 기반 1차 시그니처 룰 탐지 함수 구현]
+# 클라우드 B 담당자
+"cloud-b" | Set-Content .agent-role
 
-[진행 규칙]
-1. 코드를 작성하기 전에, 이번 작업의 핵심 기술적 원리와 개념을 나에게 먼저 쉽게 설명해줘.
-2. 타 팀원의 고유 영역 및 src/contracts/ 파일은 절대 수정하지 마.
-3. 설명이 끝나면, main 브랜치 기준으로 `feat/[직무]-[기능]` 브랜치를 생성해줘.
-4. 작업이 끝나면 powershell .\scripts\check.ps1 로컬 검증을 통과시키고, AGENTS.md의 컨벤션에 맞춰 최소 단위로 커밋해줘.
-5. 마지막으로 .github/pull_request_template.md 양식에 맞춰 PR 본문 초안을 작성해줘.
+# 보안 담당자
+"security" | Set-Content .agent-role
+
+# 클라우드 A 담당자
+"cloud-a" | Set-Content .agent-role
 ```
+
+---
+
+## 3. 작업 시작 시 에이전트에게 내릴 단 한 줄 명령 (Single-Line Command)
+
+`.agent-role`이 설정되어 있다면, 에이전트 창에 복잡한 양식을 복사할 필요 없이 **단 한 줄의 자연어**만 입력하면 됩니다:
+
+> *"**[작업 내용]** 작업 시작할게. 개념 먼저 설명해주고 브랜치 따줘."*
+>
+> *(예시: "SSH 로그인 실패 1차 룰 구현 작업 시작할게. 개념 먼저 설명해주고 브랜치 따줘.")*
+
+에이전트는 `.agent-role`을 읽어 자동으로 본인 직무 디렉토리로 스코프를 잠그고, 원리 3줄 설명 $\rightarrow$ 브랜치 분기 $\rightarrow$ 코드 작성 $\rightarrow$ 검증 $\rightarrow$ 커밋을 대화형으로 수행합니다.
 
 ---
 

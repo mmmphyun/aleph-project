@@ -36,6 +36,7 @@ override.tf.json
 .vscode/
 *.swp
 .DS_Store
+.agent-role
 
 # AWS and secret material
 .aws/
