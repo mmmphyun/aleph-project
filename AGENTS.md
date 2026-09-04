@@ -38,6 +38,15 @@
 3. **3순위 (역질문 강제)**: 1, 2순위 모두 없을 경우 에이전트는 코드를 작성하지 말고 첫마디로 *"담당 직무(네트워크/클라우드 B/보안/클라우드 A)가 무엇인가요?"*를 역질문하여 역할을 확정한 뒤 착수한다.
 4. **설명 선행 원칙**: 코딩을 시작하기 전, 해당 작업의 핵심 개념과 원리를 사용자에게 2~3줄로 먼저 설명하여 비전공자의 면접 역량을 지원한다.
 
+### 2.2 경계선 파일 단일 소유권 매트릭스 (Single Ownership Matrix)
+직무 간 경계가 모호한 설정 및 명세 파일은 단일 소유자 원칙에 따라 아래 지정된 직무 외에는 임의 수정할 수 없다:
+| 경계선 파일 / 리소스 | 단독 책임 직무 | 협업 및 연계 방식 |
+| :--- | :---: | :--- |
+| `amazon-cloudwatch-agent.json` | **클라우드 B** | 로그 수집 경로 확정 후 EC2 인스턴스에 배포 |
+| `nginx.conf` (Web 타깃 설정) | **클라우드 B** | 80/443 포트 및 수집 로깅 포맷 정의 |
+| 격리 Security Group 규칙 명세 | **네트워크** | 네트워크 담당이 인/아웃바운드 명세 작성 $\rightarrow$ 클라우드 A가 Terraform 코드로 변환 |
+| AWS WAF IPSet 명세 | **보안** | 차단 정책 명세 $\rightarrow$ 클라우드 A가 Boto3/Terraform 엔진으로 구현 |
+
 ---
 
 ## 3. 절대 동결 및 수정 금지 파일 (Protected Contracts)
@@ -78,6 +87,20 @@
   1. **Why**: 해당 로직/라이브러리를 채택한 비즈니스 및 아키텍처적 이유.
   2. **Constraints**: 매개변수 유효성 제약조건, 단위, 정규식 규격.
   3. **Side-effects / Edge-cases**: 외부 API 호출, 예외 발생 조건, 동시성 주의사항.
+
+### 5.1 직무별 산출물 특화 엔지니어링 표준 (Domain-specific Standards)
+1. **네트워크 (`network/`)**:
+   - 모의 공격 셸 스크립트 작성 시 비정상 종료 방지 및 안전성 플래그(`set -euo pipefail`) 필수 적용.
+   - Wireshark/tcpdump 분석 보고서 작성 시 단순 패킷 나열을 금지하고, L4 TCP 플래그(SYN, ACK, RST), 3-Way Handshake 타임라인, 공격 페이로드의 비정상 패턴을 마크다운 표로 구조화.
+2. **보안 (`src/detection/`)**:
+   - 정규식 시그니처 룰 작성 시 ReDoS(Catastrophic Backtracking) 방어 구조를 적용하고, 정규식 설계 근거(Why) 및 매칭 복잡도를 주석으로 명시.
+   - LLM Few-shot 프롬프트 작성 시 `IncidentReport` 스키마와 완벽히 호환되는 엄격한 JSON 구조 출력 강제.
+3. **클라우드 B (`src/collector/`, `src/reporter/`)**:
+   - CloudWatch Agent 구성 파일(`amazon-cloudwatch-agent.json`) 작성 시 JSON 문법 및 타깃 로그 경로 유효성 검증.
+   - Slack Block Kit 알림 카드 페이로드 작성 시 필드별 500자 초과 방지 안전 자르기(Truncate) 및 필수 키(`incident_id`, `rule_name`, `source_ip`, `remediation_action`) 누락 방지.
+4. **클라우드 A (`src/remediation/`, `src/contracts/`, `infra/`)**:
+   - Boto3 차단 API 호출 시 `botocore.exceptions.ClientError` 정밀 핸들링 및 멱등성(Idempotency) 보장.
+   - 모든 차단 엔진 및 인프라 코드는 `moto` 기반 가상 AWS 테스트베드에서 100% 검증 가능하도록 작성.
 
 ---
 
