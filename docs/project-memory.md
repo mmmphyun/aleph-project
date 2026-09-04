@@ -98,8 +98,24 @@ flowchart TD
 
 ---
 
-## 5. 실행 로드맵 (전공자 주도 하네스 구축 3일)
+## 5. 실행 로드맵 및 현재 구축 진행 상태
 
-* **Day 1**: 레거시(SentinelHub) 정리, `src/contracts/` 확정, `tests/mock_data/` 3종 생성, `AGENTS.md` 헌법 개정. (팀원 클론 및 작업 착수 가능 시점)
-* **Day 2**: `moto` 기반 가상 AWS 테스트베드(`tests/conftest.py`) 및 계약 검증 테스트 작성.
-* **Day 3**: `.github/workflows/ci.yml` (Ruff, Pytest, Trivy), PR 템플릿 배포, 노션 단방향 연동(`notion_sync.yml`).
+* **완료 내역 (하네스 및 거버넌스 파이프라인 완성)**:
+  * **Day 1 기반 완성**: 레거시(SentinelHub) 완전 제거, Pydantic V2 기반 `src/contracts/` 2종 확정, `tests/mock_data/` 3종 생성, 계약 불변성(Drift Guard) 테스트 통과.
+  * **에이전트 거버넌스 체계**: `.agent-role` 로컬 역할 잠금, `CLAUDE.md`, `.cursorrules`, `AGENTS.md` 개정 (경계선 소유권 매트릭스, 4대 직무별 산출물 특화 표준 명시).
+  * **GitHub 배관 및 원격 가드**:
+    * CI 파이프라인 (`.github/workflows/ci.yml`): `setup-uv` 캐시 적용 10초 컷.
+    * PR 제목 린터 (`.github/workflows/pr_title_lint.yml`): Conventional Commit + 직무 스코프 강제.
+    * 자동 라벨러 (`.github/workflows/labeler.yml`): 경로 기반 `role:*`, `area:*`, `type:*` 자동 부착.
+    * 노션 동기화 배관 (`.github/workflows/notion_sync.yml`): PR 상태 단방향 동기화.
+    * 브랜치 보호 및 머지 정책: Squash Merge 단독 활성화, 머지 후 브랜치 자동 삭제.
+  * **문서 아카이브 체계**:
+    * `docs/roles/{network,cloud-b,security,cloud-a}/`: 직무별 완결 산출물 자유 마크다운 저장소.
+    * `docs/shared/{meetings,ideas}/`: 회의록 및 아이디어 공유 디렉토리 분리 신설.
+
+* **차기 착수 단계 (Day 2 플랫폼 엔지니어링)**:
+  1. `pyproject.toml`에 `boto3`, `moto[ec2,wafv2,iam]` 의존성 추가.
+  2. `tests/conftest.py`에 Moto 가상 AWS 리소스(Quarantine SG, WAFv2 IPSet, IAM Role) 픽스처 구축.
+  3. `src/remediation/remediation.py` 다중 계층(L4 SG 격리 / L7 WAF IPSet / IAM 세션 무효화) 원자적 복합 차단 엔진 구현.
+  4. `tests/test_remediation.py` 가상 런타임 관통 검증.
+
