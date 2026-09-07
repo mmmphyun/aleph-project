@@ -1,24 +1,24 @@
-# CloudShield: 통합 엔드투엔드(E2E) 파이프라인 명세서
+# CloudShield: 통합 엔드투엔드 파이프라인 명세서
 
 ## 1. 종합 파이프라인 아키텍처 다이어그램
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Attacker as [네트워크] 공격자 (Kali/Script)
+    actor Attacker as [네트워크] 공격자 (Kali / Hydra / Nmap)
     participant Target as [클라우드 B] 타깃 EC2 (auth.log)
     participant Agent as [클라우드 B] CloudWatch Agent
     participant CW as [클라우드 B] CloudWatch Logs (구독 필터)
     participant Lambda as [클라우드 A] 파이프라인 총괄 Lambda
     participant Rule as [보안] 1차 룰 탐지 엔진 (rules.py)
-    participant LLM as [보안] LLM Structured Output (Gemini/OpenAI)
+    participant LLM as [보안] LLM 구조화 분석기 (llm_analyzer.py)
     participant WAF as [클라우드 A] AWS WAF IPSet
     participant EC2_API as [클라우드 A] EC2 API (Quarantine SG)
     participant Slack as [클라우드 B] Slack Webhook
 
     %% 1. 침해 시뮬레이션 및 로깅
     Note over Attacker, Target: [네트워크] 공격 수행 및 패킷 덤프 (tcpdump)
-    Attacker->>Target: SSH Brute Force (Hydra) 시뮬레이션
+    Attacker->>Target: SSH 무차별 대입 공격 (Hydra) 시뮬레이션
     Target->>Target: /var/log/auth.log에 실패 기록 누적
     Agent->>Target: 파일 모니터링
     Agent->>CW: 로그 실시간 스트리밍 (3초 이내)
@@ -29,9 +29,9 @@ sequenceDiagram
     Rule-->>Lambda: 1차 분석 결과 (동일 IP 5회 실패 식별, HIGH 판정)
 
     %% 3. 즉각적인 선제 차단 (클라우드 A)
-    opt 위험도 HIGH인 경우 (골든타임 확보)
+    opt 위험도 HIGH인 경우 (골든타임 선제 차단)
         Lambda->>WAF: 공격자 IP 즉시 차단 (boto3 update_ip_set)
-        Lambda->>EC2_API: 타깃 인스턴스에 Quarantine SG 적용 (네트워크 격리)
+        Lambda->>EC2_API: 타깃 인스턴스에 격리 보안 그룹 적용
     end
 
     %% 4. LLM 심층 분석 (보안)
@@ -92,11 +92,11 @@ sequenceDiagram
 ## 3. 엔드투엔드 검증 시나리오 체크리스트
 
 | 검증 단계 | 검증 항목 | 담당자 | 합격 기준 |
-| :---: | :--- | :---: | :--- |
+| :--- :--- | :--- | :---: | :--- |
 | **1** | 공격 트래픽 발생 및 패킷 덤프 | 네트워크 | 타깃 서버에 `.pcap` 파일 생성 및 Hydra 공격 로그 생성 확인 |
 | **2** | CloudWatch Logs 실시간 인제스트 | 클라우드 B | 공격 발생 후 5초 이내 CloudWatch 로그 그룹에 로그 적재 |
 | **3** | Lambda 자동 트리거 및 1차 룰 탐지 | 클라우드 A, 보안 | CloudWatch 구독 필터를 통해 Lambda가 호출되고 룰에 의해 HIGH 분류 |
 | **4** | WAF IP 차단 및 격리 SG 적용 | 클라우드 A | 공격자 IP가 WAF IPSet에 추가되고, 타깃 EC2의 SG가 격리용으로 변경됨 |
-| **5** | LLM Structured Output 리포트 생성 | 보안 | 환각 없이 Pydantic 스키마 규격을 100% 준수한 JSON 분석 결과 도출 |
+| **5** | LLM 구조화 침해 분석 리포트 생성 | 보안 | 환각 없이 Pydantic 스키마 규격을 100% 준수한 JSON 분석 결과 도출 |
 | **6** | Slack 실시간 침해 카드 수신 | 클라우드 B | Slack 채널에 공격 요약, MITRE ID, 조치 내역이 포함된 카드 메시지 도착 |
 | **7** | CI/CD 파이프라인 검증 | 클라우드 A | 코드 수정 후 GitHub Push 시 Lambda 및 관련 코드가 자동 빌드/배포됨 |

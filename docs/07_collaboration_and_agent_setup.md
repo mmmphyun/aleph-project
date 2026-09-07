@@ -110,21 +110,22 @@ class IncidentReport(BaseModel):
 
 ---
 
-## 4. CI/CD 파이프라인 및 품질 통제 (GitHub Actions)
+## 4. CI/CD 파이프라인 및 품질·거버넌스 통제 (GitHub Actions)
 
-### 4.1 CI 워크플로우 검증 단계 (`.github/workflows/ci.yml`)
-모든 PR 생성 및 푸시 시 다음 4단계를 자동 실행하며, 실패 시 머지를 차단함:
+### 4.1 GitHub Actions 원격 자동화 배관
+CloudShield는 코드 품질 검증뿐만 아니라 에이전트 거버넌스와 노션 칸반 보드 수명주기까지 완전 자동화합니다:
 
-1. **정적 분석 및 포맷팅**:
-   * `uv run ruff check .`
-   * `uv run ruff format --check .`
-2. **인터페이스 불변성 검사 (Contract Drift Guard)**:
-   * PR 변경 파일 목록 중 `src/contracts/`가 포함되어 있고 작성자가 클라우드 A가 아닌 경우 즉시 빌드 실패 처리.
-3. **단위 및 통합 테스트**:
-   * `uv run pytest tests/`
-   * 테스트 커버리지 및 Mock 계약 준수 여부 검증.
-4. **IaC 보안 검사**:
-   * `trivy config infra/` (Terraform 보안 취약점 사전 스캔).
+1. **품질 검증 및 Contract Drift Guard (`.github/workflows/ci.yml`)**:
+   - `uv run ruff check .` 및 `uv run ruff format --check .` (코드 스타일 및 포맷팅).
+   - `src/contracts/` 인터페이스 변경 감지 시 클라우드 A 외 작성자의 무단 수정 즉시 차단.
+   - `uv run pytest tests/` (moto 가상 AWS 리소스 기반 계약 및 단위 검증).
+2. **PR 제목 및 커밋 컨벤션 검사 (`.github/workflows/pr_title_lint.yml`)**:
+   - Conventional Commits 형식 및 필수 직무 스코프(`<type>(<scope>): <한글 요약>`) 강제.
+3. **경로 기반 자동 라벨러 (`.github/workflows/labeler.yml`)**:
+   - 변경 파일 경로를 분석하여 `role:*`, `area:*`, `type:*` 라벨을 100% 자동 부착.
+4. **노션 칸반 라이프사이클 동기화 (`.github/workflows/notion_sync.yml`)**:
+   - Issue/PR 생성, 리뷰 요청, 머지 이벤트를 수신하여 노션 [프로젝트 일정] DB의 상태(`[진행 중]`, `[검토 중]`, `[완료]`) 및 작업 기간(start~end), 머지 요약 Callout 블록을 원자적 동기화.
+   - 노션 미등록 일감 발생 시 신규 카드 자동 발급(`POST /v1/pages`) 안전망 탑재.
 
 ### 4.2 Pull Request 템플릿 (`.github/pull_request_template.md`)
 에이전트가 작성한 코드를 팀원이 완전히 이해하도록 기술적 서술을 강제함:
@@ -144,33 +145,45 @@ class IncidentReport(BaseModel):
 3. 
 
 ## 4. 로컬 테스트 및 검증 결과
-- [ ] `uv run ruff check .` 통과
-- [ ] `uv run pytest` 통과
+- [ ] uv run ruff check . 통과
+- [ ] uv run pytest 통과
 - 터미널 출력 결과 또는 로그 캡처:
 ```
 
 ---
 
-## 5. 코딩 에이전트 행동 지침 (AGENTS.md 표준)
+## 5. 코딩 에이전트 행동 지침 및 세션 라이프사이클
 
-리포지토리 루트의 `AGENTS.md`에 다음 4대 원칙을 강제하여 에이전트의 임의 코드 수정을 차단함:
+리포지토리 루트의 `AGENTS.md` 및 `docs/agent_session_starter.md`에 정의된 핵심 통제 원칙:
 
-1. **수정 금지 파일 명시**:
-   * `src/contracts/*.py`, `.github/workflows/*.yml`, `pyproject.toml`은 사용자 명시적 지시 없이 수정 금지.
-2. **커밋 메시지 규칙 준수**:
-   * 포맷: `<type>(<scope>): <한글 요약>`
-   * Scope: `network`, `cloud-a`, `cloud-b`, `security`, `infra`, `contract`
-3. **코드 주석 필수화**:
-   * 모든 작성 함수 상단에 입력값 제약(Constraints), 예외 처리 조건(Edge-cases), 사용 라이브러리 선정 이유(Why)를 프로덕션급 한국어 주석으로 명시.
-4. **테스트 동반 생성**:
-   * 신규 기능 추가 시 `tests/` 디렉토리 내에 해당 기능을 검증하는 `pytest` 테스트 코드를 반드시 세트로 작성.
+1. **1세션 1이슈 원칙**: 하나의 대화창에서 여러 이슈를 연속 작업하지 않고 이슈별 새 세션 분기.
+2. **로컬 역할 잠금 (`.agent-role`)**: 로컬 환경에서 본인 직무 외 디렉토리 수정을 차단.
+3. **세션 기동 자동화**: 세션 시작 시 `node scripts/get_my_tasks.js`를 실행하여 노션 `[시작 전]` 티켓을 자동 바인딩.
+4. **설명 선행 원칙**: 코딩 착수 전 사용자에게 2~3줄로 기술 개념 선행 설명.
+5. **커밋 메시지 규칙 준수**: `<type>(<scope>): <한글 요약>` (마침표 없음, 필수 직무 스코프).
 
 ---
 
-## 6. 하네스 구축 3일 실행 로드맵 (플랫폼 리드 주도)
+## 6. 침해 대응 시나리오별 하네스 지원 현황
 
-| 일차 | 목표 | 상세 작업 내용 | 산출물 |
-| :---: | :--- | :--- | :--- |
-| **Day 1** | 레거시 정리 및 Contract 동결 | - 이전 SentinelHub 포렌식 코드 제거<br>- `src/contracts/` 내 Pydantic 모델 확정<br>- `tests/mock_data/` 3종(로그, CW 이벤트, 리포트) 생성 | `src/contracts/`<br>`tests/mock_data/` |
-| **Day 2** | Mock Fixture 및 테스트베드 구축 | - `pyproject.toml`에 `moto`, `pytest`, `ruff` 세팅<br>- `tests/conftest.py`에 moto 기반 WAF/EC2/IAM Mock 환경 작성<br>- 계약 검증 테스트(`test_contracts.py`) 작성 | `tests/conftest.py`<br>`tests/test_contracts.py` |
-| **Day 3** | CI 파이프라인 및 에이전트 헌법 배포 | - `.github/workflows/ci.yml` 작성 및 Branch Protection 설정<br>- `.github/pull_request_template.md` 및 `CODEOWNERS` 작성<br>- `AGENTS.md` 개정 후 팀원 로컬 클론 가이드 배포 | `.github/`<br>`AGENTS.md` |
+| 구분 | 시나리오 1: SSH Brute Force (L4) | 시나리오 2: Web L7 Scanning/Spraying |
+| :--- | :--- | :--- |
+| **공격 벡터** | SSH 포트(22) 비인가 무차별 대입 | Web HTTP(80/443) 비인가 스캐닝 및 인증 우회 |
+| **모의 공격 스크립트** | `network/attack_simulation.sh` (Hydra 완비) | `network/web_attack_simulation.sh` (확장 예정) |
+| **로그 수집 규격** | `/var/log/auth.log` (`SyslogAuthEvent` 완비) | Nginx `access.log` (`NginxAccessEvent` 규격 확장 예정) |
+| **탐지 룰 엔진** | `src/detection/rules.py` (임계치 5회) | `src/detection/rules.py` (HTTP 4xx/5xx 빈도 분석) |
+| **차단 메커니즘** | EC2 Quarantine SG 단독 교체 (`quarantine_applied`) | AWS WAF IPSet `/32` 등록 (`waf_blocked`) |
+| **Mock 테스트베드** | `mocked_ec2_target`, `mock_auth.log` 완비 | `mocked_waf_ipset`, `mock_incident_waf_only.json` 완비 |
+| **현 상태** | **Vertical Slice 관통 완료 (Golden Path)** | **백엔드 차단/Mock 완비, 프론트 수집 파서 대기** |
+
+---
+
+## 7. 하네스 구축 실행 결과 및 지속성 관리
+
+- **Day 1~3 완료 내역**:
+  - `src/contracts/` Pydantic V2 불변성 계약 확정 및 Drift Guard 구축.
+  - Moto 기반 가상 AWS(EC2, SG, WAFv2, IAM) 테스트베드 구축.
+  - GitHub Actions 4대 워크플로우(CI, PR Title Lint, Labeler, Notion Sync) 가동.
+  - `.agent-role` 로컬 가드 및 3대 에이전트(Cursor, Claude Code, Antigravity) 프롬프트 연동.
+- **운영 원칙**:
+  - 하네스 베이스라인은 동결(Freeze) 상태를 유지하며, 팀원들의 실무 구현 중 발생하는 인터페이스 변경은 반드시 버그 기반(Bug-driven) PR을 통해서만 점진적으로 반영함.
