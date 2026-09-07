@@ -198,3 +198,61 @@ def test_contract_schema_immutability() -> None:
         f"CloudWatchLogsPayload 스키마가 변조되었습니다! 누락/추가 필드: "
         f"{actual_cw_fields ^ expected_cw_fields}"
     )
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_action", "expected_risk"),
+    [
+        ("mock_incident_spray.json", "BLOCK_AND_QUARANTINE", "HIGH"),
+        ("mock_incident_waf_only.json", "BLOCK_WAF", "MEDIUM"),
+        ("mock_incident_alert_only.json", "ALERT_ONLY", "LOW"),
+    ],
+)
+def test_extended_incident_reports_from_mock_json(
+    filename: str, expected_action: str, expected_risk: str
+) -> None:
+    """확장 침해사고 모의 데이터가 IncidentReport 계약을 완벽히 만족하는지 검증."""
+    mock_file = MOCK_DATA_DIR / filename
+    assert mock_file.exists(), f"{filename} 파일이 누락되었습니다."
+
+    data = json.loads(mock_file.read_text(encoding="utf-8"))
+    report = IncidentReport.model_validate(data)
+
+    assert report.action_required == expected_action
+    assert report.risk_level == expected_risk
+    assert len(report.recommendations) >= 1 or expected_action == "NONE"
+
+
+def test_cw_batch_event_decoding_and_roundtrip() -> None:
+    """다건 배치 mock_cw_batch_event.json의 디코딩 및 왕복 압축 무결성 검증."""
+    cw_file = MOCK_DATA_DIR / "mock_cw_batch_event.json"
+    assert cw_file.exists(), "mock_cw_batch_event.json 파일이 누락되었습니다."
+
+    event_data = json.loads(cw_file.read_text(encoding="utf-8"))
+    payload = CloudWatchLogsPayload.from_awslogs_data(event_data["awslogs"]["data"])
+
+    assert payload.messageType == "DATA_MESSAGE"
+    assert len(payload.logEvents) == 5
+    assert payload.logStream == "i-0abcd1234ef567890"
+
+    # 왕복 인코딩/디코딩 무결성 검증
+    encoded = payload.to_awslogs_data()
+    restored = CloudWatchLogsPayload.from_awslogs_data(encoded)
+    assert restored == payload
+
+
+def test_noisy_auth_log_parsing() -> None:
+    """mock_auth_noisy.log에서 SSH 실패 로그만 정확히 필터링 파싱되는지 검증."""
+    log_file = MOCK_DATA_DIR / "mock_auth_noisy.log"
+    assert log_file.exists(), "mock_auth_noisy.log 파일이 누락되었습니다."
+
+    raw_text = log_file.read_text(encoding="utf-8")
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    assert len(lines) == 13
+
+    parsed_events = [SyslogAuthEvent.parse_line(line) for line in lines]
+    valid_events = [e for e in parsed_events if e is not None]
+
+    # 13개 중 실패 이벤트(Sep 04 5건 + 198.51.100.99 1건) 총 6건만 파싱되어야 함
+    assert len(valid_events) == 6
+    assert all(e.process == "sshd" for e in valid_events)

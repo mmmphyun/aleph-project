@@ -37,6 +37,7 @@
 ## 2. 주요 문서
 
 * [팀 프로젝트 메모리 스냅샷 (Project Memory)](docs/project-memory.md)
+* [팀원 온보딩 퀵스타트 가이드](docs/onboarding_guide.md)
 * [개발 하네스 및 협업 체계 계획](docs/07_collaboration_and_agent_setup.md)
 * [직무 간 인터페이스 데이터 규격서](docs/08_interface_contracts.md)
 

@@ -3,17 +3,21 @@ name: Notion Task Sync
 on:
   pull_request_target:
     types: [opened, reopened, closed]
+  issues:
+    types: [opened, reopened, closed]
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
+  issues: write
 
 jobs:
   sync_notion:
-    name: Sync PR State to Notion
+    name: Sync Issue & PR State to Notion
     runs-on: ubuntu-latest
     env:
       NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+      NOTION_DB_ID: "b8204d37c225838bb8de017940440498"
     steps:
       - name: Check Notion API Key Secret
         id: check_secret
@@ -25,81 +29,254 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Extract Notion Page ID and Update Status
+      - name: Sync Notion Task
         if: steps.check_secret.outputs.skip == 'false'
         uses: actions/github-script@v7
         with:
           script: |
-            const pr = context.payload.pull_request;
-            const body = pr.body || "";
-            const isMerged = pr.merged;
+            const https = require("https");
+            const eventName = context.eventName;
             const action = context.payload.action;
+            const dbId = process.env.NOTION_DB_ID.replace(/-/g, "");
 
-            // 1. PR 본문에서 Notion URL 또는 Page ID 추출 (32자리 hex)
-            const regex = /notion\.(?:so|com)\/(?:[^/]+\/)?(?:[a-zA-Z0-9_-]+-)?([0-9a-f]{32})|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+            // 대상 객체(Issue 또는 PR) 및 본문 추출
+            let item = null;
+            let isPR = false;
+            let isMerged = false;
+
+            if (eventName === "pull_request_target") {
+              item = context.payload.pull_request;
+              isPR = true;
+              isMerged = Boolean(item.merged);
+            } else if (eventName === "issues") {
+              item = context.payload.issue;
+            } else {
+              console.log(`지원하지 않는 이벤트: ${eventName}`);
+              return;
+            }
+
+            const rawTitle = item.title || "";
+            const body = item.body || "";
+            // 커밋/PR 컨벤션에 따라 콜론 이후 제목만 정제 (예: "feat(cloud-a): 룰 구현" -> "룰 구현")
+            const cleanTitle = rawTitle.replace(/^[^:]+:\s*/, "").trim() || rawTitle;
+
+            // 1. 직무 스코프 파싱 (필요 시 환경변수 NOTION_ASSIGNEE_MAP에서 매핑 조회)
+            let matchedAssigneeId = null;
+            if (process.env.NOTION_ASSIGNEE_MAP) {
+              try {
+                const assigneeMap = JSON.parse(process.env.NOTION_ASSIGNEE_MAP);
+                const scopeMatch = rawTitle.match(/\(([^)]+)\)/) || (isPR ? (item.head?.ref || "").match(/(?:feat|fix|chore)\/([^-/]+)/) : null);
+                if (scopeMatch) {
+                  const scope = scopeMatch[1].toLowerCase();
+                  if (assigneeMap[scope]) matchedAssigneeId = assigneeMap[scope];
+                }
+              } catch (e) {
+                console.log("NOTION_ASSIGNEE_MAP 파싱 실패, 담당자 자동 할당 생략");
+              }
+            }
+
+            // 2. Notion URL / Page ID 추출
+            const regex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?:[/?#]|$)|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})/i;
             const match = body.match(regex);
+            let pageId = null;
+            if (match) {
+              const rawId = match[1] || match[2] || match[3];
+              pageId = rawId.replace(/-/g, "");
+            }
 
-            if (!match) {
+            // 3. Notion REST API 비동기 헬퍼
+            function sendNotionRequest(path, method, bodyObj = null) {
+              return new Promise((resolve, reject) => {
+                const data = bodyObj ? JSON.stringify(bodyObj) : null;
+                const options = {
+                  hostname: "api.notion.com",
+                  port: 443,
+                  path: path,
+                  method: method,
+                  headers: {
+                    "Authorization": `Bearer ${process.env.NOTION_API_KEY}`,
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json"
+                  }
+                };
+                if (data) options.headers["Content-Length"] = Buffer.byteLength(data);
+
+                const req = https.request(options, (res) => {
+                  let resBody = "";
+                  res.on("data", (chunk) => resBody += chunk);
+                  res.on("end", () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                      resolve({ status: res.statusCode, body: resBody ? JSON.parse(resBody) : {} });
+                    } else {
+                      reject(new Error(`HTTP ${res.statusCode}: ${resBody}`));
+                    }
+                  });
+                });
+                req.on("error", (e) => reject(e));
+                if (data) req.write(data);
+                req.end();
+              });
+            }
+
+            const today = new Date().toISOString().split("T")[0];
+
+            // 4. 이벤트별 처리 분기
+            // 4.1 Issue 이벤트 처리
+            if (!isPR) {
+              if (action === "opened" || action === "reopened") {
+                if (pageId) {
+                  // 기존 노션 카드가 지정된 경우: [시작 전] -> [진행 중] 전이
+                  console.log(`기존 노션 카드(${pageId})를 [진행 중]으로 전이합니다.`);
+                  let existingAssignees = [];
+                  try {
+                    const getRes = await sendNotionRequest(`/v1/pages/${pageId}`, "GET");
+                    existingAssignees = getRes.body?.properties?.["담당자"]?.people || [];
+                  } catch (e) {
+                    console.log(`기존 카드 조회 생략: ${e.message}`);
+                  }
+
+                  const patchProps = {
+                    "상태": { status: { name: "진행 중" } },
+                    "내용": { title: [{ type: "text", text: { content: cleanTitle } }] },
+                    "기간": { date: { start: today } }
+                  };
+                  // 이미 담당자가 지정되어 있으면 보존, 비어있을 때만 스코프 기반 자동 할당
+                  if (existingAssignees.length === 0 && matchedAssigneeId) {
+                    patchProps["담당자"] = { people: [{ id: matchedAssigneeId }] };
+                  }
+                  await sendNotionRequest(`/v1/pages/${pageId}`, "PATCH", { properties: patchProps });
+                  console.log("노션 카드 [진행 중] 전이 완료");
+                } else {
+                  // 노션 카드가 없는 경우: 신규 [진행 중] 카드 자동 발급 (안전망)
+                  console.log(`노션 링크가 없어 [진행 중] 카드를 신규 자동 발급합니다.`);
+                  const newProps = {
+                    "내용": { title: [{ type: "text", text: { content: cleanTitle } }] },
+                    "상태": { status: { name: "진행 중" } },
+                    "기간": { date: { start: today } }
+                  };
+                  if (matchedAssigneeId) {
+                    newProps["담당자"] = { people: [{ id: matchedAssigneeId }] };
+                  }
+                  const createRes = await sendNotionRequest(`/v1/pages`, "POST", {
+                    parent: { database_id: dbId },
+                    properties: newProps
+                  });
+                  const newPageId = createRes.body?.id?.replace(/-/g, "");
+                  const newUrl = `https://notion.so/${newPageId}`;
+                  console.log(`신규 노션 카드 생성 성공: ${newUrl}`);
+
+                  // GitHub Issue에 노션 카드 링크 코멘트 자동 등록
+                  try {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: item.number,
+                      body: `🛡️ **CloudShield SecOps 파이프라인**: 노션 [프로젝트 일정]에 [신규 티켓](${newUrl})이 자동 생성되었습니다.`
+                    });
+                  } catch (cErr) {
+                    console.log(`코멘트 등록 생략: ${cErr.message}`);
+                  }
+                }
+              }
+              return;
+            }
+
+            // 4.2 PR 이벤트 처리
+            if (!pageId) {
               console.log("PR 본문에서 Notion Task 링크를 찾을 수 없습니다.");
               return;
             }
 
-            let pageId = match[1] || match[2];
-            pageId = pageId.replace(/-/g, "");
-
-            // 2. 전이할 대상 상태(Status) 결정
             let targetStatus = "";
             if (action === "opened" || action === "reopened") {
-              targetStatus = "In Review";
+              targetStatus = "검토 중";
             } else if (action === "closed" && isMerged) {
-              targetStatus = "Done";
+              targetStatus = "완료";
             } else {
-              console.log("동기화 대상 이벤트가 아닙니다 (action: " + action + ", merged: " + isMerged + ")");
+              console.log(`동기화 대상 이벤트가 아닙니다 (action: ${action}, merged: ${isMerged})`);
               return;
             }
 
-            console.log(`Notion Page ID [${pageId}] 상태를 [${targetStatus}] 로 업데이트합니다.`);
+            console.log(`Notion Page ID [${pageId}] 상태를 [${targetStatus}] 로 전이합니다.`);
 
-            // 3. Notion API PATCH 호출
-            const https = require("https");
-            const data = JSON.stringify({
-              properties: {
-                Status: {
-                  status: {
-                    name: targetStatus
-                  }
-                }
-              }
-            });
+            // 기존 카드 메타데이터 조회
+            let existingStart = null;
+            let existingAssignees = [];
+            try {
+              const getRes = await sendNotionRequest(`/v1/pages/${pageId}`, "GET");
+              existingStart = getRes.body?.properties?.["기간"]?.date?.start || null;
+              existingAssignees = getRes.body?.properties?.["담당자"]?.people || [];
+            } catch (err) {
+              console.log(`기존 카드 조회 생략: ${err.message}`);
+            }
 
-            const options = {
-              hostname: "api.notion.com",
-              port: 443,
-              path: `/v1/pages/${pageId}`,
-              method: "PATCH",
-              headers: {
-                "Authorization": `Bearer ${process.env.NOTION_API_KEY}`,
-                "Notion-Version": "2022-06-28",
-                "Content-Type": "application/json",
-                "Content-Length": Buffer.byteLength(data)
-              }
+            const prCreatedAt = (item.created_at || "").split("T")[0] || today;
+            const startDate = existingStart || prCreatedAt;
+
+            const extendedProps = {
+              "상태": { status: { name: targetStatus } },
+              "내용": { title: [{ type: "text", text: { content: cleanTitle } }] },
+              "PR": { url: item.html_url }
             };
 
-            const req = https.request(options, (res) => {
-              let resBody = "";
-              res.on("data", (chunk) => resBody += chunk);
-              res.on("end", () => {
-                if (res.statusCode >= 200 && res.statusCode < 300) {
-                  console.log(`성공적으로 Notion 상태를 업데이트했습니다: ${res.statusCode}`);
-                } else {
-                  console.error(`Notion API 응답 오류 (${res.statusCode}): ${resBody}`);
-                }
+            // 담당자가 비어있을 때만 스코프 기반 자동 할당 (기존 담당자 우선 보존)
+            if (existingAssignees.length === 0 && matchedAssigneeId) {
+              extendedProps["담당자"] = { people: [{ id: matchedAssigneeId }] };
+            }
+
+            if (action === "opened" || action === "reopened") {
+              extendedProps["기간"] = { date: { start: startDate } };
+            } else if (isMerged) {
+              extendedProps["Commit"] = {
+                rich_text: [{ type: "text", text: { content: item.merge_commit_sha || context.sha || "" } }]
+              };
+              extendedProps["기간"] = { date: { start: startDate, end: today } };
+            }
+
+            // 노션 페이지 속성 갱신
+            try {
+              await sendNotionRequest(`/v1/pages/${pageId}`, "PATCH", { properties: extendedProps });
+              console.log("노션 카드 메타데이터(상태, 내용, PR, Commit, 기간, 담당자) 갱신 완료");
+            } catch (err) {
+              console.log(`확장 속성 갱신 실패, 상태 단독 시도: ${err.message}`);
+              await sendNotionRequest(`/v1/pages/${pageId}`, "PATCH", {
+                properties: { "상태": { status: { name: targetStatus } } }
               });
-            });
+            }
 
-            req.on("error", (e) => {
-              console.error(`Notion API 요청 실패: ${e.message}`);
-            });
+            // PR 머지 시 "기술 원리 3줄 요약" 블록 추가
+            if (isMerged) {
+              const summaryRegex = /##\s*기술\s*원리\s*(?:3줄)?\s*요약[\r\n]+([\s\S]*?)(?=(?:[\r\n]+##)|(?:[\r\n]+---)|(?:[\r\n]+<details>)|$)/i;
+              const summaryMatch = body.match(summaryRegex);
+              const techSummary = summaryMatch ? summaryMatch[1].trim() : null;
 
-            req.write(data);
-            req.end();
+              if (techSummary) {
+                console.log("PR 본문에서 기술 원리 요약을 감지하여 Notion 카드 본문에 추가합니다.");
+                const blockPayload = {
+                  children: [
+                    {
+                      object: "block",
+                      type: "callout",
+                      callout: {
+                        rich_text: [
+                          {
+                            type: "text",
+                            text: {
+                              content: `[PR #${item.number} 머지 완료] 기술 원리 요약\n\n${techSummary}\n\n- PR: ${item.html_url}\n- Commit: ${item.merge_commit_sha || context.sha}`
+                            }
+                          }
+                        ],
+                        icon: { type: "emoji", emoji: "🛡️" }
+                      }
+                    }
+                  ]
+                };
+
+                try {
+                  await sendNotionRequest(`/v1/blocks/${pageId}/children`, "PATCH", blockPayload);
+                  console.log("노션 카드 본문에 기술 원리 요약 Callout 블록 첨부 성공");
+                } catch (err) {
+                  console.error(`기술 원리 블록 첨부 실패: ${err.message}`);
+                }
+              }
+            }

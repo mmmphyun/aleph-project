@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-20260904-003",
+  "attack_type": "Web L7 Brute Force",
+  "mitre_id": "T1110.001",
+  "risk_level": "MEDIUM",
+  "source_ip": "198.51.100.77",
+  "target_identifier": "i-0123456789abcdef0",
+  "target_accounts": [
+    "webadmin"
+  ],
+  "summary_ko": "출발지 IP 198.51.100.77로부터 웹 엔드포인트에 비정상적인 반복 인증 실패가 발생하여 WAF 계층 단독 차단을 요청합니다.",
+  "action_required": "BLOCK_WAF",
+  "recommendations": [
+    "AWS WAF IPSet에 198.51.100.77/32 등록 및 인바운드 차단",
+    "웹 로그인 엔드포인트에 Rate Limiting 규칙 추가 적용"
+  ]
+}
