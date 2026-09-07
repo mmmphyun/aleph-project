@@ -19,51 +19,57 @@ Issue 확인 또는 생성
 ```bash
 git switch main
 git pull --ff-only origin main
-git switch -c feat/event-normalizer
+git switch -c feat/cloud-b-slack-card
 ```
 
-브랜치 이름은 [브랜치 전략](docs/branch-strategy.md)을 따릅니다.
+브랜치 이름은 GitHub Flow 및 직무 스코프 규격을 따릅니다:
+- `feat/<직무>-<기능명>` (예: `feat/security-rules-engine`, `feat/cloud-a-harness`)
+- `fix/<이슈명>`
+- `chore/<작업명>`
 
 ## 로컬 환경 준비
 
 Python 3.12 이상 3.15 미만 환경을 사용합니다.
 
-팀원 온보딩 시에는 [LLM 로컬 개발 환경 세팅 프롬프트](docs/llm/로컬_개발환경_세팅_프롬프트.md)를 먼저 사용합니다. 프롬프트는 저장소를 확인하고 각자의 환경에 맞는 명령을 안내하지만, 비밀정보를 읽거나 AWS 리소스를 변경하지 않습니다.
-
-```bash
-python -m venv .venv
-```
-
-Windows PowerShell:
+팀원 온보딩 및 개발 에이전트 세팅 시에는 [팀원 온보딩 퀵스타트 가이드](docs/onboarding_guide.md) 및 [에이전트 세션 스타터](docs/agent_session_starter.md)를 먼저 확인합니다.
 
 ```powershell
+# 1. uv 가상환경 동기화 (권장)
+uv sync
+
+# 또는 pip 개발 의존성 설치
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-pre-commit install
 ```
 
-검사 실행:
+로컬 검사 실행:
 
-```bash
-ruff check .
-ruff format --check .
-pytest
+```powershell
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest
 ```
 
-## 커밋
+## 커밋 메시지 컨벤션
 
-커밋은 하나의 작은 작업만 포함합니다.
+커밋은 하나의 원자적 작업 단위만 포함합니다.
 
 ```text
-<영문 type>: <한국어 설명>
+<type>(<scope>): <한글 요약>
 ```
+
+- **Type**: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`, `style`, `perf`, `ci`
+- **Scope**: 담당 직무 및 핵심 도메인 (`contract`, `cloud-a`, `cloud-b`, `security`, `network`, `infra`)
+- **규칙**: 한글 요약 끝에 마침표를 찍지 않습니다.
 
 예시:
 
 ```text
-feat: 비정상 로그인 이벤트 파서 추가
-fix: 만료된 임시 권한 회수 오류 수정
-docs: 이벤트 형식 문서화
+feat(security): SSH 무차별 대입 1차 시그니처 룰 구현
+feat(cloud-b): CloudWatch 구독 필터 연동 Slack 알림 모듈 작성
+chore(cloud-a): moto 기반 가상 AWS 리소스 픽스처 추가
+docs(network): Hydra 공격 시뮬레이션 패킷 분석 보고서 초안 작성
 ```
 
 ## Pull Request

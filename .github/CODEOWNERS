@@ -12,11 +12,11 @@
 /pyproject.toml     @mmmphyun
 
 # [클라우드 B 담당 영역]
-/src/collector/     @mmmphyun
-/src/reporter/      @mmmphyun
+/src/collector/     @wkdtlgns99-cell
+/src/reporter/      @wkdtlgns99-cell
 
 # [보안 담당 영역]
-/src/detection/     @mmmphyun
+/src/detection/     @gkacksdnjs22-stack
 
 # [네트워크 담당 영역]
-/network/           @mmmphyun
+/network/           @RockCandy444
