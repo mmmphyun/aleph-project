@@ -1,0 +1,13 @@
+2026-09-04T15:00:01.102345+00:00 target-ec2 sshd[21001]: Accepted publickey for ubuntu from 192.0.2.10 port 52140 ssh2: RSA SHA256:abc123def456
+2026-09-04T15:00:01.125678+00:00 target-ec2 systemd-logind[789]: New session 42 of user ubuntu.
+2026-09-04T15:00:10.334120+00:00 target-ec2 sudo[21050]: ubuntu : TTY=pts/0 ; PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/apt update
+Sep 04 15:01:05 target-ec2 sshd[21100]: Failed password for invalid user admin from 203.0.113.195 port 41200 ssh2
+Sep 04 15:01:06 target-ec2 sshd[21101]: Failed password for invalid user root from 203.0.113.195 port 41201 ssh2
+Sep 04 15:01:07 target-ec2 sshd[21102]: Failed password for invalid user service from 203.0.113.195 port 41202 ssh2
+Sep 04 15:01:08 target-ec2 sshd[21103]: Failed password for guest from 203.0.113.195 port 41203 ssh2
+Sep 04 15:01:09 target-ec2 sshd[21104]: Failed password for operator from 203.0.113.195 port 41204 ssh2
+2026-09-04T15:01:10.512340+00:00 target-ec2 sshd[21105]: Connection closed by authenticating user operator 203.0.113.195 port 41204 [preauth]
+2026-09-04T15:02:00.890123+00:00 target-ec2 sshd[21200]: Failed password for devops from 198.51.100.99 port 53100 ssh2
+2026-09-04T15:02:05.123456+00:00 target-ec2 sshd[21201]: Accepted password for devops from 198.51.100.99 port 53100 ssh2
+2026-09-04T15:03:00.678901+00:00 target-ec2 sshd[21001]: Received disconnect from 192.0.2.10 port 52140:11: disconnected by user
+2026-09-04T15:03:00.680120+00:00 target-ec2 sshd[21001]: Disconnected from user ubuntu 192.0.2.10 port 52140

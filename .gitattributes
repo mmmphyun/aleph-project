@@ -1,0 +1,6 @@
+# CloudShield Git 속성 및 줄바꿈 정규화 규칙
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# Linux shell scripts must always use LF
+*.sh text eol=lf

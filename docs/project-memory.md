@@ -17,17 +17,17 @@
 
 ## 2. 팀 구성 및 R&R 경계선 (Non-infringement Principle)
 
-전공자가 고난이도를 주도하되, **비전공자 팀원 3인의 취업 포트폴리오 핵심 지분을 절대 침범하지 않는다.**
+플랫폼 엔지니어링을 주도하되, **각 직무 담당자의 고유 포트폴리오 핵심 지분을 상호 침범하지 않는다.**
 
 ```mermaid
 flowchart TD
-    subgraph S1 ["비전공자 팀원 고유 도메인 (면접 핵심 무기: 침범 금지)"]
+    subgraph S1 ["도메인별 고유 담당 영역 (직무 핵심 역량: 침범 금지)"]
         NET["네트워크: 모의 공격 재현 & L4 패킷 플래그 분석 보고서"]
         SEC["보안: rules.py 1차 룰 & Pydantic LLM 프롬프트"]
         CLB["클라우드 B: CW Agent 중앙 수집 & slack_notifier.py"]
     end
 
-    subgraph S2 ["전공자 클라우드 A 독점 플랫폼 영역 (엔지니어링 깊이 확보)"]
+    subgraph S2 ["클라우드 A(플랫폼) 영역 (인프라 및 런타임 오케스트레이션)"]
         TF["1. Terraform IaC 모듈화 & Trivy 보안 검증"]
         CICD["2. GitHub OIDC 기반 무인증 CI/CD 파이프라인"]
         ORCH["3. Lambda 오케스트레이터 & Boto3 원자적 차단 엔진"]
@@ -46,22 +46,22 @@ flowchart TD
 ```
 
 ### [직무별 단독 포트폴리오 자산]
-1. **네트워크 담당 (비전공자)**:
+1. **네트워크 담당**:
    * Hydra/Nmap 기반 공격 시뮬레이션 환경 및 스크립트 작성.
    * `tcpdump` 패킷 캡처 및 Wireshark L4 TCP 플래그/핸드셰이크 분석 보고서.
    * VPC Flow Logs CloudWatch Insights 쿼리 설계.
    * 침해 인스턴스 격리 Security Group(인/아웃바운드) 규칙 명세.
-2. **클라우드 B 담당 (비전공자)**:
+2. **클라우드 B 담당**:
    * 타깃 인스턴스(Ubuntu/Nginx) 환경 구축.
    * `amazon-cloudwatch-agent.json` 설정 및 OS/Web 로그 중앙 인제스트 파이프라인.
    * CloudWatch Logs 구독 필터(Subscription Filter) 패턴 정의.
    * Slack Incoming Webhook + Block Kit 카드 전송 모듈(`slack_notifier.py`).
-3. **보안 담당 (비전공자)**:
+3. **보안 담당**:
    * 정규표현식 기반 1차 시그니처 룰 엔진(`rules.py`).
    * MITRE ATT&CK TTP(T1110 등) 1:1 매핑 테이블 정의.
    * Pydantic 기반 정형 침해사고 스키마 설계.
    * LLM 프롬프트 Few-shot 엔지니어링 및 오탐/정탐 검증 테스트.
-4. **클라우드 A 담당 (전공자 / 테크 리드 & 플랫폼)**:
+4. **클라우드 A 담당 (테크 리드 & 플랫폼 엔지니어)**:
    * 팀원 모듈이 단 한 줄 수정 없이 플러그인처럼 결합되는 **Lambda 오케스트레이터**.
    * Boto3 기반 다중 계층(L4 SG 격리 + L7 WAF IPSet + Identity IAM 세션 취소) 원자적 차단 엔진(`remediation.py`).
    * 전체 AWS 인프라 Terraform IaC 모듈화.
@@ -73,7 +73,7 @@ flowchart TD
 ## 3. 핵심 아키텍처 결정 사항 (ADR)
 
 1. **단일 AWS 계정 내 VPC 격리 채택**:
-   * 멀티 계정 간 AssumeRole/조직 구성은 비전공자 테스트 병목을 유발하므로 배제하고, 단일 계정 내 Public/Private Subnet 및 Bastion 구조로 명확화.
+   * 멀티 계정 간 AssumeRole/조직 구성은 개발 및 테스트 병목을 유발하므로 배제하고, 단일 계정 내 Public/Private Subnet 및 Bastion 구조로 명확화.
 2. **다중 계층 원자적 차단(Remediation) 아키텍처**:
    * L4 SSH 공격과 L7 WAF 간의 프로토콜 불일치 모순을 해결하기 위해:
      * L4 차단: EC2 Quarantine SG 단독 교체.

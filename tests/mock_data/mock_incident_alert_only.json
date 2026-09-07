@@ -1,0 +1,15 @@
+{
+  "incident_id": "INC-20260904-004",
+  "attack_type": "Network Service Discovery",
+  "mitre_id": "T1046",
+  "risk_level": "LOW",
+  "source_ip": "192.0.2.200",
+  "target_identifier": "i-0abcd1234ef567890",
+  "target_accounts": [],
+  "summary_ko": "출발지 IP 192.0.2.200으로부터 외부 포트 정찰 징후가 탐지되었으나 차단 임계치 미만으로 상황 전파 및 모니터링을 권고합니다.",
+  "action_required": "ALERT_ONLY",
+  "recommendations": [
+    "VPC Flow Logs에서 192.0.2.200 트래픽 추적 모니터링",
+    "추가적인 L4/L7 공격 징후 포착 시 즉시 WAF 차단 전환"
+  ]
+}

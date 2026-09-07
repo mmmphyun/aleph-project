@@ -1,0 +1,22 @@
+{
+  "incident_id": "INC-20260904-002",
+  "attack_type": "Password Spraying",
+  "mitre_id": "T1110.003",
+  "risk_level": "HIGH",
+  "source_ip": "203.0.113.195",
+  "target_identifier": "i-0abcd1234ef567890",
+  "target_accounts": [
+    "admin",
+    "root",
+    "service",
+    "guest",
+    "operator"
+  ],
+  "summary_ko": "출발지 IP 203.0.113.195에서 admin, root, service 등 다수의 서로 다른 계정을 대상으로 패스워드 스프레잉 공격이 감지되었습니다.",
+  "action_required": "BLOCK_AND_QUARANTINE",
+  "recommendations": [
+    "AWS WAF IPSet에 203.0.113.195/32 등록 및 인바운드 차단",
+    "침해 타깃 인스턴스(i-0abcd1234ef567890)에 Quarantine 보안 그룹 단독 교체",
+    "내부 서비스 계정 임시 비밀번호 일괄 폐기 및 다단계 인증(MFA) 강제"
+  ]
+}

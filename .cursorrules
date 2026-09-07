@@ -11,7 +11,7 @@ Always strictly follow the project constitution in `AGENTS.md` and context in `d
    - `cloud-a`: Platform lead (orchestration, infra, remediation)
    - If `.agent-role` is missing and the user prompt doesn't specify a role, ask the user their role first.
 2. Explain key concepts and architectural rationale in 2-3 lines before writing code to support interview preparation.
-3. NEVER modify `src/contracts/*.py`, `.github/workflows/*.yml`, or `pyproject.toml` without explicit instructions from Cloud A lead.
+3. NEVER modify `src/contracts/*.py`, `tests/test_contracts.py`, `tests/mock_data/**`, `.github/workflows/*.yml`, or `pyproject.toml` without explicit instructions from Cloud A lead.
 
 ## Verification & Commit Convention
 - Local check before commit: `powershell .\scripts\check.ps1`
