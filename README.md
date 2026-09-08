@@ -110,15 +110,24 @@ CloudShield는 실무에서 빈번히 발생하는 2대 대표 침해 공격에 
 
 팀원 전원이 AI 코딩 에이전트를 활용하여 개발을 수행함에 따라, **에이전트의 컨텍스트 왜곡 및 임의 스키마 변경을 방지하는 엔터프라이즈급 개발 하네스**를 사전 구축하여 운영합니다:
 
-```text
-[로컬 에이전트 거버넌스]                     [원격 GitHub Actions 거버넌스]
-┌─────────────────────────────────┐       ┌─────────────────────────────────┐
-│ 1. 로컬 역할 잠금 (.agent-role)   │       │ 1. CI (Ruff / Pytest / Contract)│
-│    - 본인 직무 외 디렉토리 수정 차단 │ ──Push─>│    - Pydantic 스키마 무단 변경 차단│
-│ 2. 세션 스타터 (get_my_tasks.js) │       │ 2. PR Title Lint (Conventional) │
-│    - 노션 [시작 전] 티켓 자동 바인딩│       │ 3. 자동 라벨러 (labeler.yml)    │
-│ 3. Moto 가상 AWS 로컬 테스트베드  │       │ 4. 노션 칸반 상태 원자적 자동 동기화│
-└─────────────────────────────────┘       └─────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Local ["로컬 에이전트 거버넌스"]
+        direction TB
+        L1["1. 역할 잠금 (.agent-role)<br>- 직무 외 디렉토리 수정 차단"]
+        L2["2. 세션 스타터 (get_my_tasks.js)<br>- 노션 [시작 전] 티켓 자동 바인딩"]
+        L3["3. Moto 로컬 가상 AWS 테스트베드<br>- 격리 인프라 단위 검증"]
+    end
+
+    subgraph Remote ["원격 GitHub Actions 거버넌스"]
+        direction TB
+        R1["1. CI (Ruff / Pytest / Contract Drift)<br>- 스키마 무단 변경 즉시 차단"]
+        R2["2. PR Title Lint (Conventional Commits)<br>- 필수 직무 스코프 규격 검사"]
+        R3["3. 경로 기반 자동 라벨러 (labeler.yml)<br>- role:*, area:*, type:* 자동 부착"]
+        R4["4. 노션 칸반 수명주기 자동 동기화<br>- [진행 중] → [검토 중] → [완료]"]
+    end
+
+    Local ==>|Push / PR| Remote
 ```
 
 * **Contract-First 불변 모델 (`src/contracts/`)**:
