@@ -10,32 +10,121 @@ Why:
 
 Constraints:
     - ReDoS(Catastrophic Backtracking) 방어를 위해 정규식 패턴은 단순 선형 탐색을 유지함.
+      역참조(Backreference) 및 중첩 반복 수량자(Nested Quantifier) 사용 금지.
     - 입력 로그는 SyslogAuthEvent 리스트 형태여야 함.
+    - 룰명(rule_name)은 Lambda 오케스트레이터 및 Slack 알림 카드의 식별 키로 사용되므로
+      SCREAMING_SNAKE_CASE 컨벤션을 반드시 준수함 (예: SSH_BRUTE_FORCE).
+
+MITRE ATT&CK 매핑:
+    - SSH_BRUTE_FORCE        → T1110.001 (Brute Force: Password Guessing)
+    - SSH_PASSWORD_SPRAYING  → T1110.003 (Brute Force: Password Spraying)
+    - UNAUTHORIZED_ACCESS    → T1078 (Valid Accounts: Default Accounts)
 """
 
 from __future__ import annotations
+
+import re
+from collections import defaultdict
 
 from contracts.events import SyslogAuthEvent
 
 # 타입 호환성 및 개발 편의성을 위한 별칭 제공
 SyslogEvent = SyslogAuthEvent
 
+# ---------------------------------------------------------------------------
+# 탐지 임계치 상수
+# ---------------------------------------------------------------------------
+
+# 단일 계정 대상 실패 횟수 임계치 (T1110.001 Brute Force: Password Guessing)
+# Why: Hydra 기본 설정 및 실제 침해 사례 분석 결과, 5회 이상을 자동화 공격으로 판정.
+#      1~4회는 정상 관리자 오타 범주로 허용하여 오탐을 억제함.
+BRUTE_FORCE_THRESHOLD: int = 5
+
+# 다중 계정 대상 고유 계정 수 임계치 (T1110.003 Password Spraying)
+# Why: 동일 IP에서 2개 이상의 계정을 시도하면 계정 목록 보유 공격자로 판정.
+#      스프레잉은 단일 계정 실패 횟수와 무관하게 계정 다양성으로 판별함.
+PASSWORD_SPRAYING_THRESHOLD: int = 2
+
+# DENIED/UNAUTHORIZED 키워드 반복 임계치 (비인가 권한 접근)
+# Why: 정상 접근 권한 오류는 1회에 그치지만, 반복은 권한 우회 시도로 간주.
+UNAUTHORIZED_THRESHOLD: int = 3
+
+# ---------------------------------------------------------------------------
+# 비인가 접근 키워드 정규식
+# ---------------------------------------------------------------------------
+# Why: 선택적 대안(|) 패턴을 단일 컴파일로 처리하여 루프 내 재컴파일 비용 제거.
+# Constraints: 단순 OR 연결만 사용하여 선형 O(n) 탐색을 보장하고 ReDoS를 방어함.
+_UNAUTHORIZED_PATTERN: re.Pattern[str] = re.compile(r"DENIED|UNAUTHORIZED", re.IGNORECASE)
+
 
 def evaluate_rules(logs: list[SyslogAuthEvent]) -> tuple[bool, str | None]:
-    """수집된 Syslog 인증 이벤트 목록을 분석하여 위협 여부 및 탐지 룰 식별.
+    """Syslog SSH 인증 실패 이벤트 리스트에 1차 시그니처 룰을 적용한다.
 
-    Why:
-        동일 출발지 IP 기반의 단시간 실패 임계치(단일 계정 5회 이상, 다중 계정 2개 이상)를
-        평가하여 신속한 인프라 선제 차단(HIGH) 여부를 결정함.
+    적용 룰 (우선순위 순):
+        1. SSH_PASSWORD_SPRAYING : 동일 IP에서 2개 이상 고유 계정 실패.
+        2. SSH_BRUTE_FORCE       : 동일 IP에서 동일 계정 5회 이상 실패.
+        3. UNAUTHORIZED_ACCESS   : DENIED/UNAUTHORIZED 키워드 3회 이상.
 
-    Constraints:
-        - logs: 비어 있지 않은 SyslogAuthEvent(또는 SyslogEvent) 인스턴스 리스트.
-        - 반환값: (위협_탐지_여부: bool, 매칭된_규칙명_또는_None: str | None).
+    Args:
+        logs: SyslogAuthEvent 파싱 완료 이벤트 리스트.
+
+    Returns:
+        (탐지 여부: bool, 룰명: str | None) 튜플.
+        탐지 없을 경우 (False, None) 반환.
 
     Side-effects / Edge-cases:
-        - 빈 리스트 인입 시 (False, None)을 반환해야 함.
-        - 정상 로그인 실패(1~2회 단순 오타)는 오탐(False Positive) 방지를 위해 탐지하지 않음.
-        - 단일 IP에서 서로 다른 사용자 계정으로 실패가 누적될 경우
-          Password Spraying(T1110.003)으로 분류.
+        - 빈 리스트 입력 시 즉시 (False, None) 반환.
+        - 동일 이벤트가 복수 룰에 해당하는 경우 우선순위가 높은 룰 하나만 반환.
+          (중복 알림으로 인한 Slack 노이즈 방지)
     """
-    raise NotImplementedError("보안 담당자 구현 영역: 시그니처 기반 1차 룰 엔진")
+    if not logs:
+        return False, None
+
+    # IP별 집계 테이블 초기화
+    # ip_accounts: IP → 고유 계정명 집합 (패스워드 스프레잉 판별용)
+    # ip_fail_counts: IP → 계정별 실패 횟수 (브루트포스 판별용)
+    # ip_unauthorized_counts: IP → 비인가 키워드 등장 횟수
+    ip_accounts: dict[str, set[str]] = defaultdict(set)
+    ip_fail_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    ip_unauthorized_counts: dict[str, int] = defaultdict(int)
+
+    for event in logs:
+        ip = event.source_ip
+        username = event.username
+
+        ip_accounts[ip].add(username)
+        ip_fail_counts[ip][username] += 1
+
+        # DENIED/UNAUTHORIZED 키워드 등장 여부 검사
+        # Constraints: 미리 컴파일된 패턴을 재사용하여 루프 내 오버헤드 제거
+        if _UNAUTHORIZED_PATTERN.search(event.raw_message):
+            ip_unauthorized_counts[ip] += 1
+
+    for ip in ip_accounts:
+        accounts = ip_accounts[ip]
+        account_fail_map = ip_fail_counts[ip]
+
+        # ----------------------------------------------------------------
+        # 룰 1: SSH_PASSWORD_SPRAYING (T1110.003)
+        # Why: 스프레잉은 계정 잠금 정책을 우회하기 위해 계정당 실패 횟수를
+        #      낮게 유지하면서 다수 계정을 탐색하므로, 계정 다양성을 우선 판별함.
+        # ----------------------------------------------------------------
+        if len(accounts) >= PASSWORD_SPRAYING_THRESHOLD:
+            return True, "SSH_PASSWORD_SPRAYING"
+
+        # ----------------------------------------------------------------
+        # 룰 2: SSH_BRUTE_FORCE (T1110.001)
+        # Why: 단일 계정에 집중하여 임계치 이상 반복 실패 시 자동화 툴 사용 판정.
+        # ----------------------------------------------------------------
+        for count in account_fail_map.values():
+            if count >= BRUTE_FORCE_THRESHOLD:
+                return True, "SSH_BRUTE_FORCE"
+
+        # ----------------------------------------------------------------
+        # 룰 3: UNAUTHORIZED_ACCESS (T1078)
+        # Why: 권한 없는 계정/리소스 접근 반복은 내부자 위협 또는 세션 탈취 징후.
+        # ----------------------------------------------------------------
+        if ip_unauthorized_counts.get(ip, 0) >= UNAUTHORIZED_THRESHOLD:
+            return True, "UNAUTHORIZED_ACCESS"
+
+    return False, None
