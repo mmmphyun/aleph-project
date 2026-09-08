@@ -47,36 +47,53 @@ uv sync
 
 각 담당자는 본인에게 할당된 작업 디렉토리 내에서 개발을 진행합니다. 작업 착수 시 사용하는 코딩 에이전트의 채팅창에 아래 **표준 프롬프트**를 복사하여 전달합니다.
 
-### 3.1 [보안 담당자]
-* **작업 디렉토리**: `src/detection/`, `tests/unit/test_rules.py`, `tests/unit/test_llm_analyzer.py`
+### 3.1 [보안 담당자 - 1단계 일감 프롬프트]
+* **작업 티켓**: `[보안] mock_auth.log 공격자 IP 및 계정 추출 정규식 작성`
+* **작업 디렉토리**: `src/detection/`, `tests/unit/test_rules.py`
 * **표준 프롬프트**:
   ```text
   나는 CloudShield 프로젝트의 [보안] 담당자야.
-  AGENTS.md와 docs/05_security_workflow.md를 확인해줘.
-  tests/mock_data/mock_auth.log를 기반으로 SSH 무차별 대입 공격을 탐지하는 
-  1차 시그니처 정규식 룰(src/detection/rules.py)을 구현하고, 
-  tests/unit/test_rules.py의 테스트를 통과시키는 코드를 작성해줘.
+  AGENTS.md를 확인하고, 이번 작업 범위는 1단계 마이크로 티켓이야:
+  
+  [목표]: tests/mock_data/mock_auth.log 원문에서 공격자 IP와 대상 계정을 추출하는 
+  1차 정규식 파싱 함수(src/detection/rules.py)를 구현하고 단위 테스트를 작성해줘.
+  
+  주의:
+  1. ReDoS(Catastrophic Backtracking)를 방어하는 안전한 정규식으로 설계해줘.
+  2. 다음 단계인 '실패 카운팅'이나 'IncidentReport 연동'은 지금 구현하지 마.
+  3. 코딩 전 핵심 정규식 패턴과 설계 원리를 2~3줄로 먼저 설명해줘.
   ```
 
-### 3.2 [클라우드 B 담당자]
-* **작업 디렉토리**: `src/collector/`, `src/reporter/`, `tests/unit/test_reporter.py`
+### 3.2 [클라우드 B 담당자 - 1단계 일감 프롬프트]
+* **작업 티켓**: `[클라우드 B] amazon-cloudwatch-agent.json 로그 수집 설정 및 JSON 검증`
+* **작업 디렉토리**: `src/collector/`
 * **표준 프롬프트**:
   ```text
   나는 CloudShield 프로젝트의 [클라우드 B] 담당자야.
-  AGENTS.md와 docs/04_cloud_b_workflow.md를 확인해줘.
-  tests/mock_data/mock_incident.json 데이터를 입력받아 
-  Slack Block Kit 카드 메시지를 구성하고 발송하는 모듈(src/reporter/slack_notifier.py)을 구현하고,
-  tests/unit/test_reporter.py의 단위 테스트를 작성해줘.
+  AGENTS.md를 확인하고, 이번 작업 범위는 1단계 마이크로 티켓이야:
+  
+  [목표]: 타깃 EC2의 /var/log/auth.log를 CloudWatch Logs로 전송하기 위한
+  amazon-cloudwatch-agent.json 설정 명세서를 src/collector/ 디렉토리에 작성해줘.
+  
+  주의:
+  1. JSON 문법 유효성과 로그 그룹명(/cloudshield/target/auth-log)을 준수해줘.
+  2. 코딩 전 CloudWatch Agent 수집 주기 및 버퍼 설정 원리를 2~3줄로 먼저 설명해줘.
   ```
 
-### 3.3 [네트워크 담당자]
-* **작업 디렉토리**: `network/`, `docs/roles/network/`
+### 3.3 [네트워크 담당자 - 1단계 일감 프롬프트]
+* **작업 티켓**: `[네트워크] SSH 단일 연결 시도 셸 스크립트 및 안전 플래그(set -euo) 작성`
+* **작업 디렉토리**: `network/`
 * **표준 프롬프트**:
   ```text
   나는 CloudShield 프로젝트의 [네트워크] 담당자야.
-  AGENTS.md와 docs/02_network_workflow.md를 확인해줘.
-  타깃 서버 대상 SSH Brute Force 공격 시뮬레이션 스크립트(network/attack_simulation.sh)를 
-  안전성 플래그(set -euo pipefail)를 적용해 작성해줘.
+  AGENTS.md를 확인하고, 이번 작업 범위는 1단계 마이크로 티켓이야:
+  
+  [목표]: 타깃 서버 대상 SSH 연결 시도를 수행하는 기초 셸 스크립트(network/attack_simulation.sh)를 작성해줘.
+  
+  주의:
+  1. 스크립트 상단에 안전성 플래그(set -euo pipefail)를 반드시 적용해줘.
+  2. 다음 단계인 'Hydra 무차별 대입'이나 'tcpdump 패킷 캡처'는 지금 구현하지 마.
+  3. 작성 전 set -euo pipefail 플래그를 쓰는 이유를 2~3줄로 먼저 설명해줘.
   ```
 
 ---
