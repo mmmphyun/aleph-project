@@ -39,7 +39,7 @@ flowchart TD
 - **산출물**:
   - 재사용 가능한 Terraform 모듈 코드베이스 (`*.tf`).
 
-### 2단계: Boto3 다중 계층 원자적 차단 엔진 개발
+### 2단계: Boto3 다중 계층 차단 엔진 개발
 - **내용**:
   - 보안 담당자의 분석 결과(`IncidentReport`)를 인자로 받아 실제 AWS 리소스를 변경하는 `remediation.py` 구현.
   - **L4 차단**: 침해 EC2의 기존 SG를 네트워크 담당자가 명세한 격리 보안 그룹으로 즉시 교체(`ec2.modify_instance_attribute`).

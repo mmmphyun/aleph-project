@@ -13,7 +13,7 @@ sequenceDiagram
     participant Rule as [보안] 1차 룰 탐지 엔진 (rules.py)
     participant LLM as [보안] LLM 구조화 분석기 (llm_analyzer.py)
     participant WAF as [클라우드 A] AWS WAF IPSet
-    participant EC2_API as [클라우드 A] EC2 API (Quarantine SG)
+    participant EC2_API as [클라우드 A] EC2 API (격리 SG)
     participant Slack as [클라우드 B] Slack Webhook
 
     %% 1. 침해 시뮬레이션 및 로깅
@@ -29,7 +29,7 @@ sequenceDiagram
     Rule-->>Lambda: 1차 분석 결과 (동일 IP 5회 실패 식별, HIGH 판정)
 
     %% 3. 즉각적인 선제 차단 (클라우드 A)
-    opt 위험도 HIGH인 경우 (골든타임 선제 차단)
+    opt 위험도 HIGH인 경우 (선제 차단 실행)
         Lambda->>WAF: 공격자 IP 즉시 차단 (boto3 update_ip_set)
         Lambda->>EC2_API: 타깃 인스턴스에 격리 보안 그룹 적용
     end
