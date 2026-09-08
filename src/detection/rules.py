@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from datetime import datetime
 
 from contracts.events import SyslogAuthEvent
 
@@ -49,21 +50,57 @@ PASSWORD_SPRAYING_THRESHOLD: int = 2
 # Why: 정상 접근 권한 오류는 1회에 그치지만, 반복은 권한 우회 시도로 간주.
 UNAUTHORIZED_THRESHOLD: int = 3
 
+# 반복 실패 탐지 시간창(초)
+# Why: 서로 다른 날짜에 발생한 정상 로그인 오류를 한 배치로 수신했다는 이유만으로
+#      자동화 공격으로 오판하지 않도록, 공격의 시간적 밀집도를 필수 조건으로 둠.
+# Constraints: CloudWatch Subscription Filter의 전송 지연을 고려한 5분(300초) 고정 창.
+DETECTION_WINDOW_SECONDS: int = 5 * 60
+
 # ---------------------------------------------------------------------------
 # 비인가 접근 키워드 정규식
 # ---------------------------------------------------------------------------
 # Why: 선택적 대안(|) 패턴을 단일 컴파일로 처리하여 루프 내 재컴파일 비용 제거.
 # Constraints: 단순 OR 연결만 사용하여 선형 O(n) 탐색을 보장하고 ReDoS를 방어함.
-_UNAUTHORIZED_PATTERN: re.Pattern[str] = re.compile(r"DENIED|UNAUTHORIZED", re.IGNORECASE)
+_UNAUTHORIZED_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(?:permission|access)\s+denied\b|\b(?:not\s+authorized|authorization\s+failed|unauthorized\s+access)\b",
+    re.IGNORECASE,
+)
+
+
+def _timestamp_to_epoch_seconds(timestamp_str: str) -> float | None:
+    """계약의 Syslog/ISO 8601 시각을 비교 가능한 초 단위 값으로 정규화한다.
+
+    Syslog에는 연도가 없으므로 윤년 영향이 없는 기준 연도 2001을 사용한다. 이 값은
+    절대 시각이 아닌 동일 로그 배치 안의 시간 간격 판정에만 사용한다.
+    """
+    try:
+        if "T" in timestamp_str:
+            return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")).timestamp()
+        return datetime.strptime(f"2001 {timestamp_str}", "%Y %b %d %H:%M:%S").timestamp()
+    except ValueError:
+        # 계약 밖의 시각 포맷은 시간 기반 집계에서 제외해 오래된 이벤트의 오탐을 방지한다.
+        return None
+
+
+def _has_repeated_events_within_window(timestamps: list[float], threshold: int) -> bool:
+    """정렬된 시각 목록에 임계치 이상의 이벤트가 시간창 내 밀집했는지 판정한다."""
+    timestamps.sort()
+    left = 0
+    for right, timestamp in enumerate(timestamps):
+        while timestamp - timestamps[left] > DETECTION_WINDOW_SECONDS:
+            left += 1
+        if right - left + 1 >= threshold:
+            return True
+    return False
 
 
 def evaluate_rules(logs: list[SyslogAuthEvent]) -> tuple[bool, str | None]:
     """Syslog SSH 인증 실패 이벤트 리스트에 1차 시그니처 룰을 적용한다.
 
     적용 룰 (우선순위 순):
-        1. SSH_PASSWORD_SPRAYING : 동일 IP에서 2개 이상 고유 계정 실패.
-        2. SSH_BRUTE_FORCE       : 동일 IP에서 동일 계정 5회 이상 실패.
-        3. UNAUTHORIZED_ACCESS   : DENIED/UNAUTHORIZED 키워드 3회 이상.
+        1. SSH_BRUTE_FORCE       : 동일 IPㆍ계정에서 5분 내 5회 이상 실패.
+        2. SSH_PASSWORD_SPRAYING : 동일 IP에서 5분 내 2개 이상 고유 계정 실패.
+        3. UNAUTHORIZED_ACCESS   : 명시적 권한 거부 문구가 5분 내 3회 이상.
 
     Args:
         logs: SyslogAuthEvent 파싱 완료 이벤트 리스트.
@@ -80,51 +117,49 @@ def evaluate_rules(logs: list[SyslogAuthEvent]) -> tuple[bool, str | None]:
     if not logs:
         return False, None
 
-    # IP별 집계 테이블 초기화
-    # ip_accounts: IP → 고유 계정명 집합 (패스워드 스프레잉 판별용)
-    # ip_fail_counts: IP → 계정별 실패 횟수 (브루트포스 판별용)
-    # ip_unauthorized_counts: IP → 비인가 키워드 등장 횟수
-    ip_accounts: dict[str, set[str]] = defaultdict(set)
-    ip_fail_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    ip_unauthorized_counts: dict[str, int] = defaultdict(int)
+    # IP → (발생 시각, 계정명, 원문) 목록. 시간창 밖 이벤트는 같은 배치여도 합산하지 않는다.
+    ip_events: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
 
     for event in logs:
-        ip = event.source_ip
-        username = event.username
+        timestamp = _timestamp_to_epoch_seconds(event.timestamp_str)
+        if timestamp is not None:
+            ip_events[event.source_ip].append((timestamp, event.username, event.raw_message))
 
-        ip_accounts[ip].add(username)
-        ip_fail_counts[ip][username] += 1
+    # 룰 1: 구체적이고 높은 위험도의 단일 계정 집중 공격을 전역적으로 먼저 평가한다.
+    for events in ip_events.values():
+        account_timestamps: dict[str, list[float]] = defaultdict(list)
+        for timestamp, username, _ in events:
+            account_timestamps[username].append(timestamp)
+        if any(
+            _has_repeated_events_within_window(timestamps, BRUTE_FORCE_THRESHOLD)
+            for timestamps in account_timestamps.values()
+        ):
+            return True, "SSH_BRUTE_FORCE"
 
-        # DENIED/UNAUTHORIZED 키워드 등장 여부 검사
-        # Constraints: 미리 컴파일된 패턴을 재사용하여 루프 내 오버헤드 제거
-        if _UNAUTHORIZED_PATTERN.search(event.raw_message):
-            ip_unauthorized_counts[ip] += 1
+    # 룰 2: 한 시간창에서만 서로 다른 계정 수를 계산한다.
+    for events in ip_events.values():
+        events.sort(key=lambda event: event[0])
+        account_counts: dict[str, int] = defaultdict(int)
+        left = 0
+        for _, (timestamp, username, _) in enumerate(events):
+            account_counts[username] += 1
+            while timestamp - events[left][0] > DETECTION_WINDOW_SECONDS:
+                expired_username = events[left][1]
+                account_counts[expired_username] -= 1
+                if account_counts[expired_username] == 0:
+                    del account_counts[expired_username]
+                left += 1
+            if len(account_counts) >= PASSWORD_SPRAYING_THRESHOLD:
+                return True, "SSH_PASSWORD_SPRAYING"
 
-    for ip in ip_accounts:
-        accounts = ip_accounts[ip]
-        account_fail_map = ip_fail_counts[ip]
-
-        # ----------------------------------------------------------------
-        # 룰 1: SSH_PASSWORD_SPRAYING (T1110.003)
-        # Why: 스프레잉은 계정 잠금 정책을 우회하기 위해 계정당 실패 횟수를
-        #      낮게 유지하면서 다수 계정을 탐색하므로, 계정 다양성을 우선 판별함.
-        # ----------------------------------------------------------------
-        if len(accounts) >= PASSWORD_SPRAYING_THRESHOLD:
-            return True, "SSH_PASSWORD_SPRAYING"
-
-        # ----------------------------------------------------------------
-        # 룰 2: SSH_BRUTE_FORCE (T1110.001)
-        # Why: 단일 계정에 집중하여 임계치 이상 반복 실패 시 자동화 툴 사용 판정.
-        # ----------------------------------------------------------------
-        for count in account_fail_map.values():
-            if count >= BRUTE_FORCE_THRESHOLD:
-                return True, "SSH_BRUTE_FORCE"
-
-        # ----------------------------------------------------------------
-        # 룰 3: UNAUTHORIZED_ACCESS (T1078)
-        # Why: 권한 없는 계정/리소스 접근 반복은 내부자 위협 또는 세션 탈취 징후.
-        # ----------------------------------------------------------------
-        if ip_unauthorized_counts.get(ip, 0) >= UNAUTHORIZED_THRESHOLD:
+    # 룰 3: 계정명ㆍ호스트명 문자열이 아닌 권한 거부 문구만 허용한다.
+    for events in ip_events.values():
+        unauthorized_timestamps = [
+            timestamp
+            for timestamp, _, raw_message in events
+            if _UNAUTHORIZED_PATTERN.search(raw_message)
+        ]
+        if _has_repeated_events_within_window(unauthorized_timestamps, UNAUTHORIZED_THRESHOLD):
             return True, "UNAUTHORIZED_ACCESS"
 
     return False, None

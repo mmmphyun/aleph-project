@@ -13,6 +13,7 @@ from contracts.events import SyslogAuthEvent
 from detection.rules import (
     BRUTE_FORCE_THRESHOLD,
     PASSWORD_SPRAYING_THRESHOLD,
+    UNAUTHORIZED_THRESHOLD,
     evaluate_rules,
 )
 
@@ -197,3 +198,65 @@ def test_password_spraying_threshold_boundary() -> None:
 
     assert is_detected is True
     assert rule_name == "SSH_PASSWORD_SPRAYING"
+
+
+# ===========================================================================
+# 5. 시간창ㆍ우선순위ㆍ비인가 접근 회귀 검증
+# ===========================================================================
+
+
+def test_failures_across_five_days_do_not_trigger_brute_force() -> None:
+    """하루 간격의 정상 실패 누적이 한 배치여도 Brute Force가 아님을 검증한다."""
+    lines = [
+        _LOG_TEMPLATE.replace("Sep 03", f"Sep {day:02}").format(
+            i=day, user="admin", ip="198.51.100.10"
+        )
+        for day in range(1, BRUTE_FORCE_THRESHOLD + 1)
+    ]
+    events = [SyslogAuthEvent.parse_line(line) for line in lines]
+
+    is_detected, rule_name = evaluate_rules([event for event in events if event is not None])
+
+    assert is_detected is False
+    assert rule_name is None
+
+
+def test_brute_force_has_priority_over_spraying() -> None:
+    """단일 계정 집중 공격에 1회 타 계정 실패가 섞여도 Brute Force를 우선 반환한다."""
+    events = _make_events("198.51.100.11", "root", BRUTE_FORCE_THRESHOLD)
+    events.extend(_make_events("198.51.100.11", "guest", 1))
+
+    is_detected, rule_name = evaluate_rules(events)
+
+    assert is_detected is True
+    assert rule_name == "SSH_BRUTE_FORCE"
+
+
+def test_unauthorized_access_detection_success() -> None:
+    """명시적 권한 거부 문구가 시간창 내 임계치만큼 반복되면 탐지한다."""
+    events = _make_events("203.0.113.20", "admin", UNAUTHORIZED_THRESHOLD)
+    events = [
+        event.model_copy(update={"raw_message": f"{event.raw_message} Permission denied"})
+        for event in events
+    ]
+
+    is_detected, rule_name = evaluate_rules(events)
+
+    assert is_detected is True
+    assert rule_name == "UNAUTHORIZED_ACCESS"
+
+
+def test_account_or_hostname_keyword_does_not_trigger_unauthorized_access() -> None:
+    """계정명ㆍ호스트명의 denied/unauthorized는 권한 거부 문구로 오인하지 않는다."""
+    lines = [
+        _LOG_TEMPLATE.replace("target-ec2", "unauthorized-host").format(
+            i=index, user="denied-user", ip="203.0.113.21"
+        )
+        for index in range(UNAUTHORIZED_THRESHOLD)
+    ]
+    events = [SyslogAuthEvent.parse_line(line) for line in lines]
+
+    is_detected, rule_name = evaluate_rules([event for event in events if event is not None])
+
+    assert is_detected is False
+    assert rule_name is None
