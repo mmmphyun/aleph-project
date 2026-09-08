@@ -1,54 +1,67 @@
 #!/usr/bin/env bash
-# CloudShield 네트워크 공격 시뮬레이션 스크립트
-# 소유자: 네트워크 담당
-#
-# Why:
-#   외부 공격자 관점에서 타깃 EC2 인스턴스를 대상으로 실제 위협 트래픽
-#   (SSH Brute Force, Port Scanning)을 유발하고, 패킷 덤프(tcpdump) 및
-#   CloudWatch Logs 적재를 검증하기 위한 안전한 모의 공격 재현 환경 제공.
-#
-# Constraints:
-#   - 본 스크립트는 반드시 사전에 승인된 테스트베드 VPC 타깃 IP에 대해서만 실행해야 함.
-#   - bash 셸 환경에서 비정상 종료 및 오류 파급 방지를 위해 엄격 모드(set -euo pipefail) 필수 적용.
-#
-# Side-effects / Edge-cases:
-#   - Hydra 및 Nmap 도구가 시스템에 설치되어 있어야 정상 실행 가능.
-#   - 잘못된 타깃 IP 입력 시 원치 않는 시스템에 트래픽이 유입될 위험 차단.
-
+# Why: 승인된 단일 EC2에 인증 실패 로그를 생성하여 탐지·차단 파이프라인을 검증한다.
+# Constraints: IPv4 한 개, 포트 1~65535, 사용자 한 명, 비밀번호 최대 100개.
+# Side-effects: --execute는 실제 SSH 트래픽과 인증 로그를 발생시킨다.
+# 계정 잠금이 발생할 수 있으므로 승인된 테스트 계정만 사용한다.
 set -euo pipefail
 
-# ==========================================
-# 매개변수 유효성 검증
-# ==========================================
-TARGET_IP="${1:-}"
-TARGET_PORT="${2:-22}"
+usage() {
+    echo "사용법: $0 <타깃_IPv4> [포트=22] [목록=wordlist.txt] [사용자=admin] [--execute]"
+    echo "기본값은 미리보기. --execute는 해당 서버에 대한 테스트 승인을 확인한 뒤 지정한다."
+}
+fail() { echo "[오류] $*" >&2; exit 1; }
+if [[ ${1:-} == --help ]]; then usage; exit 0; fi
+if (( $# < 1 || $# > 5 )); then usage >&2; exit 1; fi
+target=$1
+port=${2:-22}
+wordlist=${3:-wordlist.txt}
+username=${4:-admin}
+mode=${5:-}
+[[ -z $mode || $mode == --execute ]] || fail "마지막 인자는 --execute만 허용합니다."
+[[ $target =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail "IPv4 주소가 필요합니다."
+IFS=. read -r -a octets <<< "$target"
+for octet in "${octets[@]}"; do
+    (( 10#$octet <= 255 )) || fail "IPv4 옥텟은 0~255여야 합니다."
+    [[ $octet == 0 || $octet != 0* ]] || fail "IPv4의 선행 0은 허용하지 않습니다."
+done
+[[ $port =~ ^[0-9]{1,5}$ ]] || fail "포트는 정수여야 합니다."
+port=$((10#$port))
+(( port >= 1 && port <= 65535 )) || fail "포트 범위는 1~65535입니다."
+[[ $username =~ ^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$ ]] || fail "테스트 사용자 이름 형식이 잘못되었습니다."
+[[ -f $wordlist && -r $wordlist ]] || fail "읽을 수 있는 비밀번호 목록 파일이 필요합니다."
 
-if [[ -z "${TARGET_IP}" ]]; then
-    echo "사용법: $0 <타깃_IPv4_주소> [타깃_포트(기본값: 22)]" >&2
-    echo "예시:   $0 198.51.100.50 22" >&2
-    exit 1
+# 검증한 목록을 별도 작업 디렉토리에 고정하여 실행 간 복구 파일 충돌을 방지한다.
+# 비밀번호는 출력하지 않으며 임시 파일 권한은 소유자에게만 부여한다.
+umask 077
+workdir=$(mktemp -d)
+trap 'rm -rf -- "$workdir"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+count=0
+while IFS= read -r password || [[ -n $password ]]; do
+    password=${password%$'\r'}
+    [[ -n $password ]] || fail "빈 비밀번호는 허용하지 않습니다."
+    (( ${#password} <= 128 )) || fail "비밀번호는 128자 이하여야 합니다."
+    count=$((count + 1))
+    (( count <= 100 )) || fail "목록은 최대 100개까지 허용합니다."
+    printf '%s\n' "$password" >> "$workdir/passwords.txt"
+done < "$wordlist"
+(( count > 0 )) || fail "목록이 비어 있습니다."
+command=(hydra -l "$username" -P "$workdir/passwords.txt" -s "$port" -t 4 -f "$target" ssh)
+printf '대상: %s:%s / 사용자: %s / 후보: %s개 / 동시 연결: 4 / 제한: 60초\n' "$target" "$port" "$username" "$count"
+printf '패킷 캡처(별도 터미널): sudo tcpdump -i any host %s and port %s -w /tmp/ssh_attack.pcap -c 1000\n' "$target" "$port"
+if [[ -z $mode ]]; then
+    echo "[미리보기] 네트워크 요청 없음. 실행하려면 마지막 인자에 --execute를 지정하세요."
+    exit 0
 fi
-
-# IPv4 정규식 패턴 검증
-IP_REGEX="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
-if [[ ! "${TARGET_IP}" =~ ${IP_REGEX} ]]; then
-    echo "[오류] 유효하지 않은 IPv4 주소 형식입니다: ${TARGET_IP}" >&2
-    exit 1
+command -v hydra >/dev/null 2>&1 || fail "Hydra를 설치하세요(SSH 모듈 필요)."
+command -v timeout >/dev/null 2>&1 || fail "GNU coreutils timeout을 설치하세요."
+# -f는 인증 성공 시 중단한다. 타임아웃은 124, 기타 오류는 원래 종료 코드로 전달한다.
+# Hydra 출력에는 성공한 인증 정보가 포함될 수 있으므로 테스트용 목록만 사용한다.
+cd -- "$workdir"
+status=0
+timeout --kill-after=5s 60s "${command[@]}" || status=$?
+if (( status != 0 )); then
+    echo "[종료] Hydra/timeout 종료 코드: $status (124: 시간 제한)" >&2
 fi
-
-echo "=================================================="
-echo " CloudShield 공격 시뮬레이션 안내 (네트워크 담당)"
-echo " 타깃 호스트 : ${TARGET_IP}:${TARGET_PORT}"
-echo "=================================================="
-echo ""
-echo "[1] 패킷 덤프 사전 실행 안내 (별도 터미널 또는 타깃 서버):"
-echo "    sudo tcpdump -i any port ${TARGET_PORT} -w /tmp/attack_simulation.pcap -c 1000"
-echo ""
-echo "[2] SSH 무차별 대입 공격 (Hydra) 실행 명령어 스켈레톤:"
-echo "    hydra -l admin -P wordlist.txt -t 4 -V ${TARGET_IP} ssh -s ${TARGET_PORT}"
-echo ""
-echo "[3] L4 SYN 스텔스 포트 스캔 (Nmap) 실행 명령어 스켈레톤:"
-echo "    nmap -sS -p 20-100 ${TARGET_IP}"
-echo ""
-echo "[알림] 네트워크 담당자는 상기 명령어를 환경에 맞게 구체화하여 공격을 재현하세요."
-exit 0
+exit "$status"
