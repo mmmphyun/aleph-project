@@ -1,4 +1,4 @@
-﻿# CloudShield 컨트랙트 퍼스트 에이전트 거버넌스 하네스 구축 보고서
+# CloudShield 컨트랙트 퍼스트 에이전트 거버넌스 하네스 구축 보고서
 
 > **작성일**: 2026-09-04  
 > **작성자**: 클라우드 A (플랫폼 엔지니어 / 테크 리드)  
@@ -50,6 +50,9 @@
 | **타입 안전성** | `list[str]` 선언 | `frozen=True` 모델임에도 참조 변조 가능한 mutable 타입 노출 | `tuple[str, ...]` 불변 시퀀스로 전환 |
 | **CI 트리거** | `main` 및 단일 브랜치 한정 | 기능 브랜치(`feat/*`, `fix/*`) PR 오픈 시 CI 미동작 위험 | 브랜치 패턴 `[main, "feat/**", "fix/**"]`로 확장 |
 | **로컬 가드** | Git pre-commit 강제 검토 | AI 에이전트 탈선 및 비전공자 로컬 실행 환경(PowerShell 등) 충돌 위험 | 로컬 훅 강제 배제, PR CI 단일 창구 집중 전략 채택 |
+| **브랜치 보호** | Classic + Ruleset 이중 적용 | GitHub Most Restrictive 정책으로 리드 1인 오너 승인 병목 발생 | Classic 완전 삭제, Ruleset 단일화 및 1:1 상호 짝꿍 리뷰 체계 전환 (ADR-0005) |
+| **거버넌스 가드** | 헌법/문서 기반 소프트 가드 | 에이전트의 노션 링크 누락, 이슈 미생성, tests 경로 이탈 반복 | PR 메타데이터 CI 검증 및 테스트 경로 정적 검증 하드 가드 이원화 (ADR-0006) |
+| **실행 안정성** | `uv run pytest` 바이너리 호출 | Windows AppLocker/보안 정책 환경에서 바이너리 차단(os error 4551) | `scripts/check.ps1`을 `python -m pytest` 호출로 표준화하여 호환성 확보 |
 
 ---
 

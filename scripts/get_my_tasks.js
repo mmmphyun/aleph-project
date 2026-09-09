@@ -1,12 +1,16 @@
 /**
  * scripts/get_my_tasks.js
  * 노션 [프로젝트 일정] DB의 [시작 전] 티켓 목록 조회 헬퍼
- * 하드코딩된 개인 식별자 없이 동작하며, .env의 설정 또는 직무(.agent-role)를 기반으로 동작
+ * 
+ * 기능:
+ * 1. WIP 1개 제한 하드 가드: 현재 직무(.agent-role)에 아직 머지되지 않은 열린 PR이 있으면 신규 티켓 조회 차단
+ * 2. 노션 DB 쿼리: 시작 전 상태인 티켓 목록 출력
  */
 
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const { execSync } = require("child_process");
 
 function loadEnv() {
   const envPath = path.resolve(process.cwd(), ".env");
@@ -20,6 +24,53 @@ let role = "cloud-a";
 if (fs.existsSync(".agent-role")) {
   role = fs.readFileSync(".agent-role", "utf-8").trim();
 }
+
+// ===========================================================================
+// WIP(Work In Progress) 1개 제한 하드 가드 (PR Stacking 및 이슈 증식 차단)
+// ===========================================================================
+function checkOpenPrGuard(currentRole) {
+  if (process.env.ALLOW_CONCURRENT_WIP === "1") {
+    console.log("[WIP 가드 예외] ALLOW_CONCURRENT_WIP=1 설정으로 열린 PR 검사를 우회합니다.");
+    return;
+  }
+
+  try {
+    const stdout = execSync("gh pr list --state open --json number,title,headRefName,url", {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    const prs = JSON.parse(stdout || "[]");
+
+    // 현재 직무의 브랜치 접두사 또는 타이틀 스코프 매칭
+    const rolePrs = prs.filter(pr => {
+      const branchMatch = pr.headRefName && pr.headRefName.startsWith(`feat/${currentRole}-`) || pr.headRefName.startsWith(`fix/${currentRole}-`);
+      const titleMatch = pr.title && (pr.title.includes(`(${currentRole}):`) || pr.title.includes(`[${currentRole}]`));
+      return branchMatch || titleMatch;
+    });
+
+    if (rolePrs.length > 0) {
+      console.error("\n" + "=".repeat(80));
+      console.error(`[WIP 제한 차단] 직무 [${currentRole}]에 아직 머지되지 않은 열린 PR이 ${rolePrs.length}건 존재합니다!`);
+      console.error("=".repeat(80));
+      rolePrs.forEach(pr => {
+        console.error(`  * PR #${pr.number}: ${pr.title}`);
+        console.error(`    브랜치: ${pr.headRefName} | 링크: ${pr.url}`);
+      });
+      console.error("\n[작업 가이드라인 - PR 스태킹 및 이슈 증식 절대 금지]");
+      console.error("1. 신규 이슈(gh issue create)를 발행하거나 후속 티켓 브랜치를 분기하지 마십시오.");
+      console.error("2. 리뷰 피드백 수정 시 새 이슈를 따지 말고, 기존 PR 브랜치에서 추가 커밋(fix/test) 후 푸시하십시오.");
+      console.error("3. 기존 PR의 리뷰 해결 및 머지가 완료된 후에만 다음 티켓에 착수할 수 있습니다.");
+      console.error("=".repeat(80) + "\n");
+      process.exit(1);
+    }
+  } catch (err) {
+    // gh CLI 미설치 또는 비로그인 상태일 때는 경고 출력 후 계속 진행
+    console.warn(`[WIP 가드 경고] GitHub PR 상태 확인 실패 (gh CLI 확인 필요): ${err.message}`);
+  }
+}
+
+// WIP 검증 실행
+checkOpenPrGuard(role);
 
 const key = loadEnv();
 if (!key) {

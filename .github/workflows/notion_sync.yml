@@ -280,3 +280,55 @@ jobs:
                 }
               }
             }
+
+      - name: Close Linked GitHub Issues on Merge
+        if: github.event_name == 'pull_request_target' && github.event.pull_request.merged == true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || "";
+            const matches = [...body.matchAll(/#(\d+)/g)];
+
+            if (matches.length === 0) {
+              console.log("PR 본문에 연관 이슈(#)가 없어 이슈 자동 종료를 건너뜁니다.");
+              return;
+            }
+
+            const processed = new Set();
+            for (const match of matches) {
+              const issueNumber = parseInt(match[1], 10);
+              if (!issueNumber || issueNumber === pr.number || processed.has(issueNumber)) {
+                continue;
+              }
+              processed.add(issueNumber);
+
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber
+                });
+
+                // 순수 Issue이고 현재 열려있는 경우에만 자동 완료 처리
+                if (!issue.pull_request && issue.state === "open") {
+                  console.log(`PR #${pr.number} 머지에 따라 연관 Issue #${issueNumber} 자동 종료를 실행합니다.`);
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    body: `PR #${pr.number} (${pr.html_url}) 머지에 따라 연관 작업이 완료되어 자동으로 이슈를 종료합니다.`
+                  });
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    state: "closed",
+                    state_reason: "completed"
+                  });
+                  console.log(`Issue #${issueNumber} 정상 종료 완료`);
+                }
+              } catch (err) {
+                console.log(`Issue #${issueNumber} 조회/종료 중 오류 발생: ${err.message}`);
+              }
+            }

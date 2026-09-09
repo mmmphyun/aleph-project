@@ -70,20 +70,19 @@ flowchart TD
 
 ---
 
-## 3. 핵심 아키텍처 결정 사항 (ADR)
+## 3. 핵심 아키텍처 결정 사항 (ADR Index)
 
-1. **단일 AWS 계정 내 VPC 격리 채택**:
-   * 멀티 계정 간 AssumeRole/조직 구성은 개발 및 테스트 병목을 유발하므로 배제하고, 단일 계정 내 Public/Private Subnet 및 Bastion 구조로 명확화.
-2. **다중 계층 원자적 차단(Remediation) 아키텍처**:
-   * L4 SSH 공격과 L7 WAF 간의 프로토콜 불일치 모순을 해결하기 위해:
-     * L4 차단: EC2 Quarantine SG 단독 교체.
-     * L7 차단: Nginx Web 공격자 IP 대상 AWS WAF IPSet 추가 (`/32` 강제).
-     * Identity 차단: 탈취 의심 IAM Role의 임시 세션 무효화(`revoke_security_tokens`).
-3. **Lambda 동시성 통제**:
-   * 무차별 공격 유입 시 동시 기동으로 인한 LLM API 비용 폭증을 방지하기 위해 Lambda `Reserved Concurrency`를 5~10으로 제한.
-4. **선(先) 하네스 구축, 후(後) 노션 연동**:
-   * 팀원 작업 차단(Blocking)을 해소하기 위해 Day 1~2에 디렉토리/Contract/Mock 테스트베드를 먼저 배포.
-   * 노션 연동은 GitHub Actions 단방향(One-way) 푸시로 Day 3에 구성.
+> 상세 결정 배경, 대안 비교 및 트레이드오프는 [`docs/adr/`](adr/) 디렉토리의 개별 문서를 참조합니다 (Single Source of Truth).
+
+| 번호 | 문서명 | 상태 | 결정 일자 | 핵심 요약 |
+| :---: | :--- | :---: | :---: | :--- |
+| **0001** | [`ADR-0001: 단일 AWS 계정 내 VPC 격리 채택`](adr/0001-single-aws-account-vpc-isolation.md) | Accepted | 2026-09-03 | 멀티 계정 권한 병목을 배제하고 단일 계정 내 Public/Private Subnet 및 Bastion 구조로 단순화 |
+| **0002** | [`ADR-0002: 다중 계층 원자적 차단 엔진 아키텍처`](adr/0002-multi-layer-atomic-remediation.md) | Accepted | 2026-09-04 | L4(Quarantine SG), L7(WAF IPSet /32), Identity(IAM Session 무효화) 원자적 복합 대응 체계 |
+| **0003** | [`ADR-0003: Lambda 동시성 통제로 비용 폭증 방지`](adr/0003-lambda-concurrency-limit-for-cost-control.md) | Accepted | 2026-09-04 | 무차별 공격 인입 시 LLM API 과금 폭증을 차단하기 위해 Lambda Reserved Concurrency를 5~10으로 제한 |
+| **0004** | [`ADR-0004: 선(先) 하네스 배포, 후(後) 노션 연동`](adr/0004-harness-first-notion-deferred.md) | Accepted | 2026-09-05 | 외부 툴 연동 병목을 차단하기 위해 Contract/Mock 테스트베드를 선배포하고 노션은 단방향 비동기 연동 |
+| **0005** | [`ADR-0005: Ruleset 단일화 및 1:1 상호 리뷰 거버넌스`](adr/0005-repository-ruleset-unification-and-peer-review-governance.md) | Accepted | 2026-09-09 | Classic 보호 규칙 충돌을 제거하고 Ruleset 단일화 및 1:1 상호 짝꿍 리뷰 체계 확립 |
+| **0006** | [`ADR-0006: 에이전트 하네스 이원화 및 감사 투명성 설계`](adr/0006-agent-harness-dual-guard-architecture.md) | Accepted | 2026-09-09 | PR 메타데이터/테스트 경로 하드 가드 강제 및 솔직한 우회 증적(Audit Trail) 보존을 위한 이원화 설계 |
+| **0007** | [`ADR-0007: 룰 엔진 무상태성 보장 및 상태 관리 경계 분리`](adr/0007-stateless-rule-engine-and-state-boundary.md) | Accepted | 2026-09-09 | 룰 엔진은 순수 함수로 유지하고, CW 배치 분할 세션 상태 유지는 오케스트레이터(클라우드 A) 책임으로 분리 |
 
 ---
 
