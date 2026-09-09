@@ -54,13 +54,15 @@ DETECTION_WINDOW_SECONDS: int = 5 * 60
 def _timestamp_to_epoch_seconds(timestamp_str: str) -> float | None:
     """계약의 Syslog/ISO 8601 시각을 비교 가능한 초 단위 값으로 정규화한다.
 
-    Syslog에는 연도가 없으므로 윤년 영향이 없는 기준 연도 2001을 사용한다. 이 값은
-    절대 시각이 아닌 동일 로그 배치 안의 시간 간격 판정에만 사용한다.
+    Syslog에는 연도가 없으므로 2월 29일도 유효한 윤년 2000을 기준으로 사용한다.
+    이 값은 절대 시각이 아닌 동일 로그 배치 안의 시간 간격 판정에만 사용한다.
+    실제 연도는 복원할 수 없어 평년의 2월 말 및 연말 경계 해석에는 한계가 있다.
+    정확한 연도 경계 판정에는 호출부에서 연도가 포함된 발생 시각을 전달해야 한다.
     """
     try:
         if "T" in timestamp_str:
             return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")).timestamp()
-        return datetime.strptime(f"2001 {timestamp_str}", "%Y %b %d %H:%M:%S").timestamp()
+        return datetime.strptime(f"2000 {timestamp_str}", "%Y %b %d %H:%M:%S").timestamp()
     except ValueError:
         # 계약 밖의 시각 포맷은 시간 기반 집계에서 제외해 오래된 이벤트의 오탐을 방지한다.
         return None
