@@ -9,6 +9,10 @@ Why:
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from contracts.events import SyslogAuthEvent
 from detection.rules import (
     BRUTE_FORCE_THRESHOLD,
@@ -24,6 +28,73 @@ _LOG_TEMPLATE = (
     "Sep 03 14:20:01 target-ec2 sshd[1234{i}]: "
     "Failed password for {user} from {ip} port 4915{i} ssh2"
 )
+
+
+@pytest.fixture
+def noisy_auth_lines() -> list[str]:
+    """공통 데이터는 수정하지 않고 보안 테스트 내부에서 읽어 회귀 입력을 고정한다."""
+    path = Path(__file__).resolve().parents[1] / "mock_data" / "mock_auth_noisy.log"
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def test_noisy_log_preserves_only_expected_failures(noisy_auth_lines: list[str]) -> None:
+    """정상 활동이 실패 카운트에 유입되거나 실제 실패가 누락되는 회귀를 함께 검출한다."""
+    events = [
+        event
+        for line in noisy_auth_lines
+        if (event := SyslogAuthEvent.parse_line(line)) is not None
+    ]
+    assert [(event.source_ip, event.username) for event in events] == [
+        ("203.0.113.195", "admin"),
+        ("203.0.113.195", "root"),
+        ("203.0.113.195", "service"),
+        ("203.0.113.195", "guest"),
+        ("203.0.113.195", "operator"),
+        ("198.51.100.99", "devops"),
+    ]
+    assert evaluate_rules(events) == (True, "SSH_PASSWORD_SPRAYING")
+
+
+def test_normal_activity_is_not_an_auth_failure(noisy_auth_lines: list[str]) -> None:
+    """성공 인증·sudo·세션·연결 종료는 반복돼도 공격 증거가 되지 않아야 한다."""
+    normal_lines = [line for line in noisy_auth_lines if "Failed password for " not in line]
+    assert len(normal_lines) == 7
+    for line in normal_lines:
+        assert SyslogAuthEvent.parse_line(line) is None, line
+
+
+def test_single_failure_with_normal_activity_is_not_an_attack(noisy_auth_lines: list[str]) -> None:
+    """공격 IP를 제거한 실제 혼합 입력에서 관리자 1회 실패가 오탐되지 않음을 검증한다."""
+    lines = [line for line in noisy_auth_lines if "203.0.113.195" not in line]
+    events = [event for line in lines if (event := SyslogAuthEvent.parse_line(line)) is not None]
+    assert len(events) == 1
+    assert events[0].username == "devops"
+    assert evaluate_rules(events) == (False, None)
+
+
+@pytest.mark.parametrize("failure_count", [4, 5])
+def test_normal_noise_does_not_change_brute_force_threshold(
+    noisy_auth_lines: list[str], failure_count: int
+) -> None:
+    """실패와 같은 IP·계정의 정상 로그도 4회/5회 판정 경계를 바꾸면 안 된다."""
+    normal_lines = [
+        line.replace("192.0.2.10", "198.51.100.99").replace("ubuntu", "devops")
+        for line in noisy_auth_lines
+        if "Failed password for " not in line
+    ]
+    failures = [
+        "2026-09-04T15:02:00+00:00 target-ec2 sshd["
+        f"{22000 + index}]: Failed password for devops from 198.51.100.99 port 53100 ssh2"
+        for index in range(failure_count)
+    ]
+    events = [
+        event
+        for line in normal_lines + failures + normal_lines
+        if (event := SyslogAuthEvent.parse_line(line)) is not None
+    ]
+    assert len(events) == failure_count
+    expected = (True, "SSH_BRUTE_FORCE") if failure_count == 5 else (False, None)
+    assert evaluate_rules(events) == expected
 
 
 def _make_events(
