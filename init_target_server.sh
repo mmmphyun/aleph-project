@@ -73,10 +73,12 @@ log_success "필수 패키지(nginx, openssh-server, rsyslog 등) 설치 완료"
 # Why:
 #   OpenSSH(sshd_config)는 '먼저 평가된 설정값(First Match Wins)'을 채택하므로,
 #   cloud-init 설정(50-cloud-init.conf)보다 사전 로드되도록 00-cloudshield.conf로 배치함.
-#   추가로 기존 비활성화 설정(PasswordAuthentication no)을 정제하고,
-#   sshd -T로 런타임 실측 결과(passwordauthentication yes)를 검증함.
+#   기존 패키지/cloud-init 관리 파일은 직접 수정하지 않으며, sshd_config 최상단 Include를 보장하고
+#   sshd -T로 런타임 실측 결과를 검증함 (실패 시 변경 전 설정 자동 복구).
 log_info "OpenSSH 데몬 설정 최적화 및 우선순위 조정 중..."
 
+SSHD_MAIN_CONF="/etc/ssh/sshd_config"
+SSHD_BAK_CONF="/etc/ssh/sshd_config.bak.cloudshield"
 SSHD_DIR="/etc/ssh/sshd_config.d"
 SSHD_CUSTOM_CONF="${SSHD_DIR}/00-cloudshield.conf"
 SSHD_LEGACY_CONF="${SSHD_DIR}/99-cloudshield.conf"
@@ -88,23 +90,19 @@ if [[ -f "${SSHD_LEGACY_CONF}" ]]; then
     rm -f "${SSHD_LEGACY_CONF}"
 fi
 
-# sshd_config 맨 위에 Include 구문 배치 보장 (00-*.conf 파일이 최우선 평가되도록)
-if [[ -f /etc/ssh/sshd_config ]]; then
-    if ! grep -q "Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config 2>/dev/null; then
-        sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
-    fi
+# sshd_config 백업 생성
+if [[ -f "${SSHD_MAIN_CONF}" ]]; then
+    cp "${SSHD_MAIN_CONF}" "${SSHD_BAK_CONF}"
 fi
 
-# 기존 conf 파일 내 PasswordAuthentication no 설정을 yes로 보정 (충돌 원천 차단)
-if [[ -d "${SSHD_DIR}" ]]; then
-    for conf_file in "${SSHD_DIR}"/*.conf; do
-        if [[ -f "${conf_file}" && "${conf_file}" != "${SSHD_CUSTOM_CONF}" ]]; then
-            sed -i 's/^\s*PasswordAuthentication\s\+no/PasswordAuthentication yes/g' "${conf_file}" 2>/dev/null || true
-        fi
-    done
+# sshd_config 최상단에 Include 구문 보장 (00-*.conf가 다른 모든 설정보다 최우선 로드되도록 정렬)
+if [[ -f "${SSHD_MAIN_CONF}" ]]; then
+    # 기존 위치와 관계없이 중복 Include 지침 정리 후 최상단(1라인)에 배치
+    sed -i '/^\s*Include\s\+\/etc\/ssh\/sshd_config\.d\/\*\.conf/d' "${SSHD_MAIN_CONF}"
+    sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' "${SSHD_MAIN_CONF}"
 fi
 
-# 최우선 순위 00-cloudshield.conf 설정 생성
+# CloudShield 전용 00-cloudshield.conf 최우선 순위 설정 파일 생성
 cat << 'EOF' > "${SSHD_CUSTOM_CONF}"
 # CloudShield 타깃 서버 SSH 침해 실증용 최우선 순위 설정 (00-cloudshield.conf)
 PasswordAuthentication yes
@@ -119,8 +117,15 @@ EOF
 systemctl enable rsyslog
 systemctl restart rsyslog
 
-# SSH 데몬 설정 문법 검증
-sshd -t
+# SSH 데몬 설정 문법 검증 및 실패 시 자동 복구
+if ! sshd -t; then
+    log_error "SSH 문법 검사 실패! 원본 sshd_config를 복구합니다."
+    if [[ -f "${SSHD_BAK_CONF}" ]]; then
+        cp "${SSHD_BAK_CONF}" "${SSHD_MAIN_CONF}"
+    fi
+    rm -f "${SSHD_CUSTOM_CONF}"
+    exit 1
+fi
 
 # OpenSSH 런타임 유효 설정 실측 평가 (sshd -T)
 # Constraints: passwordauthentication 항목이 반드시 'yes'로 실측되어야 함
@@ -129,7 +134,11 @@ EFFECTIVE_PASS_AUTH="$(sshd -T | grep -i '^passwordauthentication' | awk '{print
 
 if [[ "${EFFECTIVE_PASS_AUTH}" != "yes" ]]; then
     log_error "SSH PasswordAuthentication 적용 실패! (sshd -T 실측 결과: ${EFFECTIVE_PASS_AUTH})"
-    log_error "충돌하는 기존 sshd 설정 파일을 점검하세요."
+    log_error "기존 변경 전 sshd_config 설정을 복구하고 실패 종료합니다."
+    if [[ -f "${SSHD_BAK_CONF}" ]]; then
+        cp "${SSHD_BAK_CONF}" "${SSHD_MAIN_CONF}"
+    fi
+    rm -f "${SSHD_CUSTOM_CONF}"
     exit 1
 fi
 log_success "SSH PasswordAuthentication 런타임 실측 검증 완료 (status: ${EFFECTIVE_PASS_AUTH})"
@@ -151,12 +160,20 @@ log_info "Nginx 웹 서버 설정 및 테스트 페이지 구성 중..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p /etc/nginx
 
+TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
+
+# 기존 /etc/nginx/nginx.conf 백업 (재실행 시 사용자 설정 유실 방지)
+if [[ -f /etc/nginx/nginx.conf ]]; then
+    cp /etc/nginx/nginx.conf "/etc/nginx/nginx.conf.bak.${TIMESTAMP}"
+    log_warn "기존 Nginx 설정 백업 완료: /etc/nginx/nginx.conf.bak.${TIMESTAMP}"
+fi
+
 if [[ -f "${SCRIPT_DIR}/nginx.conf" ]]; then
     cp "${SCRIPT_DIR}/nginx.conf" /etc/nginx/nginx.conf
-    log_info "${SCRIPT_DIR}/nginx.conf 설정을 /etc/nginx/nginx.conf로 복사했습니다."
+    log_info "${SCRIPT_DIR}/nginx.conf 설정을 /etc/nginx/nginx.conf로 적용했습니다."
 elif [[ -f "./nginx.conf" ]]; then
     cp ./nginx.conf /etc/nginx/nginx.conf
-    log_info "로컬 ./nginx.conf 설정을 /etc/nginx/nginx.conf로 복사했습니다."
+    log_info "로컬 ./nginx.conf 설정을 /etc/nginx/nginx.conf로 적용했습니다."
 else
     log_info "외부 nginx.conf가 감지되지 않아 내장 최적화 설정을 /etc/nginx/nginx.conf에 배포합니다."
     cat << 'NGINX_CONF_EOF' > /etc/nginx/nginx.conf
@@ -228,15 +245,22 @@ http {
 NGINX_CONF_EOF
 fi
 
-# /admin 엔드포인트 401 인증용 더미 htpasswd 생성 (HTTP 500 에러 방지)
+# /admin 엔드포인트 401 인증용 해시 기반 htpasswd 생성 (평문 저장 방지 & 권한 640 제한)
 if [[ ! -f /etc/nginx/.htpasswd ]]; then
-    touch /etc/nginx/.htpasswd
-    echo "admin:{PLAIN}cloudshield_demo_pass" > /etc/nginx/.htpasswd
-    chmod 644 /etc/nginx/.htpasswd
+    PASS_HASH="$(openssl passwd -1 "cloudshield_demo_pass" 2>/dev/null || echo '$1$cloudshield$qH/9JzE2Vd8S7q0M3u5mJ.')"
+    echo "admin:${PASS_HASH}" > /etc/nginx/.htpasswd
+    chmod 640 /etc/nginx/.htpasswd
+    chown root:www-data /etc/nginx/.htpasswd 2>/dev/null || chown root:adm /etc/nginx/.htpasswd 2>/dev/null || true
+    log_success "Nginx htpasswd 해시 인증 정보 생성 완료 (권한: 640)"
 fi
 
-# 테스트 웹 페이지 및 타깃 디렉토리 생성
+# 기존 index.html 백업 및 테스트 웹 페이지 배포
 mkdir -p /var/www/html
+if [[ -f /var/www/html/index.html ]]; then
+    cp /var/www/html/index.html "/var/www/html/index.html.bak.${TIMESTAMP}"
+    log_warn "기존 index.html 백업 완료: /var/www/html/index.html.bak.${TIMESTAMP}"
+fi
+
 cat << 'EOF' > /var/www/html/index.html
 <!DOCTYPE html>
 <html lang="ko">
@@ -277,11 +301,16 @@ systemctl restart nginx
 log_success "Nginx 웹 서버 구성 및 서비스 재시작 완료 (포트 80 활성화)"
 
 # 6. 방화벽(UFW) 포트 개방 설정
-log_info "UFW 방화벽 규칙 구성 중 (포트 22, 80 개방)..."
+log_info "UFW 방화벽 규칙 점검 및 구성 중..."
 if command -v ufw >/dev/null 2>&1; then
     ufw allow 22/tcp comment 'CloudShield SSH' || true
     ufw allow 80/tcp comment 'CloudShield HTTP' || true
-    log_success "UFW 방화벽 포트 22/tcp, 80/tcp 허용 규칙 추가 완료"
+
+    if ufw status 2>/dev/null | grep -qi "Status: active"; then
+        log_success "UFW 활성화 상태 감지: 포트 22/tcp, 80/tcp 허용 규칙 적용 완료"
+    else
+        log_info "UFW 비활성화 상태: 방화벽 규칙 사전 등록 완료 (L4 포트 제어는 AWS Security Group이 제어함)"
+    fi
 fi
 
 # 7. 수집 타깃 로그 경로 및 권한 최종 검증

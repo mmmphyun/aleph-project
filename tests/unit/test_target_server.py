@@ -19,18 +19,21 @@ def test_init_target_server_script_integrity() -> None:
 
     content = script_path.read_text(encoding="utf-8")
 
-    # 1. POSIX 셸 안전성 플래그 필수 적용 여부
+    # 1. POSIX 셸 안전성 플래그 및 보안 수칙 검증
     assert "set -euo pipefail" in content, "안전성 플래그가 필수입니다."
-
-    # 2. 루트 권한 검사 포함 여부
     assert "EUID" in content, "루트 권한(EUID) 검증 로직이 포함되어야 합니다."
+    assert "openssl passwd" in content, "htpasswd 평문 저장 금지(해시 사용 필수)."
+    assert "chmod 640 /etc/nginx/.htpasswd" in content, "htpasswd 권한 640 제한 필수."
 
-    # 3. 필수 포트(22, 80) 및 데몬 설정 포함 여부
-    assert "22" in content and "80" in content, "포트 22/80 설정이 필요합니다."
+    # 2. OpenSSH 우선순위 및 백업/복구 로직 검증
     assert "00-cloudshield.conf" in content, "OpenSSH 우선순위 00-*.conf 파일 사용 필수."
-    assert "PasswordAuthentication yes" in content, "SSH PasswordAuth 활성화 필요."
+    assert "sshd_config.bak" in content, "기존 sshd_config 백업/복구 로직 필수."
     assert "sshd -T" in content, "OpenSSH 런타임 실측(sshd -T) 평가 검증 필요."
-    assert "LogLevel VERBOSE" in content, "상세 감사 로그 수집을 위해 VERBOSE 필요."
+
+    # 3. Nginx / index.html 백업 가드 및 UFW 로깅 검증
+    assert "nginx.conf.bak" in content, "재실행 시 nginx.conf 백업 가드 필요."
+    assert "index.html.bak" in content, "재실행 시 index.html 백업 가드 필요."
+    assert "ufw status" in content, "UFW 실제 활성화 상태 감지 로직 필요."
 
     # 4. 수집 타깃 로그 경로 검증
     assert "/var/log/auth.log" in content, "auth.log 경로가 명시되어야 합니다."
