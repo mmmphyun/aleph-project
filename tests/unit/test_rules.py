@@ -327,6 +327,51 @@ def test_failures_across_five_days_do_not_trigger_brute_force() -> None:
     assert rule_name is None
 
 
+def test_leap_day_failures_trigger_brute_force() -> None:
+    """2월 29일의 유효한 Syslog 실패가 날짜 변환에서 모두 누락되지 않도록 검증한다."""
+    events = []
+    for i in range(5):
+        line = _LOG_TEMPLATE.replace("Sep 03", "Feb 29").format(
+            i=i, user="root", ip="198.51.100.20"
+        )
+        event = SyslogAuthEvent.parse_line(line)
+        assert event is not None
+        events.append(event)
+    assert evaluate_rules(events) == (True, "SSH_BRUTE_FORCE")
+
+
+def test_leap_day_midnight_window_boundary() -> None:
+    """윤일 진입·종료 양쪽에서 자정을 넘는 300초 포함 및 301초 제외를 검증한다."""
+    for start_date, end_date in (("Feb 28", "Feb 29"), ("Feb 29", "Mar 01")):
+        for end_time, expected in (
+            ("00:02:00", (True, "SSH_BRUTE_FORCE")),
+            ("00:02:01", (False, None)),
+        ):
+            events = []
+            for i in range(5):
+                timestamp = f"{start_date} 23:57:00" if i < 4 else f"{end_date} {end_time}"
+                line = _LOG_TEMPLATE.replace("Sep 03 14:20:01", timestamp).format(
+                    i=i, user="root", ip="198.51.100.20"
+                )
+                event = SyslogAuthEvent.parse_line(line)
+                assert event is not None
+                events.append(event)
+            assert evaluate_rules(events) == expected
+
+
+def test_invalid_syslog_date_is_excluded() -> None:
+    """윤년 기준을 사용해도 2월 30일처럼 존재하지 않는 날짜는 집계하지 않는다."""
+    events = []
+    for i in range(5):
+        line = _LOG_TEMPLATE.replace("Sep 03", "Feb 30").format(
+            i=i, user="root", ip="198.51.100.20"
+        )
+        event = SyslogAuthEvent.parse_line(line)
+        assert event is not None
+        events.append(event)
+    assert evaluate_rules(events) == (False, None)
+
+
 def test_brute_force_has_priority_over_spraying() -> None:
     """단일 계정 집중 공격에 1회 타 계정 실패가 섞여도 Brute Force를 우선 반환한다."""
     events = _make_events("198.51.100.11", "root", BRUTE_FORCE_THRESHOLD)
