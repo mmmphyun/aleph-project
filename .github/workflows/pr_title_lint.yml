@@ -39,3 +39,30 @@ jobs:
           subjectPatternError: "PR 제목의 요약 설명이 누락되었습니다."
           headerPattern: '^(\w+)\(([\w$-]+)\):\s*(.+)$'
           headerPatternError: "PR 제목은 '<type>(<scope>): <한글 요약>' 형식이어야 합니다. 예: feat(security): SSH 로그인 실패 룰 구현"
+
+      - name: Validate PR Body Metadata (Notion & Issue)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const title = pr.title || "";
+            const body = pr.body || "";
+
+            // 직무 기능 PR 여부 판별 (network, cloud-b, security, cloud-a의 feat/fix)
+            const isFeaturePr = /^(feat|fix)\((network|cloud-b|security|cloud-a)\)/.test(title);
+            if (!isFeaturePr) {
+              console.log("기능 PR이 아니므로 메타데이터 검증을 건너뜁니다.");
+              return;
+            }
+
+            // 1. 노션 URL 검증 (32자리 hex 또는 UUID)
+            const notionRegex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?![0-9a-f])|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})(?![0-9a-f])/i;
+            if (!notionRegex.test(body)) {
+              core.setFailed("[검증 실패] PR 본문에 유효한 노션 카드 URL이 누락되었습니다. '- Notion Task: https://notion.so/...' 형식으로 기재해 주세요.");
+            }
+
+            // 2. GitHub 이슈 번호 검증 (#123 형식)
+            const issueRegex = /#\d+/;
+            if (!issueRegex.test(body)) {
+              core.setFailed("[검증 실패] PR 본문에 연관된 GitHub Issue 번호(#<숫자>)가 누락되었습니다. 작업 착수 전 'gh issue create'로 이슈를 먼저 발행하고 PR에 연결해 주세요.");
+            }

@@ -36,5 +36,15 @@ jobs:
       - name: Check Ruff Formatting
         run: uv run ruff format --check .
 
+      - name: Verify Test File Location
+        run: |
+          WRONG_TESTS=$(find . -type f -name "test_*.py" -not -path "./tests/*" -not -path "./.venv/*")
+          if [ -n "$WRONG_TESTS" ]; then
+            echo "::error::표준 경로(tests/) 외부에 단위 테스트 파일이 발견되었습니다:"
+            echo "$WRONG_TESTS"
+            echo "모든 단위 테스트는 tests/unit/ 또는 tests/ 하위에 위치해야 합니다."
+            exit 1
+          fi
+
       - name: Run Contract & Unit Tests
         run: uv run pytest -v

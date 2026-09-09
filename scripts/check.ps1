@@ -3,13 +3,22 @@
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "[1/3] Ruff Lint 검사 실행 중..." -ForegroundColor Cyan
+Write-Host "[1/4] 테스트 파일 표준 경로 검사 중..." -ForegroundColor Cyan
+$wrongTests = Get-ChildItem -Path . -Recurse -Filter "test_*.py" -File | Where-Object { 
+    $_.FullName -notmatch "[\\/]tests[\\/]" -and $_.FullName -notmatch "[\\/]\.venv[\\/]" 
+}
+if ($wrongTests) {
+    Write-Error "[오류] 표준 경로(tests/) 외부에 단위 테스트 파일이 발견되었습니다:`n$($wrongTests.FullName -join "`n")`n모든 단위 테스트는 tests/unit/ 하위에 위치해야 합니다."
+    exit 1
+}
+
+Write-Host "[2/4] Ruff Lint 검사 실행 중..." -ForegroundColor Cyan
 uv run ruff check .
 
-Write-Host "[2/3] Ruff Format 검사 실행 중..." -ForegroundColor Cyan
+Write-Host "[3/4] Ruff Format 검사 실행 중..." -ForegroundColor Cyan
 uv run ruff format --check .
 
-Write-Host "[3/3] Pytest 단위 및 계약 테스트 실행 중..." -ForegroundColor Cyan
+Write-Host "[4/4] Pytest 단위 및 계약 테스트 실행 중..." -ForegroundColor Cyan
 uv run pytest -v
 
 Write-Host "`n[성공] 모든 로컬 품질 및 계약 검증을 통과했습니다." -ForegroundColor Green
