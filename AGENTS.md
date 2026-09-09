@@ -19,16 +19,16 @@
 
 ```text
 [직무별 고유 도메인 영역 - 면접 핵심 무기: 상호 침범 절대 금지]
-1. 네트워크: 모의 공격 스크립트, tcpdump/Wireshark L4 패킷 플래그 분석 보고서 (network/, docs/roles/network/)
-2. 클라우드 B: CW Agent 수집 설정, Slack Block Kit 알림 모듈 (src/collector/, src/reporter/, docs/roles/cloud-b/)
-3. 보안: 정규식 시그니처 룰(rules.py), LLM Few-shot 프롬프트/분석기 (src/detection/, docs/roles/security/)
+1. 네트워크: 모의 공격 스크립트, 패킷 분석 보고서, 네트워크 단위 테스트 (network/, tests/unit/test_network.py, docs/roles/network/)
+2. 클라우드 B: CW Agent 설정, Slack 카드 알림 모듈, 수집/리포터 단위 테스트 (src/collector/, src/reporter/, tests/unit/test_collector.py, tests/unit/test_reporter.py, docs/roles/cloud-b/)
+3. 보안: 정규식 시그니처 룰, LLM 분석기, 탐지 단위 테스트 (src/detection/, tests/unit/test_rules.py, tests/unit/test_llm_analyzer.py, docs/roles/security/)
 
 [클라우드 A 전담 플랫폼 영역 - 엔지니어링 깊이 확보]
 - 공통 데이터 인터페이스 계약 (src/contracts/)
-- Lambda 런타임 오케스트레이터 및 Boto3 원자적 복합 차단 엔진 (src/remediation/)
+- Lambda 런타임 오케스트레이터 및 Boto3 원자적 복합 차단 엔진 (src/remediation/, tests/unit/test_remediation.py)
 - Terraform IaC 모듈화 및 Trivy 검증 (infra/)
 - GitHub Actions OIDC 무인증 CI/CD 파이프라인 (.github/)
-- moto 기반 가상 AWS 테스트베드 및 개발 하네스 (tests/)
+- moto 기반 가상 AWS 테스트베드 및 개발 하네스 (tests/conftest.py, tests/test_contracts.py, tests/mock_data/)
 - 플랫폼 아키텍처 문서 (docs/roles/cloud-a/)
 
 [팀 공통 협업 문서 영역 - 자유 작성 허용]
@@ -42,7 +42,9 @@
 2. **2순위 (프롬프트 수동 명시)**: 사용자의 첫 메시지에 포함된 직무 태그 확인 (`[보안] ...`, `나 네트워크 담당인데 ...`).
 3. **3순위 (역질문 강제)**: 1, 2순위 모두 없을 경우 에이전트는 코드를 작성하지 말고 첫마디로 *"담당 직무(네트워크/클라우드 B/보안/클라우드 A)가 무엇인가요?"*를 역질문하여 역할을 확정한 뒤 착수한다.
 4. **설명 선행 원칙**: 코딩을 시작하기 전, 해당 작업의 핵심 개념과 원리를 사용자에게 2~3줄로 먼저 설명하여 담당자의 기술 이해도 및 면접 역량을 지원한다.
-5. **노션 시작 전 티켓 연동**: 새 작업 착수 시 `node scripts/get_my_tasks.js`를 실행하여 노션 [프로젝트 일정] DB의 `[시작 전]` 티켓을 자동 조회하고, 일치하는 티켓 링크를 GitHub Issue 본문에 자동 포함하여 칸반 보드를 `[진행 중]`으로 자동 전이시킨다.
+5. **노션 시작 전 티켓 연동 및 Fallback 의무**:
+   - 새 작업 착수 시 `node scripts/get_my_tasks.js`를 실행하여 노션 [프로젝트 일정] DB의 `[시작 전]` 티켓을 자동 조회하고, 일치하는 티켓 링크를 GitHub Issue 본문에 자동 포함하여 칸반 보드를 `[진행 중]`으로 자동 전이시킨다.
+   - **Fallback (노션 API 미설정/조회 실패 시)**: 노션 API 키가 없는 경우에도 GitHub Issue 생성(`gh issue create`)은 필수이며, 작업자는 웹 브라우저에서 해당 노션 일감 카드 URL을 직접 복사하여 Issue/PR 본문에 반드시 기재한다.
 
 ### 2.2 경계선 파일 단일 소유권 매트릭스 (Single Ownership Matrix)
 직무 간 경계가 모호한 설정 및 명세 파일은 단일 소유자 원칙에 따라 아래 지정된 직무 외에는 임의 수정할 수 없다:
@@ -97,8 +99,9 @@
   3. **Side-effects / Edge-cases**: 외부 API 호출, 예외 발생 조건, 동시성 주의사항.
 
 ### 5.1 직무별 산출물 특화 엔지니어링 표준 (Domain-specific Standards)
-1. **네트워크 (`network/`)**:
+1. **네트워크 (`network/`, `tests/unit/test_network.py`)**:
    - 모의 공격 셸 스크립트 작성 시 비정상 종료 방지 및 안전성 플래그(`set -euo pipefail`) 필수 적용.
+   - 공격 시뮬레이션 검증 단위 테스트는 pytest 표준 수집 경로인 `tests/unit/test_network.py`에 작성.
    - Wireshark/tcpdump 분석 보고서 작성 시 단순 패킷 나열을 금지하고, L4 TCP 플래그(SYN, ACK, RST), 3-Way Handshake 타임라인, 공격 페이로드의 비정상 패턴을 마크다운 표로 구조화.
 2. **보안 (`src/detection/`)**:
    - 정규식 시그니처 룰 작성 시 ReDoS(Catastrophic Backtracking) 방어 구조를 적용하고, 정규식 설계 근거(Why) 및 매칭 복잡도를 주석으로 명시.

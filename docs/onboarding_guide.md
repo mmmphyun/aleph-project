@@ -43,6 +43,21 @@ uv sync
 
 ---
 
+## 2.1 작업 착수 전 티켓 확인 및 GitHub Issue 생성
+
+새 작업을 시작할 때 노션 [프로젝트 일정] DB의 티켓을 확인하고 GitHub Issue를 생성합니다:
+
+1. **자동 조회 (`node scripts/get_my_tasks.js`)**:
+   - `.env`에 `NOTION_API_KEY`가 설정된 경우 본인 직무의 `[시작 전]` 티켓 목록과 링크가 콘솔에 자동 출력됩니다.
+2. **수동 연동 (Fallback - API 키 미설정 시)**:
+   - 노션 웹 칸반 보드에서 본인 일감 카드의 링크를 복사한 뒤, GitHub CLI로 이슈를 생성합니다:
+     ```powershell
+     gh issue create --title "feat(<직무>): <작업_제목>" --body "- Notion Task: <복사한_노션_카드_URL>`n- 브랜치: feat/<직무>-<기능명>"
+     ```
+   - 또는 GitHub 웹 저장소의 **Issues $\rightarrow$ New issue**를 통해 수동 등록합니다.
+
+---
+
 ## 3. 직무별 작업 영역 및 표준 프롬프트
 
 각 담당자는 본인에게 할당된 작업 디렉토리 내에서 개발을 진행합니다. 작업 착수 시 사용하는 코딩 에이전트의 채팅창에 아래 **표준 프롬프트**를 복사하여 전달합니다.
@@ -82,7 +97,7 @@ uv sync
 
 ### 3.3 [네트워크 담당자 - 1단계 일감 프롬프트]
 * **작업 티켓**: `[네트워크] SSH 단일 연결 시도 셸 스크립트 및 안전 플래그(set -euo) 작성`
-* **작업 디렉토리**: `network/`
+* **작업 디렉토리**: `network/`, `tests/unit/test_network.py`
 * **표준 프롬프트**:
   ```text
   나는 CloudShield 프로젝트의 [네트워크] 담당자야.
