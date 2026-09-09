@@ -10,32 +10,133 @@ Why:
 
 Constraints:
     - ReDoS(Catastrophic Backtracking) 방어를 위해 정규식 패턴은 단순 선형 탐색을 유지함.
+      역참조(Backreference) 및 중첩 반복 수량자(Nested Quantifier) 사용 금지.
     - 입력 로그는 SyslogAuthEvent 리스트 형태여야 함.
+    - 룰명(rule_name)은 Lambda 오케스트레이터 및 Slack 알림 카드의 식별 키로 사용되므로
+      SCREAMING_SNAKE_CASE 컨벤션을 반드시 준수함 (예: SSH_BRUTE_FORCE).
+
+MITRE ATT&CK 매핑:
+    - SSH_BRUTE_FORCE        → T1110.001 (Brute Force: Password Guessing)
+    - SSH_PASSWORD_SPRAYING  → T1110.003 (Brute Force: Password Spraying)
 """
 
 from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime
 
 from contracts.events import SyslogAuthEvent
 
 # 타입 호환성 및 개발 편의성을 위한 별칭 제공
 SyslogEvent = SyslogAuthEvent
 
+# ---------------------------------------------------------------------------
+# 탐지 임계치 상수
+# ---------------------------------------------------------------------------
+
+# 단일 계정 대상 실패 횟수 임계치 (T1110.001 Brute Force: Password Guessing)
+# Why: Hydra 기본 설정 및 실제 침해 사례 분석 결과, 5회 이상을 자동화 공격으로 판정.
+#      1~4회는 정상 관리자 오타 범주로 허용하여 오탐을 억제함.
+BRUTE_FORCE_THRESHOLD: int = 5
+
+# 다중 계정 대상 고유 계정 수 임계치 (T1110.003 Password Spraying)
+# Why: 동일 IP에서 2개 이상의 계정을 시도하면 계정 목록 보유 공격자로 판정.
+#      스프레잉은 단일 계정 실패 횟수와 무관하게 계정 다양성으로 판별함.
+PASSWORD_SPRAYING_THRESHOLD: int = 2
+
+# 반복 실패 탐지 시간창(초)
+# Why: 서로 다른 날짜에 발생한 정상 로그인 오류를 한 배치로 수신했다는 이유만으로
+#      자동화 공격으로 오판하지 않도록, 공격의 시간적 밀집도를 필수 조건으로 둠.
+# Constraints: CloudWatch Subscription Filter의 전송 지연을 고려한 5분(300초) 고정 창.
+DETECTION_WINDOW_SECONDS: int = 5 * 60
+
+
+def _timestamp_to_epoch_seconds(timestamp_str: str) -> float | None:
+    """계약의 Syslog/ISO 8601 시각을 비교 가능한 초 단위 값으로 정규화한다.
+
+    Syslog에는 연도가 없으므로 2월 29일도 유효한 윤년 2000을 기준으로 사용한다.
+    이 값은 절대 시각이 아닌 동일 로그 배치 안의 시간 간격 판정에만 사용한다.
+    실제 연도는 복원할 수 없어 평년의 2월 말 및 연말 경계 해석에는 한계가 있다.
+    정확한 연도 경계 판정에는 호출부에서 연도가 포함된 발생 시각을 전달해야 한다.
+    """
+    try:
+        if "T" in timestamp_str:
+            return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")).timestamp()
+        return datetime.strptime(f"2000 {timestamp_str}", "%Y %b %d %H:%M:%S").timestamp()
+    except ValueError:
+        # 계약 밖의 시각 포맷은 시간 기반 집계에서 제외해 오래된 이벤트의 오탐을 방지한다.
+        return None
+
+
+def _has_repeated_events_within_window(timestamps: list[float], threshold: int) -> bool:
+    """정렬된 시각 목록에 임계치 이상의 이벤트가 시간창 내 밀집했는지 판정한다."""
+    timestamps.sort()
+    left = 0
+    for right, timestamp in enumerate(timestamps):
+        while timestamp - timestamps[left] > DETECTION_WINDOW_SECONDS:
+            left += 1
+        if right - left + 1 >= threshold:
+            return True
+    return False
+
 
 def evaluate_rules(logs: list[SyslogAuthEvent]) -> tuple[bool, str | None]:
-    """수집된 Syslog 인증 이벤트 목록을 분석하여 위협 여부 및 탐지 룰 식별.
+    """Syslog SSH 인증 실패 이벤트 리스트에 1차 시그니처 룰을 적용한다.
 
-    Why:
-        동일 출발지 IP 기반의 단시간 실패 임계치(단일 계정 5회 이상, 다중 계정 2개 이상)를
-        평가하여 신속한 인프라 선제 차단(HIGH) 여부를 결정함.
+    적용 룰 (우선순위 순):
+        1. SSH_BRUTE_FORCE       : 동일 IPㆍ계정에서 5분 내 5회 이상 실패.
+        2. SSH_PASSWORD_SPRAYING : 동일 IP에서 5분 내 2개 이상 고유 계정 실패.
 
-    Constraints:
-        - logs: 비어 있지 않은 SyslogAuthEvent(또는 SyslogEvent) 인스턴스 리스트.
-        - 반환값: (위협_탐지_여부: bool, 매칭된_규칙명_또는_None: str | None).
+    Args:
+        logs: SyslogAuthEvent 파싱 완료 이벤트 리스트.
+
+    Returns:
+        (탐지 여부: bool, 룰명: str | None) 튜플.
+        탐지 없을 경우 (False, None) 반환.
 
     Side-effects / Edge-cases:
-        - 빈 리스트 인입 시 (False, None)을 반환해야 함.
-        - 정상 로그인 실패(1~2회 단순 오타)는 오탐(False Positive) 방지를 위해 탐지하지 않음.
-        - 단일 IP에서 서로 다른 사용자 계정으로 실패가 누적될 경우
-          Password Spraying(T1110.003)으로 분류.
+        - 빈 리스트 입력 시 즉시 (False, None) 반환.
+        - 호출 간 상태를 저장하지 않는다. 분할 배치의 누적 이력 조회·중복 제거는
+          호출부의 책임이며 플랫폼 이슈 #21에서 구현해야 한다.
+        - 동일 이벤트가 복수 룰에 해당하는 경우 우선순위가 높은 룰 하나만 반환.
+          (중복 알림으로 인한 Slack 노이즈 방지)
     """
-    raise NotImplementedError("보안 담당자 구현 영역: 시그니처 기반 1차 룰 엔진")
+    if not logs:
+        return False, None
+
+    # IP → (발생 시각, 계정명, 원문) 목록. 시간창 밖 이벤트는 같은 배치여도 합산하지 않는다.
+    ip_events: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
+
+    for event in logs:
+        timestamp = _timestamp_to_epoch_seconds(event.timestamp_str)
+        if timestamp is not None:
+            ip_events[event.source_ip].append((timestamp, event.username, event.raw_message))
+
+    # 룰 1: 구체적이고 높은 위험도의 단일 계정 집중 공격을 전역적으로 먼저 평가한다.
+    for events in ip_events.values():
+        account_timestamps: dict[str, list[float]] = defaultdict(list)
+        for timestamp, username, _ in events:
+            account_timestamps[username].append(timestamp)
+        if any(
+            _has_repeated_events_within_window(timestamps, BRUTE_FORCE_THRESHOLD)
+            for timestamps in account_timestamps.values()
+        ):
+            return True, "SSH_BRUTE_FORCE"
+
+    # 룰 2: 한 시간창에서만 서로 다른 계정 수를 계산한다.
+    for events in ip_events.values():
+        events.sort(key=lambda event: event[0])
+        account_counts: dict[str, int] = defaultdict(int)
+        left = 0
+        for _, (timestamp, username, _) in enumerate(events):
+            account_counts[username] += 1
+            while timestamp - events[left][0] > DETECTION_WINDOW_SECONDS:
+                expired_username = events[left][1]
+                account_counts[expired_username] -= 1
+                if account_counts[expired_username] == 0:
+                    del account_counts[expired_username]
+                left += 1
+            if len(account_counts) >= PASSWORD_SPRAYING_THRESHOLD:
+                return True, "SSH_PASSWORD_SPRAYING"
+
+    return False, None
