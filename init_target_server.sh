@@ -62,38 +62,77 @@ apt-get install -y --no-install-recommends \
     lsb-release \
     nginx \
     openssh-server \
+    openssl \
     rsyslog \
     ufw \
     net-tools \
     procps
 
-log_success "필수 패키지(nginx, openssh-server, rsyslog 등) 설치 완료"
+log_success "필수 패키지(nginx, openssh-server, openssl, rsyslog 등) 설치 완료"
 
 # 4. SSH 데몬 설정 (인증 실패 로그 생성 보장)
 # Why:
 #   OpenSSH(sshd_config)는 '먼저 평가된 설정값(First Match Wins)'을 채택하므로,
 #   cloud-init 설정(50-cloud-init.conf)보다 사전 로드되도록 00-cloudshield.conf로 배치함.
 #   기존 패키지/cloud-init 관리 파일은 직접 수정하지 않으며, sshd_config 최상단 Include를 보장하고
-#   sshd -T로 런타임 실측 결과를 검증함 (실패 시 변경 전 설정 자동 복구).
+#   sshd -T로 런타임 실측 결과를 검증함 (실패 시 변경 전 drop-in 및 메인 설정 완전 자동 복구).
 log_info "OpenSSH 데몬 설정 최적화 및 우선순위 조정 중..."
 
 SSHD_MAIN_CONF="/etc/ssh/sshd_config"
-SSHD_BAK_CONF="/etc/ssh/sshd_config.bak.cloudshield"
+SSHD_MAIN_BAK="/etc/ssh/sshd_config.bak.cloudshield"
 SSHD_DIR="/etc/ssh/sshd_config.d"
 SSHD_CUSTOM_CONF="${SSHD_DIR}/00-cloudshield.conf"
+SSHD_CUSTOM_BAK="${SSHD_DIR}/00-cloudshield.conf.bak.cloudshield"
 SSHD_LEGACY_CONF="${SSHD_DIR}/99-cloudshield.conf"
+SSHD_LEGACY_BAK="${SSHD_DIR}/99-cloudshield.conf.bak.cloudshield"
 
 mkdir -p "${SSHD_DIR}"
 
-# 구 버전 설정 파일 정리
+# 실행 전 기존 파일 상태 백업 (재실행 실패 시 완전한 원상복구를 위해)
+HAD_MAIN=false
+HAD_CUSTOM=false
+HAD_LEGACY=false
+
+if [[ -f "${SSHD_MAIN_CONF}" ]]; then
+    cp "${SSHD_MAIN_CONF}" "${SSHD_MAIN_BAK}"
+    HAD_MAIN=true
+fi
+
+if [[ -f "${SSHD_CUSTOM_CONF}" ]]; then
+    cp "${SSHD_CUSTOM_CONF}" "${SSHD_CUSTOM_BAK}"
+    HAD_CUSTOM=true
+fi
+
 if [[ -f "${SSHD_LEGACY_CONF}" ]]; then
+    cp "${SSHD_LEGACY_CONF}" "${SSHD_LEGACY_BAK}"
+    HAD_LEGACY=true
     rm -f "${SSHD_LEGACY_CONF}"
 fi
 
-# sshd_config 백업 생성
-if [[ -f "${SSHD_MAIN_CONF}" ]]; then
-    cp "${SSHD_MAIN_CONF}" "${SSHD_BAK_CONF}"
-fi
+rollback_sshd() {
+    log_error "SSH 설정 검증 실패! 실행 전 상태로 완전 복원(Rollback)합니다."
+    if [[ "${HAD_MAIN}" == true && -f "${SSHD_MAIN_BAK}" ]]; then
+        cp "${SSHD_MAIN_BAK}" "${SSHD_MAIN_CONF}"
+        rm -f "${SSHD_MAIN_BAK}"
+    fi
+
+    if [[ "${HAD_CUSTOM}" == true && -f "${SSHD_CUSTOM_BAK}" ]]; then
+        cp "${SSHD_CUSTOM_BAK}" "${SSHD_CUSTOM_CONF}"
+        rm -f "${SSHD_CUSTOM_BAK}"
+    else
+        rm -f "${SSHD_CUSTOM_CONF}"
+        rm -f "${SSHD_CUSTOM_BAK}"
+    fi
+
+    if [[ "${HAD_LEGACY}" == true && -f "${SSHD_LEGACY_BAK}" ]]; then
+        cp "${SSHD_LEGACY_BAK}" "${SSHD_LEGACY_CONF}"
+        rm -f "${SSHD_LEGACY_BAK}"
+    fi
+}
+
+cleanup_sshd_backups() {
+    rm -f "${SSHD_MAIN_BAK}" "${SSHD_CUSTOM_BAK}" "${SSHD_LEGACY_BAK}"
+}
 
 # sshd_config 최상단에 Include 구문 보장 (00-*.conf가 다른 모든 설정보다 최우선 로드되도록 정렬)
 if [[ -f "${SSHD_MAIN_CONF}" ]]; then
@@ -119,11 +158,8 @@ systemctl restart rsyslog
 
 # SSH 데몬 설정 문법 검증 및 실패 시 자동 복구
 if ! sshd -t; then
-    log_error "SSH 문법 검사 실패! 원본 sshd_config를 복구합니다."
-    if [[ -f "${SSHD_BAK_CONF}" ]]; then
-        cp "${SSHD_BAK_CONF}" "${SSHD_MAIN_CONF}"
-    fi
-    rm -f "${SSHD_CUSTOM_CONF}"
+    log_error "SSH 문법 검사 실패!"
+    rollback_sshd
     exit 1
 fi
 
@@ -134,13 +170,11 @@ EFFECTIVE_PASS_AUTH="$(sshd -T | grep -i '^passwordauthentication' | awk '{print
 
 if [[ "${EFFECTIVE_PASS_AUTH}" != "yes" ]]; then
     log_error "SSH PasswordAuthentication 적용 실패! (sshd -T 실측 결과: ${EFFECTIVE_PASS_AUTH})"
-    log_error "기존 변경 전 sshd_config 설정을 복구하고 실패 종료합니다."
-    if [[ -f "${SSHD_BAK_CONF}" ]]; then
-        cp "${SSHD_BAK_CONF}" "${SSHD_MAIN_CONF}"
-    fi
-    rm -f "${SSHD_CUSTOM_CONF}"
+    rollback_sshd
     exit 1
 fi
+
+cleanup_sshd_backups
 log_success "SSH PasswordAuthentication 런타임 실측 검증 완료 (status: ${EFFECTIVE_PASS_AUTH})"
 
 # SSH 데몬 서비스 재시작
@@ -245,14 +279,27 @@ http {
 NGINX_CONF_EOF
 fi
 
-# /admin 엔드포인트 401 인증용 해시 기반 htpasswd 생성 (평문 저장 방지 & 권한 640 제한)
-if [[ ! -f /etc/nginx/.htpasswd ]]; then
-    PASS_HASH="$(openssl passwd -1 "cloudshield_demo_pass" 2>/dev/null || echo '$1$cloudshield$qH/9JzE2Vd8S7q0M3u5mJ.')"
-    echo "admin:${PASS_HASH}" > /etc/nginx/.htpasswd
-    chmod 640 /etc/nginx/.htpasswd
-    chown root:www-data /etc/nginx/.htpasswd 2>/dev/null || chown root:adm /etc/nginx/.htpasswd 2>/dev/null || true
-    log_success "Nginx htpasswd 해시 인증 정보 생성 완료 (권한: 640)"
+# /admin 엔드포인트 401 인증용 해시 기반 htpasswd 생성 및 기존 평문 마이그레이션
+HTPASSWD_FILE="/etc/nginx/.htpasswd"
+
+NEEDS_HASH=false
+if [[ ! -f "${HTPASSWD_FILE}" ]]; then
+    NEEDS_HASH=true
+elif grep -q "{PLAIN}" "${HTPASSWD_FILE}" 2>/dev/null || grep -q "cloudshield_demo_pass" "${HTPASSWD_FILE}" 2>/dev/null; then
+    log_warn "기존 htpasswd 내 평문 인증정보 감지! 해시 암호화로 마이그레이션합니다."
+    NEEDS_HASH=true
 fi
+
+if [[ "${NEEDS_HASH}" == true ]]; then
+    PASS_HASH="$(openssl passwd -1 "cloudshield_demo_pass" 2>/dev/null || echo '$1$cloudshield$qH/9JzE2Vd8S7q0M3u5mJ.')"
+    echo "admin:${PASS_HASH}" > "${HTPASSWD_FILE}"
+    log_success "Nginx htpasswd 해시 인증 정보 생성/마이그레이션 완료"
+fi
+
+# 파일이 이미 존재하더라도 필요한 소유권 및 최소 권한(640) 항시 보정
+chmod 640 "${HTPASSWD_FILE}"
+chown root:www-data "${HTPASSWD_FILE}" 2>/dev/null || chown root:adm "${HTPASSWD_FILE}" 2>/dev/null || true
+log_success "Nginx htpasswd 파일 권한(640) 및 소유권 보정 완료"
 
 # 기존 index.html 백업 및 테스트 웹 페이지 배포
 mkdir -p /var/www/html
