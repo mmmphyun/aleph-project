@@ -94,6 +94,8 @@ def evaluate_rules(logs: list[SyslogAuthEvent]) -> tuple[bool, str | None]:
 
     Side-effects / Edge-cases:
         - 빈 리스트 입력 시 즉시 (False, None) 반환.
+        - 호출 간 상태를 저장하지 않는다. 분할 배치의 누적 이력 조회·중복 제거는
+          호출부의 책임이며 플랫폼 이슈 #21에서 구현해야 한다.
         - 동일 이벤트가 복수 룰에 해당하는 경우 우선순위가 높은 룰 하나만 반환.
           (중복 알림으로 인한 Slack 노이즈 방지)
     """

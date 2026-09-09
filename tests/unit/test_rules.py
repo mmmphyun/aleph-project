@@ -101,6 +101,42 @@ def test_brute_force_detection_success() -> None:
     assert rule_name == "SSH_BRUTE_FORCE"
 
 
+def test_account_and_host_keywords_do_not_trigger_unauthorized_access() -> None:
+    """리뷰에서 지적된 계정·호스트 키워드가 정상 실패를 별도 위협으로 승격하지 않는다."""
+    for keyword in ("denied", "unauthorized"):
+        line = _LOG_TEMPLATE.replace("target-ec2", f"{keyword}-host").format(
+            i=0, user=keyword, ip="198.51.100.12"
+        )
+        event = SyslogAuthEvent.parse_line(line)
+        assert event is not None
+        assert evaluate_rules([event]) == (False, None)
+
+
+def test_brute_force_window_exact_boundary() -> None:
+    """300초는 포함하고 301초는 제외해 시간 조건 수정의 경계를 고정한다."""
+    for end_time, expected in (
+        ("14:25:01", (True, "SSH_BRUTE_FORCE")),
+        ("14:25:02", (False, None)),
+    ):
+        events = _make_events("198.51.100.13", "root", 4)
+        line = _LOG_TEMPLATE.replace("14:20:01", end_time).format(
+            i=5, user="root", ip="198.51.100.13"
+        )
+        event = SyslogAuthEvent.parse_line(line)
+        assert event is not None
+        events.insert(0, event)
+        assert evaluate_rules(events) == expected
+
+
+def test_brute_force_priority_is_independent_of_ip_order() -> None:
+    """스프레잉 IP가 먼저 들어와도 다른 IP의 단일 계정 공격이 우선해야 한다."""
+    spraying = _make_events("198.51.100.14", "admin", 1)
+    spraying.extend(_make_events("198.51.100.14", "guest", 1))
+    brute_force = _make_events("198.51.100.15", "root", 100)
+    for events in (spraying + brute_force, brute_force + spraying):
+        assert evaluate_rules(events) == (True, "SSH_BRUTE_FORCE")
+
+
 def test_password_spraying_detection_success(sample_auth_log_lines: list[str]) -> None:
     """동일 IP에서 PASSWORD_SPRAYING_THRESHOLD개 이상 고유 계정 실패 시
     SSH_PASSWORD_SPRAYING 탐지 검증.
