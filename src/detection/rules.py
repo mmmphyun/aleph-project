@@ -50,6 +50,7 @@ PASSWORD_SPRAYING_THRESHOLD: int = 2
 # Constraints: CloudWatch Subscription Filter의 전송 지연을 고려한 5분(300초) 고정 창.
 DETECTION_WINDOW_SECONDS: int = 5 * 60
 
+
 def _timestamp_to_epoch_seconds(timestamp_str: str) -> float | None:
     """계약의 Syslog/ISO 8601 시각을 비교 가능한 초 단위 값으로 정규화한다.
 

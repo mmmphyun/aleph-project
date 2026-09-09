@@ -229,5 +229,3 @@ def test_brute_force_has_priority_over_spraying() -> None:
 
     assert is_detected is True
     assert rule_name == "SSH_BRUTE_FORCE"
-
-
