@@ -18,12 +18,10 @@ Constraints:
 MITRE ATT&CK 매핑:
     - SSH_BRUTE_FORCE        → T1110.001 (Brute Force: Password Guessing)
     - SSH_PASSWORD_SPRAYING  → T1110.003 (Brute Force: Password Spraying)
-    - UNAUTHORIZED_ACCESS    → T1078 (Valid Accounts: Default Accounts)
 """
 
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -46,26 +44,11 @@ BRUTE_FORCE_THRESHOLD: int = 5
 #      스프레잉은 단일 계정 실패 횟수와 무관하게 계정 다양성으로 판별함.
 PASSWORD_SPRAYING_THRESHOLD: int = 2
 
-# DENIED/UNAUTHORIZED 키워드 반복 임계치 (비인가 권한 접근)
-# Why: 정상 접근 권한 오류는 1회에 그치지만, 반복은 권한 우회 시도로 간주.
-UNAUTHORIZED_THRESHOLD: int = 3
-
 # 반복 실패 탐지 시간창(초)
 # Why: 서로 다른 날짜에 발생한 정상 로그인 오류를 한 배치로 수신했다는 이유만으로
 #      자동화 공격으로 오판하지 않도록, 공격의 시간적 밀집도를 필수 조건으로 둠.
 # Constraints: CloudWatch Subscription Filter의 전송 지연을 고려한 5분(300초) 고정 창.
 DETECTION_WINDOW_SECONDS: int = 5 * 60
-
-# ---------------------------------------------------------------------------
-# 비인가 접근 키워드 정규식
-# ---------------------------------------------------------------------------
-# Why: 선택적 대안(|) 패턴을 단일 컴파일로 처리하여 루프 내 재컴파일 비용 제거.
-# Constraints: 단순 OR 연결만 사용하여 선형 O(n) 탐색을 보장하고 ReDoS를 방어함.
-_UNAUTHORIZED_PATTERN: re.Pattern[str] = re.compile(
-    r"\b(?:permission|access)\s+denied\b|\b(?:not\s+authorized|authorization\s+failed|unauthorized\s+access)\b",
-    re.IGNORECASE,
-)
-
 
 def _timestamp_to_epoch_seconds(timestamp_str: str) -> float | None:
     """계약의 Syslog/ISO 8601 시각을 비교 가능한 초 단위 값으로 정규화한다.
@@ -100,7 +83,6 @@ def evaluate_rules(logs: list[SyslogAuthEvent]) -> tuple[bool, str | None]:
     적용 룰 (우선순위 순):
         1. SSH_BRUTE_FORCE       : 동일 IPㆍ계정에서 5분 내 5회 이상 실패.
         2. SSH_PASSWORD_SPRAYING : 동일 IP에서 5분 내 2개 이상 고유 계정 실패.
-        3. UNAUTHORIZED_ACCESS   : 명시적 권한 거부 문구가 5분 내 3회 이상.
 
     Args:
         logs: SyslogAuthEvent 파싱 완료 이벤트 리스트.
@@ -151,15 +133,5 @@ def evaluate_rules(logs: list[SyslogAuthEvent]) -> tuple[bool, str | None]:
                 left += 1
             if len(account_counts) >= PASSWORD_SPRAYING_THRESHOLD:
                 return True, "SSH_PASSWORD_SPRAYING"
-
-    # 룰 3: 계정명ㆍ호스트명 문자열이 아닌 권한 거부 문구만 허용한다.
-    for events in ip_events.values():
-        unauthorized_timestamps = [
-            timestamp
-            for timestamp, _, raw_message in events
-            if _UNAUTHORIZED_PATTERN.search(raw_message)
-        ]
-        if _has_repeated_events_within_window(unauthorized_timestamps, UNAUTHORIZED_THRESHOLD):
-            return True, "UNAUTHORIZED_ACCESS"
 
     return False, None

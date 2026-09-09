@@ -13,7 +13,6 @@ from contracts.events import SyslogAuthEvent
 from detection.rules import (
     BRUTE_FORCE_THRESHOLD,
     PASSWORD_SPRAYING_THRESHOLD,
-    UNAUTHORIZED_THRESHOLD,
     evaluate_rules,
 )
 
@@ -201,7 +200,7 @@ def test_password_spraying_threshold_boundary() -> None:
 
 
 # ===========================================================================
-# 5. 시간창ㆍ우선순위ㆍ비인가 접근 회귀 검증
+# 5. 시간창ㆍ우선순위 회귀 검증
 # ===========================================================================
 
 
@@ -232,31 +231,3 @@ def test_brute_force_has_priority_over_spraying() -> None:
     assert rule_name == "SSH_BRUTE_FORCE"
 
 
-def test_unauthorized_access_detection_success() -> None:
-    """명시적 권한 거부 문구가 시간창 내 임계치만큼 반복되면 탐지한다."""
-    events = _make_events("203.0.113.20", "admin", UNAUTHORIZED_THRESHOLD)
-    events = [
-        event.model_copy(update={"raw_message": f"{event.raw_message} Permission denied"})
-        for event in events
-    ]
-
-    is_detected, rule_name = evaluate_rules(events)
-
-    assert is_detected is True
-    assert rule_name == "UNAUTHORIZED_ACCESS"
-
-
-def test_account_or_hostname_keyword_does_not_trigger_unauthorized_access() -> None:
-    """계정명ㆍ호스트명의 denied/unauthorized는 권한 거부 문구로 오인하지 않는다."""
-    lines = [
-        _LOG_TEMPLATE.replace("target-ec2", "unauthorized-host").format(
-            i=index, user="denied-user", ip="203.0.113.21"
-        )
-        for index in range(UNAUTHORIZED_THRESHOLD)
-    ]
-    events = [SyslogAuthEvent.parse_line(line) for line in lines]
-
-    is_detected, rule_name = evaluate_rules([event for event in events if event is not None])
-
-    assert is_detected is False
-    assert rule_name is None
