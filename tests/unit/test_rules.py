@@ -37,6 +37,25 @@ def noisy_auth_lines() -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
 
 
+@pytest.fixture
+def normal_noisy_auth_lines(noisy_auth_lines: list[str]) -> list[str]:
+    """정상 활동 샘플을 명시해 실패 문자열 부정 조건에 의존하지 않는다."""
+    normal_markers = (
+        "Accepted publickey for ubuntu",
+        "New session 42 of user ubuntu",
+        "COMMAND=/usr/bin/apt update",
+        "Connection closed by authenticating user operator",
+        "Accepted password for devops",
+        "Received disconnect from 192.0.2.10",
+        "Disconnected from user ubuntu",
+    )
+    normal_lines = [
+        line for line in noisy_auth_lines if any(marker in line for marker in normal_markers)
+    ]
+    assert len(normal_lines) == len(normal_markers)
+    return normal_lines
+
+
 def test_noisy_log_preserves_only_expected_failures(noisy_auth_lines: list[str]) -> None:
     """정상 활동이 실패 카운트에 유입되거나 실제 실패가 누락되는 회귀를 함께 검출한다."""
     events = [
@@ -55,11 +74,9 @@ def test_noisy_log_preserves_only_expected_failures(noisy_auth_lines: list[str])
     assert evaluate_rules(events) == (True, "SSH_PASSWORD_SPRAYING")
 
 
-def test_normal_activity_is_not_an_auth_failure(noisy_auth_lines: list[str]) -> None:
+def test_normal_activity_is_not_an_auth_failure(normal_noisy_auth_lines: list[str]) -> None:
     """성공 인증·sudo·세션·연결 종료는 반복돼도 공격 증거가 되지 않아야 한다."""
-    normal_lines = [line for line in noisy_auth_lines if "Failed password for " not in line]
-    assert len(normal_lines) == 7
-    for line in normal_lines:
+    for line in normal_noisy_auth_lines:
         assert SyslogAuthEvent.parse_line(line) is None, line
 
 
@@ -74,13 +91,12 @@ def test_single_failure_with_normal_activity_is_not_an_attack(noisy_auth_lines: 
 
 @pytest.mark.parametrize("failure_count", [4, 5])
 def test_normal_noise_does_not_change_brute_force_threshold(
-    noisy_auth_lines: list[str], failure_count: int
+    normal_noisy_auth_lines: list[str], failure_count: int
 ) -> None:
     """실패와 같은 IP·계정의 정상 로그도 4회/5회 판정 경계를 바꾸면 안 된다."""
     normal_lines = [
         line.replace("192.0.2.10", "198.51.100.99").replace("ubuntu", "devops")
-        for line in noisy_auth_lines
-        if "Failed password for " not in line
+        for line in normal_noisy_auth_lines
     ]
     failures = [
         "2026-09-04T15:02:00+00:00 target-ec2 sshd["
