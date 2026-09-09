@@ -19,6 +19,6 @@ Write-Host "[3/4] Ruff Format 검사 실행 중..." -ForegroundColor Cyan
 uv run ruff format --check .
 
 Write-Host "[4/4] Pytest 단위 및 계약 테스트 실행 중..." -ForegroundColor Cyan
-uv run pytest -v
+uv run python -m pytest -v
 
 Write-Host "`n[성공] 모든 로컬 품질 및 계약 검증을 통과했습니다." -ForegroundColor Green
