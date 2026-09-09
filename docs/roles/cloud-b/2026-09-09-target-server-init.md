@@ -13,6 +13,8 @@ CloudShield의 침해 탐지 파이프라인이 정상 작동하기 위해서는
 
 1. **SSH 인증 로그 (`/var/log/auth.log`)**:
    - OpenSSH 데몬의 `LogLevel`을 `VERBOSE`로 설정하고 `PasswordAuthentication yes`를 적용하여, Hydra 등의 도구로 무차별 대입 공격 시도 시 실패한 사용자명, 출발지 IP, 포트 정보가 상세히 기록되도록 구성합니다.
+   - **OpenSSH 설정 우선순위 보장 (First Match Wins)**: OpenSSH는 먼저 동달한 지침을 최우선 적용하므로, `50-cloud-init.conf` 등의 비활성화 정책보다 먼저 로드되도록 `/etc/ssh/sshd_config.d/00-cloudshield.conf` 파일로 최우선 순위 배치했습니다.
+   - **런타임 실측 평가 (`sshd -T`)**: 단순 `sshd -t` 문법 검사를 넘어 `sshd -T | grep -i '^passwordauthentication'` 명령으로 실제 데몬 런타임 유효 설정이 `yes`로 평가되었는지 스크립트 내에서 검증 및 보장합니다.
    - Ubuntu 24.04/22.04 LTS에서 `rsyslog` 서비스를 활성화하여 systemd-journal 로그가 `/var/log/auth.log` 파일로 안정적으로 적재되도록 보장합니다.
 2. **Nginx 웹 접근 로그 (`/var/log/nginx/access.log`)**:
    - 커스텀 로깅 포맷 `cloudshield_combined`를 정의하여, 표준 HTTP 요청 정보 외에 인시던트 분석에 필수적인 `$request_time` 및 `$http_x_forwarded_for` 헤더를 포함합니다.
@@ -38,7 +40,13 @@ chmod +x init_target_server.sh
 sudo ./init_target_server.sh
 ```
 
-### 3.2 포트 및 프로세스 상태 점검
+### 3.2 SSH 런타임 유효 설정 실측 검증
+```bash
+# OpenSSH 런타임 평가 결과 확인 (passwordauthentication yes 출력 필수)
+sudo sshd -T | grep -i "^passwordauthentication"
+```
+
+### 3.3 포트 및 프로세스 상태 점검
 ```bash
 # 1. 활성화된 리스닝 포트 확인 (22, 80)
 ss -tlpn | grep -E ':(22|80)\s'

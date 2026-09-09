@@ -70,20 +70,43 @@ apt-get install -y --no-install-recommends \
 log_success "필수 패키지(nginx, openssh-server, rsyslog 등) 설치 완료"
 
 # 4. SSH 데몬 설정 (인증 실패 로그 생성 보장)
-# Why: 모의 공격 시뮬레이션(Hydra) 시 비밀번호 인증 시도를 정상 수용하고,
-#      /var/log/auth.log에 상세한 실패 로그(Failed password for ...)가 남도록 설정.
-log_info "OpenSSH 데몬 설정 최적화 중..."
+# Why:
+#   OpenSSH(sshd_config)는 '먼저 평가된 설정값(First Match Wins)'을 채택하므로,
+#   cloud-init 설정(50-cloud-init.conf)보다 사전 로드되도록 00-cloudshield.conf로 배치함.
+#   추가로 기존 비활성화 설정(PasswordAuthentication no)을 정제하고,
+#   sshd -T로 런타임 실측 결과(passwordauthentication yes)를 검증함.
+log_info "OpenSSH 데몬 설정 최적화 및 우선순위 조정 중..."
 
-SSHD_CUSTOM_CONF="/etc/ssh/sshd_config.d/99-cloudshield.conf"
-mkdir -p /etc/ssh/sshd_config.d
+SSHD_DIR="/etc/ssh/sshd_config.d"
+SSHD_CUSTOM_CONF="${SSHD_DIR}/00-cloudshield.conf"
+SSHD_LEGACY_CONF="${SSHD_DIR}/99-cloudshield.conf"
 
-# sshd_config 내 include 구문 존재 여부 보장
-if [[ -f /etc/ssh/sshd_config ]] && ! grep -q "Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config 2>/dev/null; then
-    echo -e "\nInclude /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config
+mkdir -p "${SSHD_DIR}"
+
+# 구 버전 설정 파일 정리
+if [[ -f "${SSHD_LEGACY_CONF}" ]]; then
+    rm -f "${SSHD_LEGACY_CONF}"
 fi
 
+# sshd_config 맨 위에 Include 구문 배치 보장 (00-*.conf 파일이 최우선 평가되도록)
+if [[ -f /etc/ssh/sshd_config ]]; then
+    if ! grep -q "Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config 2>/dev/null; then
+        sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
+    fi
+fi
+
+# 기존 conf 파일 내 PasswordAuthentication no 설정을 yes로 보정 (충돌 원천 차단)
+if [[ -d "${SSHD_DIR}" ]]; then
+    for conf_file in "${SSHD_DIR}"/*.conf; do
+        if [[ -f "${conf_file}" && "${conf_file}" != "${SSHD_CUSTOM_CONF}" ]]; then
+            sed -i 's/^\s*PasswordAuthentication\s\+no/PasswordAuthentication yes/g' "${conf_file}" 2>/dev/null || true
+        fi
+    done
+fi
+
+# 최우선 순위 00-cloudshield.conf 설정 생성
 cat << 'EOF' > "${SSHD_CUSTOM_CONF}"
-# CloudShield 타깃 서버 SSH 침해 실증용 설정
+# CloudShield 타깃 서버 SSH 침해 실증용 최우선 순위 설정 (00-cloudshield.conf)
 PasswordAuthentication yes
 PermitEmptyPasswords no
 PubkeyAuthentication yes
@@ -96,8 +119,22 @@ EOF
 systemctl enable rsyslog
 systemctl restart rsyslog
 
-# SSH 데몬 설정 문법 검증 및 서비스 재시작
+# SSH 데몬 설정 문법 검증
 sshd -t
+
+# OpenSSH 런타임 유효 설정 실측 평가 (sshd -T)
+# Constraints: passwordauthentication 항목이 반드시 'yes'로 실측되어야 함
+log_info "sshd -T 런타임 유효 설정 평가 중..."
+EFFECTIVE_PASS_AUTH="$(sshd -T | grep -i '^passwordauthentication' | awk '{print $2}' || echo 'unknown')"
+
+if [[ "${EFFECTIVE_PASS_AUTH}" != "yes" ]]; then
+    log_error "SSH PasswordAuthentication 적용 실패! (sshd -T 실측 결과: ${EFFECTIVE_PASS_AUTH})"
+    log_error "충돌하는 기존 sshd 설정 파일을 점검하세요."
+    exit 1
+fi
+log_success "SSH PasswordAuthentication 런타임 실측 검증 완료 (status: ${EFFECTIVE_PASS_AUTH})"
+
+# SSH 데몬 서비스 재시작
 if systemctl is-active --quiet ssh; then
     systemctl restart ssh
 elif systemctl is-active --quiet sshd; then

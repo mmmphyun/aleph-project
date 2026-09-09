@@ -27,7 +27,9 @@ def test_init_target_server_script_integrity() -> None:
 
     # 3. 필수 포트(22, 80) 및 데몬 설정 포함 여부
     assert "22" in content and "80" in content, "포트 22/80 설정이 필요합니다."
+    assert "00-cloudshield.conf" in content, "OpenSSH 우선순위 00-*.conf 파일 사용 필수."
     assert "PasswordAuthentication yes" in content, "SSH PasswordAuth 활성화 필요."
+    assert "sshd -T" in content, "OpenSSH 런타임 실측(sshd -T) 평가 검증 필요."
     assert "LogLevel VERBOSE" in content, "상세 감사 로그 수집을 위해 VERBOSE 필요."
 
     # 4. 수집 타깃 로그 경로 검증
