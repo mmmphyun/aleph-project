@@ -76,7 +76,7 @@ jobs:
             }
 
             // 2. Notion URL / Page ID 추출
-            const regex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?:[/?#]|$)|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})/i;
+            const regex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?![0-9a-f])|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})(?![0-9a-f])/i;
             const match = body.match(regex);
             let pageId = null;
             if (match) {

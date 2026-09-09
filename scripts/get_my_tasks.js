@@ -1,4 +1,4 @@
-﻿/**
+/**
  * scripts/get_my_tasks.js
  * 노션 [프로젝트 일정] DB의 [시작 전] 티켓 목록 조회 헬퍼
  * 하드코딩된 개인 식별자 없이 동작하며, .env의 설정 또는 직무(.agent-role)를 기반으로 동작
@@ -16,15 +16,18 @@ function loadEnv() {
   return m ? m[1].trim().replace(/^['"]|['"]$/g, "") : null;
 }
 
-const key = loadEnv();
-if (!key) {
-  console.log("NOTION_API_KEY 미설정으로 노션 조회를 건너뜁니다.");
-  process.exit(0);
-}
-
 let role = "cloud-a";
 if (fs.existsSync(".agent-role")) {
   role = fs.readFileSync(".agent-role", "utf-8").trim();
+}
+
+const key = loadEnv();
+if (!key) {
+  console.log(`[노션 연동 안내] 직무: [${role}]`);
+  console.log("  NOTION_API_KEY 미설정으로 노션 자동 조회를 건너뜁니다.");
+  console.log("  노션 웹 칸반 보드에서 해당 일감 카드의 링크를 복사한 후, 아래 명령어로 GitHub Issue를 생성하세요:");
+  console.log(`  gh issue create --title "feat(${role}): <작업_제목>" --body "- Notion Task: <복사한_노션_카드_URL>\\n- 브랜치: feat/<직무>-<기능명>"`);
+  process.exit(0);
 }
 
 const dbId = "b8204d37c225838bb8de017940440498"; // 프로젝트 일정 DB

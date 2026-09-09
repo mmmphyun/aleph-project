@@ -1,4 +1,4 @@
-﻿/**
+/**
  * tests/unit/test_notion_sync.js
  * notion_sync.yml GitHub Actions 스크립트의 파싱 및 페이로드 생성 단위 검증
  */
@@ -6,7 +6,7 @@
 const assert = require("assert");
 
 // 1. 노션 URL/Page ID 추출 정규식
-const regex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?:[/?#]|$)|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})/i;
+const regex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?![0-9a-f])|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})(?![0-9a-f])/i;
 
 function extractPageId(body) {
   const match = body.match(regex);
@@ -42,7 +42,11 @@ const variations = [
   { url: "https://myteam.notion.site/d5f04d37c22582ad9e7f81acd36191d0", expected: "d5f04d37c22582ad9e7f81acd36191d0" },
   { url: "https://notion.so/d5f04d37-c225-82ad-9e7f-81acd36191d0?v=123", expected: "d5f04d37c22582ad9e7f81acd36191d0" },
   { url: "https://app.notion.com/workspace?p=d5f04d37c22582ad9e7f81acd36191d0", expected: "d5f04d37c22582ad9e7f81acd36191d0" },
-  { url: "티켓 ID: d5f04d37-c225-82ad-9e7f-81acd36191d0", expected: "d5f04d37c22582ad9e7f81acd36191d0" }
+  { url: "티켓 ID: d5f04d37-c225-82ad-9e7f-81acd36191d0", expected: "d5f04d37c22582ad9e7f81acd36191d0" },
+  { url: "- Notion Task: (https://notion.so/3d404d37c22581af92f2c5cef78bb164)", expected: "3d404d37c22581af92f2c5cef78bb164" },
+  { url: "참고: [링크](https://notion.so/3d404d37c22581af92f2c5cef78bb164)", expected: "3d404d37c22581af92f2c5cef78bb164" },
+  { url: "<https://notion.so/3d404d37c22581af92f2c5cef78bb164>", expected: "3d404d37c22581af92f2c5cef78bb164" },
+  { url: "노션 URL: https://notion.so/3d404d37c22581af92f2c5cef78bb164.", expected: "3d404d37c22581af92f2c5cef78bb164" }
 ];
 
 variations.forEach((tc, idx) => {
