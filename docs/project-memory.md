@@ -83,6 +83,7 @@ flowchart TD
 | **0005** | [`ADR-0005: Ruleset 단일화 및 1:1 상호 리뷰 거버넌스`](adr/0005-repository-ruleset-unification-and-peer-review-governance.md) | Accepted | 2026-09-09 | Classic 보호 규칙 충돌을 제거하고 Ruleset 단일화 및 1:1 상호 짝꿍 리뷰 체계 확립 |
 | **0006** | [`ADR-0006: 에이전트 하네스 이원화 및 감사 투명성 설계`](adr/0006-agent-harness-dual-guard-architecture.md) | Accepted | 2026-09-09 | PR 메타데이터/테스트 경로 하드 가드 강제 및 솔직한 우회 증적(Audit Trail) 보존을 위한 이원화 설계 |
 | **0007** | [`ADR-0007: 룰 엔진 무상태성 보장 및 상태 관리 경계 분리`](adr/0007-stateless-rule-engine-and-state-boundary.md) | Accepted | 2026-09-09 | 룰 엔진은 순수 함수로 유지하고, CW 배치 분할 세션 상태 유지는 오케스트레이터(클라우드 A) 책임으로 분리 |
+| **0008** | [`ADR-0008: AI 에이전트 PR 스태킹 방지 WIP 가드 및 In-PR 커밋 거버넌스`](adr/0008-wip-limit-and-anti-pr-stacking.md) | Accepted | 2026-09-09 | 미머지 브랜치 위 후속 작업 누적(Stacking)을 스크립트 레벨에서 하드 차단하고 동일 PR 내 수정 커밋 강제 |
 
 ---
 
