@@ -15,8 +15,8 @@ function extractPageId(body) {
   return rawId.replace(/-/g, "").toLowerCase();
 }
 
-// 2. 기술 원리 3줄 요약 추출 정규식
-const summaryRegex = /##\s*기술\s*원리\s*(?:3줄)?\s*요약[\r\n]+([\s\S]*?)(?=(?:[\r\n]+##)|(?:[\r\n]+---)|(?:[\r\n]+<details>)|$)/i;
+// 2. 기술적 원리 요약 추출 정규식 (변형 표기 및 공식 템플릿 수용)
+const summaryRegex = /##\s*(?:\d+\.\s*)?기술(?:적)?\s*원리(?:\s*(?:3줄)?\s*요약)?(?:\s*\([^)]*\))?[\r\n]+([\s\S]*?)(?=(?:[\r\n]+##)|(?:[\r\n]+---)|(?:[\r\n]+<details>)|$)/i;
 
 function extractTechSummary(body) {
   const match = body.match(summaryRegex);
@@ -75,6 +75,20 @@ assert.ok(summary);
 assert.ok(summary.includes("1. GitHub Actions context"));
 assert.ok(summary.includes("3. 스키마 불일치 방지를 위한 단계별 4단 graceful fallback 설계."));
 console.log("  PASS: 기술 원리 3줄 요약 정상 파싱");
+
+console.log("[TEST 3-1] 다양한 템플릿 변형 헤더 파싱 검증");
+const headerVariations = [
+  "## 3. 기술적 원리 요약\n원리 설명 내용입니다.",
+  "## 3. 기술적 원리 요약 (★ 필수 작성)\n원리 설명 내용입니다.",
+  "## 기술적 원리 요약\n원리 설명 내용입니다.",
+  "## 3. 기술 원리 요약\n원리 설명 내용입니다.",
+  "## 기술 원리\n원리 설명 내용입니다."
+];
+headerVariations.forEach((body, idx) => {
+  const s = extractTechSummary(body);
+  assert.strictEqual(s, "원리 설명 내용입니다.");
+  console.log(`  PASS: 변형 헤더 케이스 ${idx + 1} 정상 파싱`);
+});
 
 console.log("[TEST 4] PR/이슈 제목 콜론 정제 테스트");
 const sampleTitles = [
