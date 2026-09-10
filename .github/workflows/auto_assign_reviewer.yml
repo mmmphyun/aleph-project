@@ -1,0 +1,62 @@
+name: "Auto Assign Buddy Reviewer"
+
+on:
+  pull_request_target:
+    types: [opened, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  assign-reviewer:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Enforce 1:1 Mutual Buddy Reviewer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # 1. PR 소유 직무 판별 (작성자 GitHub ID 또는 브랜치/제목 키워드 기준)
+          ROLE=""
+          BUDDY=""
+
+          if [ "$AUTHOR" = "RockCandy444" ] || echo "$HEAD_REF $TITLE" | grep -iq "network"; then
+            ROLE="network"
+            BUDDY="gkacksdnjs22-stack"
+          elif [ "$AUTHOR" = "gkacksdnjs22-stack" ] || echo "$HEAD_REF $TITLE" | grep -iq "security"; then
+            ROLE="security"
+            BUDDY="wkdtlgns99-cell"
+          elif [ "$AUTHOR" = "wkdtlgns99-cell" ] || echo "$HEAD_REF $TITLE" | grep -iq "cloud-b"; then
+            ROLE="cloud-b"
+            BUDDY="RockCandy444"
+          elif [ "$AUTHOR" = "mmmphyun" ] || echo "$HEAD_REF $TITLE" | grep -iq "cloud-a"; then
+            ROLE="cloud-a"
+            BUDDY="gkacksdnjs22-stack"
+          fi
+
+          if [ -z "$BUDDY" ]; then
+            echo "직무 및 짝꿍 리뷰어를 판별할 수 없어 자동 배정을 건너뜁니다."
+            exit 0
+          fi
+
+          echo "PR #$PR_NUMBER (직무: $ROLE, 작성자: $AUTHOR) -> 지정 짝꿍: $BUDDY"
+
+          # 2. 현재 요청된 모든 리뷰어 조회
+          CURRENT_REVIEWERS=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/requested_reviewers" --jq '.users[].login')
+
+          # 3. 규정된 짝꿍 외에 등록된 초과 리뷰어 요청 취소 (중복/다중 리뷰어 원천 차단)
+          for REV in $CURRENT_REVIEWERS; do
+            if [ "$REV" != "$BUDDY" ]; then
+              echo "초과 리뷰어($REV) 요청 취소 처리"
+              gh api -X DELETE "repos/${{ github.repository }}/pulls/$PR_NUMBER/requested_reviewers" -f "reviewers[]=$REV" || true
+            fi
+          done
+
+          # 4. 지정 짝꿍 리뷰어 배정
+          gh pr edit "$PR_NUMBER" --add-reviewer "$BUDDY"
+          echo "짝꿍 리뷰어($BUDDY) 단독 배정 완료"
