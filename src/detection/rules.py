@@ -22,6 +22,7 @@ MITRE ATT&CK 매핑:
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -49,6 +50,36 @@ PASSWORD_SPRAYING_THRESHOLD: int = 2
 #      자동화 공격으로 오판하지 않도록, 공격의 시간적 밀집도를 필수 조건으로 둠.
 # Constraints: CloudWatch Subscription Filter의 전송 지연을 고려한 5분(300초) 고정 창.
 DETECTION_WINDOW_SECONDS: int = 5 * 60
+
+# SSH 실패 로그에서 룰 엔진이 관심 갖는 최소 식별자만 추출하는 선형 정규식.
+# Why: 보안 담당 산출물로 공격자 IP와 시도 계정을 명시적으로 검증해
+#      계약 파서 변경 전에도 시그니처 룰의 핵심 매칭 조건을 독립적으로 설명한다.
+# Constraints: 중첩 반복과 역참조를 쓰지 않고 공백 기준 토큰만 소비해 ReDoS 위험을 낮춘다.
+_IPV4_OCTET_PATTERN = r"(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)"
+AUTH_FAILURE_IDENTITY_PATTERN = re.compile(
+    r"\bFailed password for "
+    r"(?:invalid user )?"
+    r"(?P<username>[^\s]+)\s+"
+    rf"from (?P<source_ip>{_IPV4_OCTET_PATTERN}(?:\.{_IPV4_OCTET_PATTERN}){{3}})\s+"
+    r"port \d+\s+"
+    r"ssh2\b"
+)
+
+
+def extract_auth_failure_identity(raw_message: str) -> tuple[str, str] | None:
+    """SSH 인증 실패 원문에서 공격자 IP와 시도 계정을 추출한다.
+
+    Returns:
+        (source_ip, username) 튜플. 실패 인증 로그가 아니면 None.
+
+    Side-effects / Edge-cases:
+        - IPv4 옥텟은 0~255 범위만 허용해 명백한 가짜 출발지를 제외한다.
+        - 성공 로그인, sudo, 연결 종료 등 정상 노이즈는 매칭하지 않는다.
+    """
+    match = AUTH_FAILURE_IDENTITY_PATTERN.search(raw_message.strip())
+    if not match:
+        return None
+    return match.group("source_ip"), match.group("username")
 
 
 def _timestamp_to_epoch_seconds(timestamp_str: str) -> float | None:

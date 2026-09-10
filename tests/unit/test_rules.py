@@ -18,6 +18,7 @@ from detection.rules import (
     BRUTE_FORCE_THRESHOLD,
     PASSWORD_SPRAYING_THRESHOLD,
     evaluate_rules,
+    extract_auth_failure_identity,
 )
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,46 @@ def test_noisy_log_preserves_only_expected_failures(noisy_auth_lines: list[str])
         ("198.51.100.99", "devops"),
     ]
     assert evaluate_rules(events) == (True, "SSH_PASSWORD_SPRAYING")
+
+
+def test_extract_auth_failure_identity_from_mock_auth(sample_auth_log_lines: list[str]) -> None:
+    """mock_auth.log에서 공격자 IP와 계정을 정규식으로 안전하게 추출한다."""
+    identities = [
+        identity
+        for line in sample_auth_log_lines
+        if (identity := extract_auth_failure_identity(line)) is not None
+    ]
+    assert identities == [
+        ("198.51.100.50", "admin"),
+        ("198.51.100.50", "admin"),
+        ("198.51.100.50", "root"),
+        ("198.51.100.50", "root"),
+        ("198.51.100.50", "guest"),
+    ]
+
+
+def test_extract_auth_failure_identity_ignores_normal_noise(
+    normal_noisy_auth_lines: list[str],
+) -> None:
+    """성공 인증·세션·sudo·연결 종료 로그는 공격자 식별자로 추출하지 않는다."""
+    assert [extract_auth_failure_identity(line) for line in normal_noisy_auth_lines] == [
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_extract_auth_failure_identity_rejects_invalid_ipv4() -> None:
+    """IPv4 옥텟 범위를 벗어난 출발지는 공격자 식별자로 채택하지 않는다."""
+    line = (
+        "Sep 03 14:20:01 target-ec2 sshd[12341]: "
+        "Failed password for invalid user admin from 999.198.51.100 port 49152 ssh2"
+    )
+    assert extract_auth_failure_identity(line) is None
 
 
 def test_normal_activity_is_not_an_auth_failure(normal_noisy_auth_lines: list[str]) -> None:
