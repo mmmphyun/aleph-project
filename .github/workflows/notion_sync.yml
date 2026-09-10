@@ -60,16 +60,35 @@ jobs:
             // 커밋/PR 컨벤션에 따라 콜론 이후 제목만 정제 (예: "feat(cloud-a): 룰 구현" -> "룰 구현")
             const cleanTitle = rawTitle.replace(/^[^:]+:\s*/, "").trim() || rawTitle;
 
-            // 1. 직무 스코프 파싱 (필요 시 환경변수 NOTION_ASSIGNEE_MAP에서 매핑 조회)
+            // 직무 스코프 파싱 및 표준 한국어 [직무] 태그 결정
+            const roleTagMap = {
+              "security": "[보안]",
+              "cloud-a": "[클라우드 A]",
+              "cloud-b": "[클라우드 B]",
+              "network": "[네트워크]",
+              "infra": "[인프라]"
+            };
+            const scopeMatch = rawTitle.match(/\(([^)]+)\)/) || (isPR ? (item.head?.ref || "").match(/(?:feat|fix|chore)\/([^-/]+)/) : null);
+            const detectedScope = scopeMatch ? scopeMatch[1].toLowerCase() : null;
+            const roleTag = roleTagMap[detectedScope] || "";
+
+            // 신규 생성 및 미지정 시 적용할 포맷팅된 제목 ([직무] <제목>)
+            let formattedTitle = cleanTitle;
+            if (roleTag && !cleanTitle.startsWith("[")) {
+              formattedTitle = `${roleTag} ${cleanTitle}`;
+            } else if (rawTitle.startsWith("[")) {
+              const bMatch = rawTitle.match(/^(\[[^\]]+\]\s*)/);
+              if (bMatch && !cleanTitle.startsWith("[")) {
+                formattedTitle = `${bMatch[1]}${cleanTitle}`;
+              }
+            }
+
+            // 1. 직무 스코프 기반 담당자 매핑 (필요 시 NOTION_ASSIGNEE_MAP에서 매핑 조회)
             let matchedAssigneeId = null;
-            if (process.env.NOTION_ASSIGNEE_MAP) {
+            if (process.env.NOTION_ASSIGNEE_MAP && detectedScope) {
               try {
                 const assigneeMap = JSON.parse(process.env.NOTION_ASSIGNEE_MAP);
-                const scopeMatch = rawTitle.match(/\(([^)]+)\)/) || (isPR ? (item.head?.ref || "").match(/(?:feat|fix|chore)\/([^-/]+)/) : null);
-                if (scopeMatch) {
-                  const scope = scopeMatch[1].toLowerCase();
-                  if (assigneeMap[scope]) matchedAssigneeId = assigneeMap[scope];
-                }
+                if (assigneeMap[detectedScope]) matchedAssigneeId = assigneeMap[detectedScope];
               } catch (e) {
                 console.log("NOTION_ASSIGNEE_MAP 파싱 실패, 담당자 자동 할당 생략");
               }
@@ -128,16 +147,22 @@ jobs:
                   // 기존 노션 카드가 지정된 경우: [시작 전] -> [진행 중] 전이
                   console.log(`기존 노션 카드(${pageId})를 [진행 중]으로 전이합니다.`);
                   let existingAssignees = [];
+                  let existingTitle = "";
                   try {
                     const getRes = await sendNotionRequest(`/v1/pages/${pageId}`, "GET");
                     existingAssignees = getRes.body?.properties?.["담당자"]?.people || [];
+                    const titleArr = getRes.body?.properties?.["내용"]?.title || [];
+                    existingTitle = titleArr.map(t => t.plain_text).join("").trim();
                   } catch (e) {
                     console.log(`기존 카드 조회 생략: ${e.message}`);
                   }
 
+                  // 기존 카드 제목이 이미 [직무] 태그를 가지고 있으면 그대로 보존, 없으면 formattedTitle 적용
+                  const finalTitle = (existingTitle && existingTitle.startsWith("[")) ? existingTitle : formattedTitle;
+
                   const patchProps = {
                     "상태": { status: { name: "진행 중" } },
-                    "내용": { title: [{ type: "text", text: { content: cleanTitle } }] },
+                    "내용": { title: [{ type: "text", text: { content: finalTitle } }] },
                     "기간": { date: { start: today } }
                   };
                   // 이미 담당자가 지정되어 있으면 보존, 비어있을 때만 스코프 기반 자동 할당
@@ -150,7 +175,7 @@ jobs:
                   // 노션 카드가 없는 경우: 신규 [진행 중] 카드 자동 발급 (안전망)
                   console.log(`노션 링크가 없어 [진행 중] 카드를 신규 자동 발급합니다.`);
                   const newProps = {
-                    "내용": { title: [{ type: "text", text: { content: cleanTitle } }] },
+                    "내용": { title: [{ type: "text", text: { content: formattedTitle } }] },
                     "상태": { status: { name: "진행 중" } },
                     "기간": { date: { start: today } }
                   };
@@ -202,10 +227,13 @@ jobs:
             // 기존 카드 메타데이터 조회
             let existingStart = null;
             let existingAssignees = [];
+            let existingTitle = "";
             try {
               const getRes = await sendNotionRequest(`/v1/pages/${pageId}`, "GET");
               existingStart = getRes.body?.properties?.["기간"]?.date?.start || null;
               existingAssignees = getRes.body?.properties?.["담당자"]?.people || [];
+              const titleArr = getRes.body?.properties?.["내용"]?.title || [];
+              existingTitle = titleArr.map(t => t.plain_text).join("").trim();
             } catch (err) {
               console.log(`기존 카드 조회 생략: ${err.message}`);
             }
@@ -213,9 +241,12 @@ jobs:
             const prCreatedAt = (item.created_at || "").split("T")[0] || today;
             const startDate = existingStart || prCreatedAt;
 
+            // 기존 카드 제목이 이미 [직무] 태그를 가지고 있으면 그대로 보존, 없으면 formattedTitle 적용
+            const finalTitle = (existingTitle && existingTitle.startsWith("[")) ? existingTitle : formattedTitle;
+
             const extendedProps = {
               "상태": { status: { name: targetStatus } },
-              "내용": { title: [{ type: "text", text: { content: cleanTitle } }] },
+              "내용": { title: [{ type: "text", text: { content: finalTitle } }] },
               "PR": { url: item.html_url }
             };
 
