@@ -16,6 +16,7 @@ jobs:
       - name: Enforce 1:1 Mutual Buddy Reviewer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -36,7 +37,10 @@ jobs:
             BUDDY="RockCandy444"
           elif [ "$AUTHOR" = "mmmphyun" ] || echo "$HEAD_REF $TITLE" | grep -iq "cloud-a"; then
             ROLE="cloud-a"
-            BUDDY="gkacksdnjs22-stack"
+            # 클라우드 A는 3인 풀에서 PR 번호 모듈러 연산으로 균등 순환 배정
+            CANDIDATES=("RockCandy444" "gkacksdnjs22-stack" "wkdtlgns99-cell")
+            PICK_INDEX=$((PR_NUMBER % 3))
+            BUDDY="${CANDIDATES[$PICK_INDEX]}"
           fi
 
           if [ -z "$BUDDY" ]; then
@@ -57,6 +61,6 @@ jobs:
             fi
           done
 
-          # 4. 지정 짝꿍 리뷰어 배정
-          gh pr edit "$PR_NUMBER" --add-reviewer "$BUDDY"
+          # 4. 지정 짝꿍 리뷰어 단독 배정 (git repo 의존성 없는 REST API 직접 호출)
+          gh api -X POST "repos/${{ github.repository }}/pulls/$PR_NUMBER/requested_reviewers" -f "reviewers[]=$BUDDY"
           echo "짝꿍 리뷰어($BUDDY) 단독 배정 완료"
