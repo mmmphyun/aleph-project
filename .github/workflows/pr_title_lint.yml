@@ -34,6 +34,8 @@ jobs:
             security
             network
             infra
+            ci
+            harness
           requireScope: true
           subjectPattern: ^(?!\s*$).+
           subjectPatternError: "PR 제목의 요약 설명이 누락되었습니다."
