@@ -29,3 +29,33 @@ def test_decode_cw_logs_success(sample_cw_event: dict[str, Any]) -> None:
     assert isinstance(lines, list)
     assert len(lines) >= 1
     assert "Failed password" in lines[0]
+
+
+def test_amazon_cloudwatch_agent_config_validity() -> None:
+    """amazon-cloudwatch-agent.json 설정 파일의 정적 JSON 유효성 및 필수 키 검증.
+
+    Why:
+        클라우드 B 담당자가 정의한 CloudWatch Agent 수집 명세가 JSON 스키마를 만족하고
+        타깃 로그 경로(/var/log/auth.log) 및 CloudWatch Logs 그룹명(/cloudshield/target/auth-log)을
+        정확히 지정하고 있는지 자동 검증함.
+    """
+    import json
+    from pathlib import Path
+
+    config_path = Path("src/collector/amazon-cloudwatch-agent.json")
+    assert config_path.exists(), (
+        "src/collector/amazon-cloudwatch-agent.json 파일이 존재해야 합니다."
+    )
+
+    with config_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    collect_list = (
+        data.get("logs", {}).get("logs_collected", {}).get("files", {}).get("collect_list", [])
+    )
+    assert len(collect_list) >= 1, "collect_list 항목이 1개 이상 존재해야 합니다."
+
+    auth_log_config = collect_list[0]
+    assert auth_log_config["file_path"] == "/var/log/auth.log"
+    assert auth_log_config["log_group_name"] == "/cloudshield/target/auth-log"
+    assert auth_log_config["log_stream_name"] == "{instance_id}"
