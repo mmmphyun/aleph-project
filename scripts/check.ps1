@@ -3,6 +3,11 @@
 
 $ErrorActionPreference = "Stop"
 
+# Windows 환경에서 깨진 WSL bash stub(system32/bash.exe) 회피 및 Git Bash 우선순위 확보
+if (Test-Path "C:\Program Files\Git\bin\bash.exe") {
+    $env:PATH = "C:\Program Files\Git\bin;" + $env:PATH
+}
+
 Write-Host "[1/4] 테스트 파일 표준 경로 검사 중..." -ForegroundColor Cyan
 $wrongTests = Get-ChildItem -Path . -Recurse -Filter "test_*.py" -File | Where-Object { 
     $_.FullName -notmatch "[\\/]tests[\\/]" -and $_.FullName -notmatch "[\\/]\.venv[\\/]" 
