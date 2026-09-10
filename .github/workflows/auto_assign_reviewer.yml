@@ -2,7 +2,13 @@ name: "Auto Assign Buddy Reviewer"
 
 on:
   pull_request_target:
-    types: [opened, ready_for_review]
+    types: [opened, ready_for_review, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "대상 PR 번호"
+        required: true
+        type: string
 
 permissions:
   pull-requests: write
@@ -11,7 +17,7 @@ permissions:
 jobs:
   assign-reviewer:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     steps:
       - name: Enforce 1:1 Mutual Buddy Reviewer
         env:
@@ -22,6 +28,15 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           TITLE: ${{ github.event.pull_request.title }}
         run: |
+          # 수동 실행(workflow_dispatch) 시 PR 메타데이터 동적 조회
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER="${{ inputs.pr_number }}"
+            PR_DATA=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER")
+            AUTHOR=$(echo "$PR_DATA" | jq -r '.user.login')
+            HEAD_REF=$(echo "$PR_DATA" | jq -r '.head.ref')
+            TITLE=$(echo "$PR_DATA" | jq -r '.title')
+          fi
+
           # 1. PR 소유 직무 판별 (작성자 GitHub ID 또는 브랜치/제목 키워드 기준)
           ROLE=""
           BUDDY=""
