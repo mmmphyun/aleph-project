@@ -275,9 +275,9 @@ jobs:
               });
             }
 
-            // PR 머지 시 "기술 원리 3줄 요약" 블록 추가
+            // PR 머지 시 "기술적 원리 요약" 블록 추가 (변형 표기 및 공식 템플릿 수용)
             if (isMerged) {
-              const summaryRegex = /##\s*기술\s*원리\s*(?:3줄)?\s*요약[\r\n]+([\s\S]*?)(?=(?:[\r\n]+##)|(?:[\r\n]+---)|(?:[\r\n]+<details>)|$)/i;
+              const summaryRegex = /##\s*(?:\d+\.\s*)?기술(?:적)?\s*원리(?:\s*(?:3줄)?\s*요약)?(?:\s*\([^)]*\))?[\r\n]+([\s\S]*?)(?=(?:[\r\n]+##)|(?:[\r\n]+---)|(?:[\r\n]+<details>)|$)/i;
               const summaryMatch = body.match(summaryRegex);
               const techSummary = summaryMatch ? summaryMatch[1].trim() : null;
 
