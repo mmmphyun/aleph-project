@@ -6,9 +6,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
-from scripts.get_my_tasks import check_open_pr_guard
+
+# 프로젝트 루트 경로를 sys.path에 추가하여 CI(Linux/pytest) 환경에서도 scripts 패키지 참조 보장
+root_dir = Path(__file__).resolve().parents[2]
+if str(root_dir) not in sys.path:
+    sys.path.insert(0, str(root_dir))
+
+from scripts.get_my_tasks import check_open_pr_guard  # noqa: E402
 
 
 def test_wip_guard_blocks_when_open_pr_exists(monkeypatch: pytest.MonkeyPatch) -> None:
