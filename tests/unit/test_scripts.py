@@ -88,7 +88,7 @@ def test_wip_guard_allows_when_no_open_pr(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_get_my_tasks_main_blocks_when_open_pr(monkeypatch: pytest.MonkeyPatch) -> None:
     """main() 실행 시에도 WIP 하드 가드가 동작하여 sys.exit(1)로 차단되는지 검증."""
-    from scripts.get_my_tasks import main
+    from scripts import get_my_tasks
 
     mock_prs = [
         {
@@ -108,9 +108,46 @@ def test_get_my_tasks_main_blocks_when_open_pr(monkeypatch: pytest.MonkeyPatch) 
         )
 
     monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(get_my_tasks, "get_current_role", lambda: "cloud-b")
     monkeypatch.delenv("ALLOW_CONCURRENT_WIP", raising=False)
 
     with pytest.raises(SystemExit) as exc_info:
-        main()
+        get_my_tasks.main()
+
+    assert exc_info.value.code == 1
+
+
+def test_get_my_tasks_main_blocks_with_default_role_in_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI 환경처럼 .agent-role이 없을 때 기본 직무(cloud-a)로 열린 PR 차단 검증."""
+    from scripts import get_my_tasks
+
+    mock_prs = [
+        {
+            "number": 50,
+            "title": "feat(cloud-a): 오케스트레이터 및 복합 차단 엔진 개선",
+            "headRefName": "feat/cloud-a-orchestrator",
+            "url": "https://github.com/mmmphyun/aleph-project/pull/50",
+        }
+    ]
+
+    def mock_run(*args: list[str], **kwargs: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=json.dumps(mock_prs),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    # .agent-role 파일이 없는 CI 환경 모킹
+    monkeypatch.setattr(
+        get_my_tasks.os.path,
+        "exists",
+        lambda path: False if str(path) == ".agent-role" else get_my_tasks.os.path.exists(path),
+    )
+    monkeypatch.delenv("ALLOW_CONCURRENT_WIP", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        get_my_tasks.main()
 
     assert exc_info.value.code == 1

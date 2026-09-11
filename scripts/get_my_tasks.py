@@ -98,12 +98,22 @@ def check_open_pr_guard(current_role: str) -> None:
         )
 
 
-def main() -> None:
-    """스크립트 엔트리포인트: WIP 하드 가드 확인 및 노션 DB 조회 수행."""
-    role = "cloud-a"
+def get_current_role() -> str:
+    """현재 작업자의 직무(.agent-role 파일 우선, 기본값 cloud-a)를 반환.
+
+    Why:
+        로컬 및 CI 환경에서 작업자 역할을 일관되게 감지하고,
+        테스트 환경에서 역할(role) 모킹을 용이하게 하여 환경 격리를 보장함.
+    """
     if os.path.exists(".agent-role"):
         with open(".agent-role", encoding="utf-8") as f:
-            role = f.read().strip()
+            return f.read().strip()
+    return "cloud-a"
+
+
+def main() -> None:
+    """스크립트 엔트리포인트: WIP 하드 가드 확인 및 노션 DB 조회 수행."""
+    role = get_current_role()
 
     # 노션 키 확인 및 안내 출력 전에 최우선으로 WIP 하드 가드 수행
     check_open_pr_guard(role)
