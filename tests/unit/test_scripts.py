@@ -84,3 +84,33 @@ def test_wip_guard_allows_when_no_open_pr(monkeypatch: pytest.MonkeyPatch) -> No
 
     # cloud-b 직무에는 열린 PR이 없으므로 sys.exit 없이 무사 반환
     check_open_pr_guard("cloud-b")
+
+
+def test_get_my_tasks_main_blocks_when_open_pr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """main() 실행 시에도 WIP 하드 가드가 동작하여 sys.exit(1)로 차단되는지 검증."""
+    from scripts.get_my_tasks import main
+
+    mock_prs = [
+        {
+            "number": 45,
+            "title": "feat(cloud-b): CW Agent 수집 설정 및 타임스탬프 검증",
+            "headRefName": "feat/cloud-b-cw-agent-config",
+            "url": "https://github.com/mmmphyun/aleph-project/pull/45",
+        }
+    ]
+
+    def mock_run(*args: list[str], **kwargs: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=json.dumps(mock_prs),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.delenv("ALLOW_CONCURRENT_WIP", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
