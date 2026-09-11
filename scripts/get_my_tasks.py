@@ -6,6 +6,7 @@ scripts/get_my_tasks.py
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.request
 
@@ -22,10 +23,88 @@ def load_env():
     return None
 
 
+def check_open_pr_guard(current_role: str) -> None:
+    """현재 직무(.agent-role)의 열린 PR 존재 여부를 검사하는 WIP 1개 제한 하드 가드.
+
+    Why:
+        선행 PR이 머지되기 전에 신규 이슈를 발행하거나 후속 브랜치를 쌓는 행위
+        (PR Stacking 및 이슈 증식)를 시스템 차원에서 차단하여 AGENTS.md 4.1 지침을 보장함.
+    """
+    if os.getenv("ALLOW_CONCURRENT_WIP") == "1":
+        print("[WIP 가드 예외] ALLOW_CONCURRENT_WIP=1 설정으로 열린 PR 검사를 우회합니다.")
+        return
+
+    try:
+        res = subprocess.run(
+            ["gh", "pr", "list", "--state", "open", "--json", "number,title,headRefName,url"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        prs = json.loads(res.stdout or "[]")
+        role_prs = []
+        for pr in prs:
+            head_ref = pr.get("headRefName") or ""
+            title = pr.get("title") or ""
+            branch_match = head_ref.startswith(f"feat/{current_role}-") or head_ref.startswith(
+                f"fix/{current_role}-"
+            )
+            title_match = f"({current_role}):" in title or f"[{current_role}]" in title
+            if branch_match or title_match:
+                role_prs.append(pr)
+
+        if role_prs:
+            print("\n" + "=" * 80, file=sys.stderr)
+            msg = (
+                f"[WIP 제한 차단] 직무 [{current_role}]에 아직 머지되지 않은 열린 PR이 "
+                f"{len(role_prs)}건 존재합니다!"
+            )
+            print(msg, file=sys.stderr)
+            print("=" * 80, file=sys.stderr)
+            for pr in role_prs:
+                print(f"  * PR #{pr.get('number')}: {pr.get('title')}", file=sys.stderr)
+                print(
+                    f"    브랜치: {pr.get('headRefName')} | 링크: {pr.get('url')}",
+                    file=sys.stderr,
+                )
+            print(
+                "\n[작업 가이드라인 - PR 스태킹 및 이슈 증식 절대 금지]",
+                file=sys.stderr,
+            )
+            print(
+                "1. 신규 이슈(gh issue create)를 발행하거나 후속 티켓 브랜치를 분기하지 마십시오.",
+                file=sys.stderr,
+            )
+            print(
+                "2. 리뷰 피드백 수정 시 새 이슈를 따지 말고, "
+                "기존 PR 브랜치에서 추가 커밋(fix/test) 후 푸시하십시오.",
+                file=sys.stderr,
+            )
+            print(
+                "3. 기존 PR의 리뷰 해결 및 머지가 완료된 후에만 다음 티켓에 착수할 수 있습니다.",
+                file=sys.stderr,
+            )
+            print("=" * 80 + "\n", file=sys.stderr)
+            sys.exit(1)
+    except subprocess.CalledProcessError as err:
+        print(
+            f"[WIP 가드 경고] GitHub PR 상태 확인 실패 (gh CLI 확인 필요): {err}",
+            file=sys.stderr,
+        )
+    except Exception as err:
+        print(
+            f"[WIP 가드 경고] GitHub PR 상태 확인 중 알 수 없는 오류 발생: {err}",
+            file=sys.stderr,
+        )
+
+
 role = "cloud-a"
 if os.path.exists(".agent-role"):
     with open(".agent-role", encoding="utf-8") as f:
         role = f.read().strip()
+
+# 노션 키 확인 및 안내 출력 전에 최우선으로 WIP 하드 가드 수행
+check_open_pr_guard(role)
 
 key = load_env()
 if not key:

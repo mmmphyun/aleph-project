@@ -17,13 +17,35 @@ if ($wrongTests) {
     exit 1
 }
 
+# uv 실행 가능 여부 판단 및 가상환경(venv) 헬퍼 정의
+$hasUv = Get-Command uv -ErrorAction SilentlyContinue
+
+function Run-Tool {
+    param([string]$tool, [string[]]$toolArgs)
+    if ($hasUv) {
+        uv run $tool @toolArgs
+    } elseif (Test-Path ".\.venv\Scripts\$tool.exe") {
+        & ".\.venv\Scripts\$tool.exe" @toolArgs
+    } elseif (Test-Path ".\.venv\Scripts\python.exe") {
+        & ".\.venv\Scripts\python.exe" -m $tool @toolArgs
+    } else {
+        & $tool @toolArgs
+    }
+}
+
 Write-Host "[2/4] Ruff Lint 검사 실행 중..." -ForegroundColor Cyan
-uv run ruff check .
+Run-Tool "ruff" @("check", ".")
 
 Write-Host "[3/4] Ruff Format 검사 실행 중..." -ForegroundColor Cyan
-uv run ruff format --check .
+Run-Tool "ruff" @("format", "--check", ".")
 
 Write-Host "[4/4] Pytest 단위 및 계약 테스트 실행 중..." -ForegroundColor Cyan
-uv run python -m pytest -v
+if ($hasUv) {
+    uv run python -m pytest -v
+} elseif (Test-Path ".\.venv\Scripts\python.exe") {
+    & ".\.venv\Scripts\python.exe" -m pytest -v
+} else {
+    python -m pytest -v
+}
 
 Write-Host "`n[성공] 모든 로컬 품질 및 계약 검증을 통과했습니다." -ForegroundColor Green
