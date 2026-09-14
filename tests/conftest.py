@@ -132,12 +132,16 @@ def mocked_ec2_target(mocked_aws: None) -> MockEc2Target:
         ]
     )
 
-    # Quarantine Security Group (격리용 인바운드 미허용 SG)
+    # Quarantine Security Group (격리용 인바운드/아웃바운드 전면 차단 SG)
     quarantine_sg = ec2_resource.create_security_group(
         GroupName="CloudShield-Quarantine-SG",
-        Description="Zero-trust isolation SG with no ingress",
+        Description="Zero-trust isolation SG with no ingress and no egress",
         VpcId=vpc.id,
     )
+    # AWS/Moto는 SG 생성 시 기본 아웃바운드 전체 허용(-1, 0.0.0.0/0)을 자동 주입함.
+    # 제로 트러스트 격리 정책에 따라 기본 egress 규칙을 명시적으로 회수함.
+    if quarantine_sg.ip_permissions_egress:
+        quarantine_sg.revoke_egress(IpPermissions=quarantine_sg.ip_permissions_egress)
 
     # 타깃 EC2 인스턴스 생성
     instances = ec2_resource.create_instances(
