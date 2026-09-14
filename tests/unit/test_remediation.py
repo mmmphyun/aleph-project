@@ -13,6 +13,7 @@ from remediation.remediation import (
     apply_remediation,
     find_quarantine_security_group,
     quarantine_ec2_instance,
+    validate_quarantine_security_group,
 )
 
 
@@ -200,3 +201,134 @@ def test_atomic_remediation_success(
     assert result["waf_blocked"] is True
     assert result["quarantine_applied"] is True
     assert result["iam_revoked"] is False
+
+
+def test_validate_quarantine_security_group_success(mocked_ec2_target: MockEc2Target) -> None:
+    """인/아웃바운드가 전면 차단된 격리 SG의 유효성 검증 성공 확인."""
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    is_valid = validate_quarantine_security_group(
+        ec2_client=ec2_client,
+        sg_id=mocked_ec2_target.quarantine_sg_id,
+    )
+    assert is_valid is True
+
+
+def test_validate_quarantine_security_group_fails_with_ingress(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """인바운드 허용 규칙(22/tcp)이 잔존하는 보안 그룹은 격리 SG 검증에서 거부됨을 확인.
+
+    Why:
+        관리자 실수나 레거시 설정으로 인바운드가 열려 있는 SG를 격리용으로
+        오용할 경우 침해 서버에 대한 추가 공격 인입을 방어할 수 없으므로 유효성 검사에서 차단함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    # 정상 SG(22/tcp 허용)를 검증 대상으로 전달하여 거부 여부 확인
+    is_valid = validate_quarantine_security_group(
+        ec2_client=ec2_client,
+        sg_id=mocked_ec2_target.normal_sg_id,
+    )
+    assert is_valid is False
+
+
+def test_validate_quarantine_security_group_fails_with_egress(
+    mocked_aws: None,
+) -> None:
+    """기본 아웃바운드 허용(0.0.0.0/0) 규칙이 남아 있는 보안 그룹은 격리 SG 검증에서 거부됨을 확인.
+
+    Why:
+        아웃바운드가 열려 있으면 침해 호스트가 C2 서버로 데이터를 유출하거나
+        내부망으로 횡적이동(Lateral Movement)할 수 있으므로 제로 트러스트 요건에 따라 실패 처리함.
+    """
+    ec2_resource = boto3.resource("ec2", region_name="us-east-1")
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+
+    vpc = ec2_resource.create_vpc(CidrBlock="10.1.0.0/16")
+    sg_with_egress = ec2_resource.create_security_group(
+        GroupName="SG-With-Default-Egress",
+        Description="SG with default outbound rule",
+        VpcId=vpc.id,
+    )
+    # create_security_group 시 기본 아웃바운드(-1, 0.0.0.0/0)가 자동 생성됨
+    is_valid = validate_quarantine_security_group(
+        ec2_client=ec2_client,
+        sg_id=sg_with_egress.id,
+    )
+    assert is_valid is False
+
+
+def test_quarantine_ec2_instance_fails_when_sg_policy_invalid(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """허용 규칙(Egress)이 잔존하는 SG로 격리 시도 시 작업 거부 및 기존 SG 유지 검증.
+
+    Why:
+        부적합한 보안 그룹으로 인스턴스 속성이 변경되는 것을 방지하고,
+        상위 오케스트레이터에 명확히 격리 실패(False)를 반환해야 함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    ec2_resource = boto3.resource("ec2", region_name="us-east-1")
+
+    # 기본 egress가 살아 있는 오염된 격리 SG 생성
+    desc = ec2_client.describe_instances(InstanceIds=[mocked_ec2_target.instance_id])
+    vpc_id = desc["Reservations"][0]["Instances"][0]["VpcId"]
+
+    invalid_quarantine_sg = ec2_resource.create_security_group(
+        GroupName="Invalid-Quarantine-SG",
+        Description="Contaminated quarantine SG with default egress",
+        VpcId=vpc_id,
+    )
+
+    success = quarantine_ec2_instance(
+        instance_id=mocked_ec2_target.instance_id,
+        ec2_client=ec2_client,
+        quarantine_sg_id=invalid_quarantine_sg.id,
+    )
+    assert success is False
+
+    # 인스턴스 보안 그룹이 변경되지 않고 기존 normal_sg_id로 유지되는지 확인
+    post_desc = ec2_client.describe_instances(InstanceIds=[mocked_ec2_target.instance_id])
+    current_sgs = [
+        sg["GroupId"] for sg in post_desc["Reservations"][0]["Instances"][0]["SecurityGroups"]
+    ]
+    assert current_sgs == [mocked_ec2_target.normal_sg_id]
+
+
+def test_quarantine_ec2_instance_fails_when_already_attached_sg_is_contaminated(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """연결된 격리 SG에 사후 인바운드 허용(Ingress)이 추가된 경우 멱등 성공이 아닌 실패 처리 검증.
+
+    Why:
+        기존 연결 상태만을 단순 비교하는 멱등성 검사의 맹점을 방어하여,
+        SG 규칙이 변조/오염된 경우 성공으로 오판하는 결함을 원천 방지함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    ec2_resource = boto3.resource("ec2", region_name="us-east-1")
+
+    # 1. 1차 정상 격리 수행
+    first_res = quarantine_ec2_instance(
+        instance_id=mocked_ec2_target.instance_id,
+        ec2_client=ec2_client,
+    )
+    assert first_res is True
+
+    # 2. 할당된 격리 SG에 외부 인바운드 규칙(22/tcp)을 강제 주입하여 오염시킴
+    quarantine_sg = ec2_resource.SecurityGroup(mocked_ec2_target.quarantine_sg_id)
+    quarantine_sg.authorize_ingress(
+        IpPermissions=[
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            }
+        ]
+    )
+
+    # 3. 2차 격리 호출 시 멱등 통과되지 않고 정책 검증 실패(False)가 반환되는지 확인
+    second_res = quarantine_ec2_instance(
+        instance_id=mocked_ec2_target.instance_id,
+        ec2_client=ec2_client,
+    )
+    assert second_res is False

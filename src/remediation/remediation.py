@@ -76,6 +76,57 @@ def find_quarantine_security_group(
         return None
 
 
+def validate_quarantine_security_group(ec2_client: Any, sg_id: str) -> bool:
+    """격리 보안 그룹의 인바운드 및 아웃바운드 규칙이 전면 차단 상태인지 검증.
+
+    Why:
+        격리 SG에 인바운드 허용 룰(예: 22/tcp) 또는 기본 아웃바운드 허용(0.0.0.0/0)이
+        잔존하거나 사후 오염된 경우, 외형상 격리 성공으로 보고되더라도 침해 호스트의
+        외부 C2 통신 및 내부 횡적이동(Lateral Movement)을 차단하지 못하는 결함을 방지함.
+
+    Constraints:
+        - sg_id: 'sg-'로 시작하는 AWS 보안 그룹 ID 문자열.
+        - ec2_client: Boto3 EC2 클라이언트 인스턴스.
+        - 검증 조건: IpPermissions(인바운드)와 IpPermissionsEgress(아웃바운드)가
+          모두 빈 리스트([])여야 참으로 판정.
+
+    Side-effects / Edge-cases:
+        - describe_security_groups 호출 시 ClientError 발생 시 False 반환.
+        - 허용 규칙이 1개라도 존재하는 경우 에러 로그 기록 후 False 반환.
+    """
+    try:
+        response = ec2_client.describe_security_groups(GroupIds=[sg_id])
+        security_groups = response.get("SecurityGroups", [])
+        if not security_groups:
+            logger.error("검증 대상 격리 보안 그룹을 찾을 수 없음: %s", sg_id)
+            return False
+
+        sg = security_groups[0]
+        ingress_rules = sg.get("IpPermissions", [])
+        egress_rules = sg.get("IpPermissionsEgress", [])
+
+        if ingress_rules:
+            logger.error(
+                "격리 보안 그룹(%s)에 인바운드 허용 규칙(%d건)이 잔존하여 부적합함",
+                sg_id,
+                len(ingress_rules),
+            )
+            return False
+
+        if egress_rules:
+            logger.error(
+                "격리 보안 그룹(%s)에 아웃바운드 허용 규칙(%d건)이 잔존하여 부적합함",
+                sg_id,
+                len(egress_rules),
+            )
+            return False
+
+        return True
+    except ClientError as e:
+        logger.error("격리 보안 그룹(%s) 규칙 검증 중 ClientError 발생: %s", sg_id, e)
+        return False
+
+
 def quarantine_ec2_instance(
     instance_id: str,
     ec2_client: Any = None,
@@ -85,15 +136,18 @@ def quarantine_ec2_instance(
     """침해 타깃 EC2의 보안 그룹을 격리 보안 그룹으로 원자적 교체.
 
     Why:
-        침해 사고 발생 시 모든 허용 보안 그룹을 단일 격리 SG(인바운드 전면 차단)로
-        즉시 원자적 교체(modify_instance_attribute)하여 내부망 전파를 원천 차단함.
+        침해 사고 발생 시 인/아웃바운드가 전면 차단된 단일 격리 SG로
+        즉시 원자적 교체(modify_instance_attribute)하여 외부 유출 및 횡적이동을 원천 차단함.
 
     Constraints:
         - instance_id: 'i-' 접두사로 시작하는 유효한 AWS EC2 인스턴스 ID.
         - quarantine_sg_id가 주어지지 않은 경우 quarantine_sg_name으로 자동 탐색함.
+        - 격리 SG는 인바운드/아웃바운드 규칙이 전무한 순수 격리 상태여야 함.
 
     Side-effects / Edge-cases:
-        - 이미 격리 SG 단독 적용 상태인 경우 중복 API 호출 없이 즉시 True 반환 (멱등성).
+        - 격리 SG에 허용 규칙(인바운드 또는 아웃바운드)이 남아있는 경우 격리를 거부하고 False 반환.
+        - 이미 격리 SG 단독 적용 상태라도 해당 SG가 오염된 경우 실패(False) 처리하며,
+          완전 격리 상태인 경우에만 중복 API 호출 없이 즉시 True 반환 (상태 기반 멱등성).
         - 유효하지 않은 인스턴스 ID, 인스턴스 미존재, 권한 부족 등의 ClientError 발생 시
           False를 반환하고 상위 파이프라인의 중단을 방지함.
     """
@@ -128,16 +182,25 @@ def quarantine_ec2_instance(
             )
             return False
 
-        # 3. 멱등성 검사: 이미 격리 SG 단독 적용 상태인지 확인
+        # 3. 격리 보안 그룹 정책 사전 검증 (인/아웃바운드 전면 차단 상태 확인)
+        if not validate_quarantine_security_group(ec2_client, target_sg_id):
+            logger.error(
+                "인스턴스 %s 격리 거부: 보안 그룹(%s)이 전면 차단 격리 요건을 충족하지 못함",
+                instance_id,
+                target_sg_id,
+            )
+            return False
+
+        # 4. 멱등성 검사: 이미 격리 SG 단독 적용 상태인지 확인
         if current_sgs == [target_sg_id]:
             logger.info(
-                "인스턴스 %s는 이미 격리 보안 그룹(%s)에 배치되어 있음 (멱등 처리)",
+                "인스턴스 %s는 이미 유효한 격리 보안 그룹(%s)에 배치되어 있음 (멱등 처리)",
                 instance_id,
                 target_sg_id,
             )
             return True
 
-        # 4. 원자적 보안 그룹 전면 교체 (기존 보안 그룹 목록을 격리 SG 1개로 단독 대체)
+        # 5. 원자적 보안 그룹 전면 교체 (기존 보안 그룹 목록을 격리 SG 1개로 단독 대체)
         ec2_client.modify_instance_attribute(
             InstanceId=instance_id,
             Groups=[target_sg_id],
