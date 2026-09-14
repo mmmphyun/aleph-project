@@ -16,6 +16,80 @@ from __future__ import annotations
 
 from typing import Any
 
+from contracts.events import CloudWatchLogsPayload
+
+# 클라우드 A Terraform IaC(aws_cloudwatch_log_subscription_filter) 연계용 구독 필터 파라미터 명세
+SUBSCRIPTION_FILTER_SPEC: dict[str, Any] = {
+    "filter_name": "CloudShield-SSH-FailedPassword-Filter",
+    "log_group_name": "/cloudshield/target/auth-log",
+    "filter_pattern": '"Failed password"',
+    "destination_type": "lambda",
+    "destination_arn": "${aws_lambda_function.threat_orchestrator.arn}",
+}
+
+
+def matches_subscription_filter(
+    log_line: str,
+    pattern: str | None = None,
+) -> bool:
+    """CloudWatch Logs 구독 필터 패턴 매칭 검사.
+
+    Why:
+        클라우드 B 수집 파이프라인에서 실제 AWS CloudWatch Logs 구독 필터가
+        대량의 정상 로그 중 의심 키워드('Failed password')가 포함된 라인만 선별하여
+        Lambda로 포워딩하는 동작을 로컬 테스트베드에서 완벽히 시뮬레이션하기 위함.
+        CloudWatch Logs 비정형 텍스트 필터("...") 및 공백 구분 필터([...])를 모의 평가함.
+
+    Constraints:
+        - log_line: 원시 Syslog 한 줄 문자열.
+        - pattern: CloudWatch Logs 필터 패턴 (기본값: SUBSCRIPTION_FILTER_SPEC["filter_pattern"]).
+
+    Side-effects / Edge-cases:
+        - log_line이 비어 있거나 문자열이 아닌 경우 False 반환.
+        - 따옴표 구문("Failed password"): 전체 로그에서 대소문자 구분 exact phrase 매칭.
+        - 공백 구분 패턴([...]): 공백 토큰 인덱스별 조건식 평가 (단일 토큰 불일치 시 False).
+    """
+    if not log_line or not isinstance(log_line, str):
+        return False
+
+    default_pattern = SUBSCRIPTION_FILTER_SPEC.get("filter_pattern", '"Failed password"')
+    active_pattern = pattern if pattern is not None else default_pattern
+    active_pattern = active_pattern.strip()
+
+    # 1. 비정형 구문 매칭: "..." (Exact phrase match)
+    # Why: BSD(Sep 03...) 및 ISO 8601 타임스탬프 형식 차이에 구애받지 않고
+    #      로그 라인 전체에서 'Failed password' 정확한 구문을 탐색함.
+    if active_pattern.startswith('"') and active_pattern.endswith('"') and len(active_pattern) >= 2:
+        phrase = active_pattern[1:-1]
+        return phrase in log_line
+
+    # 2. 공백 구분 필드 매칭: [...] (Space-delimited filter)
+    # Why: CloudWatch Logs의 공백 분리 필터 구문을 모의하여 단일 토큰 비교 동작을 시뮬레이션함.
+    if active_pattern.startswith("[") and active_pattern.endswith("]"):
+        field_specs = [f.strip() for f in active_pattern[1:-1].split(",") if f.strip()]
+        tokens = log_line.split()
+
+        for idx, field_spec in enumerate(field_specs):
+            if field_spec == "...":
+                break
+            if "=" in field_spec:
+                _field_name, expected_val = [x.strip() for x in field_spec.split("=", 1)]
+                expected_val = expected_val.strip("\"'")
+                if idx >= len(tokens):
+                    return False
+                token_val = tokens[idx]
+                if expected_val.startswith("*") and expected_val.endswith("*"):
+                    clean_val = expected_val[1:-1]
+                    if clean_val not in token_val:
+                        return False
+                elif expected_val != token_val:
+                    return False
+
+        return True
+
+    # 3. 일반 키워드 검색 (Fallback)
+    return active_pattern in log_line
+
 
 def decode_cw_logs(payload: dict[str, Any]) -> list[str]:
     """CloudWatch Logs 이벤트 페이로드를 디코딩 및 압축 해제하여 로그 문자열 목록 반환.
@@ -26,15 +100,36 @@ def decode_cw_logs(payload: dict[str, Any]) -> list[str]:
         (추출된 각 라인은 SyslogAuthEvent.parse_line()을 거쳐 모델 인스턴스로 변환됨)
 
     Constraints:
-        - payload: AWS Lambda에 전달된 이벤트 딕셔너리.
+        - payload: AWS Lambda에 전달된 이벤트 딕셔너리 {"awslogs": {"data": "<base64_gzip_str>"}}.
         - 반환값: 각 로그 레코드의 message 문자열 리스트.
 
     Side-effects / Edge-cases:
-        - payload 내 'awslogs' 키 또는 'data' 필드가 누락된 경우 KeyError 발생 가능.
-        - 손상되었거나 유효하지 않은 Base64/Gzip 데이터 인입 시
-          ValueError 또는 zlib.error 발생 가능.
-        - logEvents가 비어 있는 경우 빈 리스트([])를 안전하게 반환해야 함.
+        - payload 내 'awslogs' 키 또는 'data' 필드가 누락된 경우 KeyError 발생.
+        - 손상되었거나 유효하지 않은 Base64/Gzip 데이터 인입 시 ValueError 발생.
+        - logEvents가 비어 있는 경우 빈 리스트([])를 안전하게 반환함.
     """
-    raise NotImplementedError(
-        "클라우드 B 담당자 구현 영역: CloudWatch Logs 압축 해제 및 로그 라인 추출기"
-    )
+    if not isinstance(payload, dict):
+        raise TypeError(f"payload는 dict 타입이어야 합니다. (입력 타입: {type(payload).__name__})")
+
+    if "awslogs" not in payload:
+        raise KeyError("페이로드에 필수 키 'awslogs'가 누락되었습니다.")
+
+    awslogs = payload["awslogs"]
+    if not isinstance(awslogs, dict) or "data" not in awslogs:
+        raise KeyError("페이로드의 'awslogs' 내에 필수 키 'data'가 누락되었습니다.")
+
+    raw_data = awslogs["data"]
+    if not isinstance(raw_data, str):
+        raise ValueError("awslogs['data']는 Base64 인코딩된 문자열이어야 합니다.")
+
+    # 1단계: Base64 디코딩 및 Gzip 압축 해제 (contracts.events.CloudWatchLogsPayload 활용)
+    # Why: 공통 데이터 계약 모델을 준수하여 계층 간 스키마 일관성을 보장하고
+    #      손상된 압축 스트림 및 JSON 역직렬화 오류를 안전하게 포착함.
+    try:
+        cw_payload = CloudWatchLogsPayload.from_awslogs_data(raw_data)
+        return [event.message for event in cw_payload.logEvents]
+    except ValueError:
+        # Pydantic 모델 파싱 실패 시 상위로 전파
+        raise
+    except Exception as exc:
+        raise ValueError(f"CloudWatch Logs 페이로드 해제 실패: {exc}") from exc
