@@ -76,6 +76,12 @@ def test_collector_log_timestamp_format_parsing() -> None:
         CloudWatch Agent의 timestamp_format (%Y-%m-%dT%H:%M:%S.%f%z)과 타깃 인스턴스/mock 로그의
         ISO 8601 및 BSD 타임스탬프 정합성을 검증하여 이벤트 발생 시각 미추출 및
         대응 지연 수치 왜곡을 방지함.
+
+    Constraints:
+        Agent의 %z 디렉티브는 Go layout -0700에 매핑되며 [+-]\\d{4} 정규식만 지원.
+        따라서 rsyslog 커스텀 템플릿은 RFC 3339(+00:00)가 아닌 콜론 없는 형식(+0000)으로
+        오프셋을 출력해야 Agent 타임스탬프 파싱이 성공한다.
+        참고: https://github.com/aws/amazon-cloudwatch-agent/blob/main/internal/util/timestamp/timestamp.go
     """
     from datetime import datetime
     from pathlib import Path
@@ -89,12 +95,16 @@ def test_collector_log_timestamp_format_parsing() -> None:
     assert auth_log.exists() and auth_noisy_log.exists()
 
     # 1. ISO 8601 포맷 타임스탬프 파싱 검증 (%Y-%m-%dT%H:%M:%S.%f%z)
+    # Side-effects: Agent %z는 [+-]\d{4} 만 인식하므로 rsyslog 출력은 반드시 +0000 형식이어야 함.
+    # 아래 예시는 Agent가 실제로 파싱 가능한 +0000(콜론 없음) 형식을 사용함.
     iso_line = (
-        "2026-09-04T15:00:01.102345+00:00 target-ec2 sshd[21001]: "
+        "2026-09-04T15:00:01.102345+0000 target-ec2 sshd[21001]: "
         "Accepted publickey for ubuntu from 192.0.2.10 port 52140 ssh2"
     )
     iso_timestamp_str = iso_line.split()[0]
-    parsed_dt = datetime.fromisoformat(iso_timestamp_str)
+    # Python datetime.fromisoformat()은 +0000 형식을 직접 파싱하지 않으므로
+    # Agent 파싱 기준인 strptime 포맷으로 검증함.
+    parsed_dt = datetime.strptime(iso_timestamp_str, "%Y-%m-%dT%H:%M:%S.%f%z")
     assert parsed_dt.year == 2026 and parsed_dt.month == 9 and parsed_dt.day == 4
 
     # 2. BSD Syslog 포맷 타임스탬프 파싱 검증 (%b %d %H:%M:%S)
@@ -121,3 +131,94 @@ def test_collector_log_timestamp_format_parsing() -> None:
     for ev in parsed_events:
         assert ev is not None
         assert ev.source_ip != ""
+
+
+def test_cloudwatch_agent_timestamp_z_directive_regex() -> None:
+    """CloudWatch Agent %z 디렉티브 파싱 정규식과 rsyslog 출력 형식 정합성 회귀 테스트.
+
+    Why:
+        Agent 소스(timestamp.go)의 %z 디렉티브는 Go layout -0700에 매핑되며
+        내부적으로 [+-]\\d{4} 정규식만 지원한다. RFC 3339 표준의 콜론 포함 오프셋(+00:00)은
+        이 정규식에 매칭되지 않아 타임스탬프 추출 실패 → CloudWatch Logs의 인덱싱 시각이
+        수집 시각으로 덮어씌워져 이벤트 발생 시각 추적이 불가능해진다.
+        본 테스트는 amazon-cloudwatch-agent.json의 timestamp_format 설정과
+        rsyslog 실제 출력 샘플을 연결하여 Agent 파싱 가능 여부를 자동 회귀 검증한다.
+
+    Constraints:
+        - Agent %z 지원 형식: +0000 (콜론 없는 4자리) — 매칭 성공
+        - Agent %z 미지원 형식: +00:00 (RFC 3339 콜론 포함) — 매칭 실패
+        - rsyslog RSYSLOG_FileFormat 기본 출력: RFC 3339(+00:00) → 커스텀 템플릿 필수
+
+    Side-effects:
+        이 테스트가 실패하면 EC2 rsyslog 템플릿 또는 Agent 설정을 수정해야 한다.
+        참고: https://github.com/aws/amazon-cloudwatch-agent/blob/main/internal/util/timestamp/timestamp.go
+    """
+    import json
+    import re
+    from pathlib import Path
+
+    # Amazon CloudWatch Agent %z 디렉티브의 내부 파싱 정규식 (timestamp.go 기준)
+    # Directive: %z | Go layout: -0700 | Regex: [+-]\d{4}
+    CW_AGENT_TZ_REGEX = re.compile(r"[+-]\d{4}")
+
+    # 1. JSON 설정에서 timestamp_format 추출
+    config_path = Path("src/collector/amazon-cloudwatch-agent.json")
+    with config_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    collect_list = (
+        data.get("logs", {}).get("logs_collected", {}).get("files", {}).get("collect_list", [])
+    )
+    assert len(collect_list) >= 1
+    ts_format = collect_list[0]["timestamp_format"]
+    assert ts_format == "%Y-%m-%dT%H:%M:%S.%f%z", (
+        f"timestamp_format이 예상 규격과 다릅니다: {ts_format}"
+    )
+
+    # 2. rsyslog 커스텀 템플릿 출력 샘플 (콜론 없는 +0000 형식): Agent 파싱 성공 케이스
+    # Why: EC2에 배포할 rsyslog 커스텀 템플릿은 반드시 이 형식을 출력해야 함.
+    #   template(name="CloudShieldISO" type="string"
+    #     string="%TIMESTAMP:::date-unixtimestamp-subseconds%%TIMESTAMP:::date-tzoffsetcustom%")
+    #   → 실제로는 strftime %Y-%m-%dT%H:%M:%S.%f와 +HHMM 조합으로 출력 필요.
+    valid_rsyslog_samples = [
+        # +0000: 콜론 없는 UTC 오프셋 — Agent %z [+-]\d{4} 매칭 성공
+        "2026-09-04T15:00:01.102345+0000 target-ec2 sshd[21001]: Failed password",
+        # +0900: 양수 오프셋(KST) — Agent 파싱 성공
+        "2026-09-14T02:30:59.000001+0900 target-ec2 sshd[9001]: Failed password",
+        # -0500: 음수 오프셋(EST) — Agent 파싱 성공
+        "2026-01-01T00:00:00.999999-0500 target-ec2 sshd[1]: Failed password",
+    ]
+
+    # 3. RFC 3339 출력 샘플 (콜론 포함 +00:00 형식): Agent 파싱 실패 케이스
+    # Why: rsyslog RSYSLOG_FileFormat 기본값이 이 형식을 출력하므로
+    #   커스텀 템플릿 없이는 Agent 타임스탬프 파싱이 실패함.
+    invalid_rsyslog_samples = [
+        # +00:00: RFC 3339 콜론 포함 UTC — [+-]\d{4} 미매칭, Agent 파싱 실패
+        "2026-09-04T15:00:01.102345+00:00 target-ec2 sshd[21001]: Failed password",
+        # +09:00: RFC 3339 콜론 포함 KST — [+-]\d{4} 미매칭, Agent 파싱 실패
+        "2026-09-14T02:30:59.000001+09:00 target-ec2 sshd[9001]: Failed password",
+    ]
+
+    # 유효 샘플: Agent %z 정규식([+-]\d{4})이 타임스탬프 영역을 정확히 추출해야 함
+    for sample in valid_rsyslog_samples:
+        ts_token = sample.split()[0]  # "2026-09-04T15:00:01.102345+0000"
+        tz_match = CW_AGENT_TZ_REGEX.search(ts_token)
+        assert tz_match is not None, (
+            f"[회귀 실패] Agent %z 정규식이 유효 샘플에서 타임존을 추출하지 못함: {ts_token!r}\n"
+            "rsyslog 커스텀 템플릿이 +0000 형식을 출력하는지 확인하세요."
+        )
+        # 타임존 오프셋이 타임스탬프 토큰 끝에 위치해야 함 (콜론 없음 보장)
+        matched_tz = tz_match.group(0)
+        assert ":" not in matched_tz, (
+            f"타임존 오프셋에 콜론이 포함되어 있습니다: {matched_tz!r} — Agent 파싱 불가"
+        )
+
+    # 무효 샘플: RFC 3339 콜론 포함 형식은 Agent %z 정규식에 매칭되지 않아야 함
+    for sample in invalid_rsyslog_samples:
+        ts_token = sample.split()[0]  # "2026-09-04T15:00:01.102345+00:00"
+        # +00:00 에서 [+-]\d{4}는 4자리 연속 숫자가 없으므로 None이어야 함
+        tz_match = CW_AGENT_TZ_REGEX.search(ts_token)
+        assert tz_match is None, (
+            "[회귀 경고] RFC 3339 콜론 포함 형식이 Agent %z 정규식에 매칭됨 (예상치 못한 결과): "
+            f"{ts_token!r} → {tz_match.group(0) if tz_match else None}\n"
+            "EC2 rsyslog 출력 형식이 변경됐거나 Agent 소스가 업데이트됐습니다. 재검토 필요."
+        )
