@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+import json
+import re
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -133,35 +137,138 @@ def test_collector_log_timestamp_format_parsing() -> None:
         assert ev.source_ip != ""
 
 
+def _render_rsyslog_log_from_template(
+    template_str: str,
+    dt: datetime,
+    hostname: str = "target-ec2",
+    syslogtag: str = "sshd[21001]:",
+    msg: str = "Failed password for invalid user admin from 198.51.100.50 port 49152 ssh2",
+) -> str:
+    """rsyslog 템플릿 포맷 문자열을 datetime 및 시스템 필드로 렌더링.
+
+    Why:
+        init_target_server.sh의 배포 템플릿으로부터 실제 rsyslog 데몬이
+        출력하는 것과 동일한 로그 라인을 합성하여 Agent 설정과의 정합성을 검증함.
+
+    Constraints:
+        rsyslog property replacer 옵션:
+        - date-rfc3339: RFC 3339 콜론 포함 오프셋 (+00:00)
+        - date-year/month/day/hour/minute/second/subseconds: ISO 일시 필드
+        - date-tzoffsdirection/tzoffshour/tzoffsmin: 콜론 없는 오프셋 (+0000)
+    """
+    tz_offset = dt.utcoffset()
+    if tz_offset is not None:
+        total_seconds = int(tz_offset.total_seconds())
+        sign = "+" if total_seconds >= 0 else "-"
+        abs_seconds = abs(total_seconds)
+        tz_hours = abs_seconds // 3600
+        tz_mins = (abs_seconds % 3600) // 60
+    else:
+        sign, tz_hours, tz_mins = "+", 0, 0
+
+    replacements = {
+        "%TIMESTAMP:::date-rfc3339%": dt.isoformat(),
+        "%TIMESTAMP:::date-year%": f"{dt.year:04d}",
+        "%TIMESTAMP:::date-month%": f"{dt.month:02d}",
+        "%TIMESTAMP:::date-day%": f"{dt.day:02d}",
+        "%TIMESTAMP:::date-hour%": f"{dt.hour:02d}",
+        "%TIMESTAMP:::date-minute%": f"{dt.minute:02d}",
+        "%TIMESTAMP:::date-second%": f"{dt.second:02d}",
+        "%TIMESTAMP:::date-subseconds%": f"{dt.microsecond:06d}",
+        "%TIMESTAMP:::date-tzoffsdirection%": sign,
+        "%TIMESTAMP:::date-tzoffshour%": f"{tz_hours:02d}",
+        "%TIMESTAMP:::date-tzoffsmin%": f"{tz_mins:02d}",
+        "%HOSTNAME%": hostname,
+        "%syslogtag%": syslogtag,
+        "%msg:::sp-if-no-1st-sp%%msg:::drop-last-lf%": f" {msg.strip()}",
+        r"\n": "\n",
+    }
+    rendered = template_str
+    for k, v in replacements.items():
+        rendered = rendered.replace(k, v)
+    return rendered
+
+
+def _extract_deployed_rsyslog_format(script_path: Path) -> tuple[str, str]:
+    """init_target_server.sh에서 배포되는 rsyslog 활성 템플릿명과 포맷 문자열을 추출.
+
+    Why:
+        테스트가 수동 하드코딩 샘플에 의존하지 않고, 실제 EC2 배포 스크립트의
+        rsyslog 템플릿 정의와 기본 바인딩 설정을 직접 파싱하여 검증하도록 보장함.
+    """
+    content = script_path.read_text(encoding="utf-8")
+    conf_pattern = (
+        r"cat <<\s*['\"]?RSYSLOG_EOF['\"]?\s*>\s*"
+        r"/etc/rsyslog\.d/00-cloudshield-timestamp\.conf\s*\n(.*?)\n\s*RSYSLOG_EOF"
+    )
+    conf_match = re.search(conf_pattern, content, re.DOTALL)
+    assert conf_match is not None, (
+        "init_target_server.sh 내 00-cloudshield-timestamp.conf 설정 블록이 존재해야 합니다."
+    )
+    conf_content = conf_match.group(1)
+
+    default_match = re.search(
+        r"^\s*\$ActionFileDefaultTemplate\s+(\S+)",
+        conf_content,
+        re.MULTILINE,
+    )
+    assert default_match is not None, (
+        "00-cloudshield-timestamp.conf 내 $ActionFileDefaultTemplate 설정이 필요합니다."
+    )
+    active_tpl = default_match.group(1).strip()
+
+    if active_tpl == "RSYSLOG_FileFormat":
+        return (
+            active_tpl,
+            (
+                "%TIMESTAMP:::date-rfc3339% %HOSTNAME% "
+                "%syslogtag%%msg:::sp-if-no-1st-sp%%msg:::drop-last-lf%\\n"
+            ),
+        )
+
+    tpl_pattern = (
+        rf'(?:template\s*\(\s*name="{active_tpl}"[^)]*string="([^"]+)"|'
+        rf'\$template\s+{active_tpl}\s*,\s*"([^"]+)")'
+    )
+    tpl_match = re.search(tpl_pattern, conf_content)
+    assert tpl_match is not None, (
+        f"00-cloudshield-timestamp.conf 내에 {active_tpl} 템플릿 정의가 존재하지 않습니다."
+    )
+    format_str = tpl_match.group(1) or tpl_match.group(2)
+    return (active_tpl, format_str)
+
+
 def test_cloudwatch_agent_timestamp_z_directive_regex() -> None:
-    """CloudWatch Agent %z 디렉티브 파싱 정규식과 rsyslog 출력 형식 정합성 회귀 테스트.
+    """CloudWatch Agent %z 디렉티브 파싱 정규식과 rsyslog 배포 템플릿 정합성 회귀 테스트.
 
     Why:
         Agent 소스(timestamp.go)의 %z 디렉티브는 Go layout -0700에 매핑되며
         내부적으로 [+-]\\d{4} 정규식만 지원한다. RFC 3339 표준의 콜론 포함 오프셋(+00:00)은
         이 정규식에 매칭되지 않아 타임스탬프 추출 실패 → CloudWatch Logs의 인덱싱 시각이
         수집 시각으로 덮어씌워져 이벤트 발생 시각 추적이 불가능해진다.
-        본 테스트는 amazon-cloudwatch-agent.json의 timestamp_format 설정과
-        rsyslog 실제 출력 샘플을 연결하여 Agent 파싱 가능 여부를 자동 회귀 검증한다.
+        본 테스트는 init_target_server.sh의 실제 배포 rsyslog 템플릿으로부터 대표 로그를
+        직접 렌더링하고, amazon-cloudwatch-agent.json의 timestamp_format과 연계하여
+        시간대뿐 아니라 전체 타임스탬프와 발생 시각 정합성을 자동 검증한다.
+        만약 배포 설정을 RSYSLOG_FileFormat(+00:00)으로 되돌리면 이 검증이 반드시 실패한다.
 
     Constraints:
         - Agent %z 지원 형식: +0000 (콜론 없는 4자리) — 매칭 성공
         - Agent %z 미지원 형식: +00:00 (RFC 3339 콜론 포함) — 매칭 실패
-        - rsyslog RSYSLOG_FileFormat 기본 출력: RFC 3339(+00:00) → 커스텀 템플릿 필수
+        - rsyslog 배포 템플릿: date-tzoffsdirection + date-tzoffshour + date-tzoffsmin 커스텀 템플릿
 
     Side-effects:
-        이 테스트가 실패하면 EC2 rsyslog 템플릿 또는 Agent 설정을 수정해야 한다.
+        init_target_server.sh의 rsyslog 템플릿 또는 Agent 설정 변경 시
+        이 회귀 테스트가 즉각 실패하여 타임스탬프 파싱 불일치를 사전에 차단함.
         참고: https://github.com/aws/amazon-cloudwatch-agent/blob/main/internal/util/timestamp/timestamp.go
     """
-    import json
-    import re
-    from pathlib import Path
-
-    # Amazon CloudWatch Agent %z 디렉티브의 내부 파싱 정규식 (timestamp.go 기준)
+    # Amazon CloudWatch Agent 내부 파싱 정규식 (timestamp.go 기준)
     # Directive: %z | Go layout: -0700 | Regex: [+-]\d{4}
-    CW_AGENT_TZ_REGEX = re.compile(r"[+-]\d{4}")
+    cw_agent_tz_regex = re.compile(r"[+-]\d{4}")
+    cw_agent_full_ts_regex = re.compile(
+        r"^\d{4}-\s{0,1}\d{1,2}-\s{0,1}\d{1,2}T\d{2}:\d{2}:\d{2}\.\d{1,9}[+-]\d{4}$"
+    )
 
-    # 1. JSON 설정에서 timestamp_format 추출
+    # 1. JSON 설정에서 timestamp_format 추출 및 규격 검증
     config_path = Path("src/collector/amazon-cloudwatch-agent.json")
     with config_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
@@ -174,51 +281,73 @@ def test_cloudwatch_agent_timestamp_z_directive_regex() -> None:
         f"timestamp_format이 예상 규격과 다릅니다: {ts_format}"
     )
 
-    # 2. rsyslog 커스텀 템플릿 출력 샘플 (콜론 없는 +0000 형식): Agent 파싱 성공 케이스
-    # Why: EC2에 배포할 rsyslog 커스텀 템플릿은 반드시 이 형식을 출력해야 함.
-    #   template(name="CloudShieldISO" type="string"
-    #     string="%TIMESTAMP:::date-unixtimestamp-subseconds%%TIMESTAMP:::date-tzoffsetcustom%")
-    #   → 실제로는 strftime %Y-%m-%dT%H:%M:%S.%f와 +HHMM 조합으로 출력 필요.
-    valid_rsyslog_samples = [
-        # +0000: 콜론 없는 UTC 오프셋 — Agent %z [+-]\d{4} 매칭 성공
-        "2026-09-04T15:00:01.102345+0000 target-ec2 sshd[21001]: Failed password",
-        # +0900: 양수 오프셋(KST) — Agent 파싱 성공
-        "2026-09-14T02:30:59.000001+0900 target-ec2 sshd[9001]: Failed password",
-        # -0500: 음수 오프셋(EST) — Agent 파싱 성공
-        "2026-01-01T00:00:00.999999-0500 target-ec2 sshd[1]: Failed password",
+    # 2. init_target_server.sh에서 실제 배포되는 rsyslog 템플릿 추출
+    script_path = Path("init_target_server.sh")
+    assert script_path.exists(), "init_target_server.sh 파일이 존재해야 합니다."
+    active_tpl, deployed_format = _extract_deployed_rsyslog_format(script_path)
+
+    # 활성 템플릿이 RSYSLOG_FileFormat(콜론 포함 RFC 3339)이 아닌 커스텀 템플릿이어야 함
+    assert active_tpl != "RSYSLOG_FileFormat", (
+        "[회귀 실패] 배포 스크립트가 RSYSLOG_FileFormat을 활성 템플릿으로 사용하고 있습니다.\n"
+        "CloudWatch Agent %z와 호환되는 콜론 없는 시간대(+0000) 커스텀 템플릿을 연결하세요."
+    )
+
+    # 3. 배포 템플릿에서 대표 로그 렌더링 (다양한 시간대: UTC, KST, EST)
+    test_datetimes = [
+        # UTC (+0000): 기본 시간대
+        datetime(2026, 9, 4, 15, 0, 1, 102345, tzinfo=UTC),
+        # KST (+0900): 양수 오프셋 시간대
+        datetime(2026, 9, 14, 2, 30, 59, 1, tzinfo=timezone(timedelta(hours=9))),
+        # EST (-0500): 음수 오프셋 시간대
+        datetime(2026, 1, 1, 0, 0, 0, 999999, tzinfo=timezone(timedelta(hours=-5))),
     ]
 
-    # 3. RFC 3339 출력 샘플 (콜론 포함 +00:00 형식): Agent 파싱 실패 케이스
-    # Why: rsyslog RSYSLOG_FileFormat 기본값이 이 형식을 출력하므로
-    #   커스텀 템플릿 없이는 Agent 타임스탬프 파싱이 실패함.
-    invalid_rsyslog_samples = [
-        # +00:00: RFC 3339 콜론 포함 UTC — [+-]\d{4} 미매칭, Agent 파싱 실패
-        "2026-09-04T15:00:01.102345+00:00 target-ec2 sshd[21001]: Failed password",
-        # +09:00: RFC 3339 콜론 포함 KST — [+-]\d{4} 미매칭, Agent 파싱 실패
-        "2026-09-14T02:30:59.000001+09:00 target-ec2 sshd[9001]: Failed password",
-    ]
+    for expected_dt in test_datetimes:
+        # 배포 템플릿으로부터 실제 rsyslog 출력 로그 라인 생성
+        rendered_log = _render_rsyslog_log_from_template(deployed_format, expected_dt)
+        ts_token = rendered_log.split()[0]
 
-    # 유효 샘플: Agent %z 정규식([+-]\d{4})이 타임스탬프 영역을 정확히 추출해야 함
-    for sample in valid_rsyslog_samples:
-        ts_token = sample.split()[0]  # "2026-09-04T15:00:01.102345+0000"
-        tz_match = CW_AGENT_TZ_REGEX.search(ts_token)
-        assert tz_match is not None, (
-            f"[회귀 실패] Agent %z 정규식이 유효 샘플에서 타임존을 추출하지 못함: {ts_token!r}\n"
-            "rsyslog 커스텀 템플릿이 +0000 형식을 출력하는지 확인하세요."
+        # 3.1. Agent 전체 타임스탬프 파싱 정규식 매칭 검증
+        assert cw_agent_full_ts_regex.match(ts_token) is not None, (
+            f"[회귀 실패] 배포 템플릿 출력 타임스탬프가 Agent Go 정규식에 미매칭: {ts_token!r}"
         )
-        # 타임존 오프셋이 타임스탬프 토큰 끝에 위치해야 함 (콜론 없음 보장)
+
+        # 3.2. Agent %z 디렉티브 정규식([+-]\\d{4}) 매칭 및 콜론 부재 단언
+        tz_match = cw_agent_tz_regex.search(ts_token)
+        assert tz_match is not None, (
+            f"[회귀 실패] Agent %z 정규식이 배포 템플릿 타임존을 추출하지 못함: {ts_token!r}"
+        )
         matched_tz = tz_match.group(0)
         assert ":" not in matched_tz, (
-            f"타임존 오프셋에 콜론이 포함되어 있습니다: {matched_tz!r} — Agent 파싱 불가"
+            f"[회귀 실패] 배포 템플릿 타임존에 콜론이 포함됨: {matched_tz!r} — Agent 파싱 불가"
         )
 
-    # 무효 샘플: RFC 3339 콜론 포함 형식은 Agent %z 정규식에 매칭되지 않아야 함
-    for sample in invalid_rsyslog_samples:
-        ts_token = sample.split()[0]  # "2026-09-04T15:00:01.102345+00:00"
-        # +00:00 에서 [+-]\d{4}는 4자리 연속 숫자가 없으므로 None이어야 함
-        tz_match = CW_AGENT_TZ_REGEX.search(ts_token)
-        assert tz_match is None, (
-            "[회귀 경고] RFC 3339 콜론 포함 형식이 Agent %z 정규식에 매칭됨 (예상치 못한 결과): "
-            f"{ts_token!r} → {tz_match.group(0) if tz_match else None}\n"
-            "EC2 rsyslog 출력 형식이 변경됐거나 Agent 소스가 업데이트됐습니다. 재검토 필요."
+        # 3.3. 전체 타임스탬프 및 발생 시각(일시 + 오프셋) 정합성 최종 검증
+        parsed_dt = datetime.strptime(ts_token, ts_format)
+        assert parsed_dt == expected_dt, (
+            f"추출된 발생 시각({parsed_dt})이 원본({expected_dt})과 일치하지 않습니다."
         )
+        assert parsed_dt.year == expected_dt.year
+        assert parsed_dt.month == expected_dt.month
+        assert parsed_dt.day == expected_dt.day
+        assert parsed_dt.hour == expected_dt.hour
+        assert parsed_dt.minute == expected_dt.minute
+        assert parsed_dt.second == expected_dt.second
+        assert parsed_dt.microsecond == expected_dt.microsecond
+        assert parsed_dt.utcoffset() == expected_dt.utcoffset()
+
+    # 4. 회귀 방지 음성 검증 (배포 설정을 구 RSYSLOG_FileFormat으로 되돌리면 검증 실패 보장)
+    legacy_format = (
+        "%TIMESTAMP:::date-rfc3339% %HOSTNAME% "
+        "%syslogtag%%msg:::sp-if-no-1st-sp%%msg:::drop-last-lf%\\n"
+    )
+    legacy_sample = _render_rsyslog_log_from_template(legacy_format, test_datetimes[0])
+    legacy_ts = legacy_sample.split()[0]  # "2026-09-04T15:00:01.102345+00:00"
+
+    # RFC 3339 콜론 포함 형식은 Agent Go 정규식 및 %z 정규식 매칭에 반드시 실패해야 함
+    assert cw_agent_full_ts_regex.match(legacy_ts) is None, (
+        f"[회귀 경고] 구 RSYSLOG_FileFormat 타임스탬프가 Agent 정규식에 매칭됨: {legacy_ts!r}"
+    )
+    assert cw_agent_tz_regex.search(legacy_ts) is None, (
+        f"[회귀 경고] 구 RSYSLOG_FileFormat 타임존이 Agent %z 정규식에 매칭됨: {legacy_ts!r}"
+    )
