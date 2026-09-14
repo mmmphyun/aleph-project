@@ -152,7 +152,15 @@ SyslogFacility AUTH
 MaxAuthTries 10
 EOF
 
-# rsyslog 서비스 활성화 (Ubuntu 24.04 등에서 /var/log/auth.log 생성 보장)
+# rsyslog 서비스 활성화 및 타임스탬프 포맷 정규화 (CloudWatch Agent %z 디렉티브 호환 커스텀 템플릿)
+# Constraints: CloudWatch Agent %z는 [+-]\d{4}(콜론 없음)만 지원하므로 RSYSLOG_FileFormat(+00:00) 대신
+#   커스텀 템플릿(date-tzoffsdirection, date-tzoffshour, date-tzoffsmin)을 사용하여 +0000 포맷 출력 보장
+cat << 'RSYSLOG_EOF' > /etc/rsyslog.d/00-cloudshield-timestamp.conf
+# CloudShield log timestamp format normalization
+# Constraints: ISO 8601 format matching CloudWatch Agent timestamp_format (%Y-%m-%dT%H:%M:%S.%f%z)
+template(name="CloudShieldFileFormat" type="string" string="%TIMESTAMP:::date-year%-%TIMESTAMP:::date-month%-%TIMESTAMP:::date-day%T%TIMESTAMP:::date-hour%:%TIMESTAMP:::date-minute%:%TIMESTAMP:::date-second%.%TIMESTAMP:::date-subseconds%%TIMESTAMP:::date-tzoffsdirection%%TIMESTAMP:::date-tzoffshour%%TIMESTAMP:::date-tzoffsmin% %HOSTNAME% %syslogtag%%msg:::sp-if-no-1st-sp%%msg:::drop-last-lf%\n")
+$ActionFileDefaultTemplate CloudShieldFileFormat
+RSYSLOG_EOF
 systemctl enable rsyslog
 systemctl restart rsyslog
 
