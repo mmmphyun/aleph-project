@@ -12,27 +12,163 @@ from typing import Any
 
 import pytest
 
-from collector.cw_processor import decode_cw_logs
+from collector.cw_processor import (
+    SUBSCRIPTION_FILTER_SPEC,
+    decode_cw_logs,
+    matches_subscription_filter,
+)
+from contracts.events import CloudWatchLogsPayload, SyslogAuthEvent
 
 
-def test_decode_cw_logs_interface(sample_cw_event: dict[str, Any]) -> None:
-    """decode_cw_logs 함수 시그니처 및 스켈레톤 인터페이스 스모크 검증.
+def test_decode_cw_logs_success(sample_cw_event: dict[str, Any]) -> None:
+    """CloudWatch Logs 페이로드 Gzip 압축 해제 및 로그 문자열 추출 검증.
 
     Why:
-        클라우드 B 담당 에이전트가 cw_processor.py 구현 착수 전 모듈 import 경로와
-        함수 시그니처(Lambda 이벤트 딕셔너리 수락 여부)를 즉각 검증함.
+        CloudWatch Logs 구독 필터가 Lambda 함수로 전달한 실제 Base64/Gzip 압축
+        페이로드(mock_cw_event.json)로부터 개별 로그 메시지 목록을 복원할 수 있는지 확인함.
     """
-    with pytest.raises(NotImplementedError, match="클라우드 B 담당자 구현 영역"):
-        decode_cw_logs(sample_cw_event)
-
-
-@pytest.mark.skip(reason="클라우드 B 구현 대기")
-def test_decode_cw_logs_success(sample_cw_event: dict[str, Any]) -> None:
-    """CloudWatch Logs 페이로드 Gzip 압축 해제 및 로그 문자열 추출 검증."""
     lines = decode_cw_logs(sample_cw_event)
     assert isinstance(lines, list)
     assert len(lines) >= 1
     assert "Failed password" in lines[0]
+
+
+def test_decode_cw_logs_empty_events() -> None:
+    """logEvents가 비어 있는 정상 페이로드 인입 시 빈 리스트를 안전하게 반환하는지 검증."""
+    empty_payload_model = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/auth-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-SSH-FailedPassword-Filter"],
+        logEvents=[],
+    )
+    mock_event = {"awslogs": {"data": empty_payload_model.to_awslogs_data()}}
+    lines = decode_cw_logs(mock_event)
+    assert lines == []
+
+
+def test_decode_cw_logs_invalid_inputs() -> None:
+    """유효하지 않은 입력 페이로드 인입 시 예외 발생 검증.
+
+    Why:
+        비정상 인입 데이터로 인한 무음 실패(Silent Failure)를 방지하고
+        명확한 에러 핸들링을 보장함.
+    """
+    # 1. 딕셔너리 타입이 아닌 경우 TypeError
+    with pytest.raises(TypeError, match="payload는 dict 타입이어야 합니다"):
+        decode_cw_logs("not-a-dict")  # type: ignore[arg-type]
+
+    # 2. 'awslogs' 키 누락 시 KeyError
+    with pytest.raises(KeyError, match="'awslogs'가 누락"):
+        decode_cw_logs({"invalid_key": {}})
+
+    # 3. 'data' 키 누락 시 KeyError
+    with pytest.raises(KeyError, match="'data'가 누락"):
+        decode_cw_logs({"awslogs": {}})
+
+    # 4. 문자열이 아닌 data 필드 인입 시 ValueError
+    with pytest.raises(ValueError, match="Base64 인코딩된 문자열"):
+        decode_cw_logs({"awslogs": {"data": 12345}})  # type: ignore[dict-item]
+
+    # 5. 손상된 Base64/Gzip 데이터 인입 시 ValueError
+    with pytest.raises(ValueError, match="CloudWatch Logs"):
+        decode_cw_logs({"awslogs": {"data": "invalid_base64_string!!!"}})
+
+
+def test_subscription_filter_parameters_contract() -> None:
+    """클라우드 A의 Terraform 모듈 연계용 구독 필터 정의 파라미터 명세 검증.
+
+    Why:
+        클라우드 B가 도출한 구독 필터 설정이 CloudWatch Agent 수집 명세의
+        로그 그룹명과 일치하고, 의심 키워드('*Failed password*') 패턴을
+        정확히 포함하는지 정적으로 검증함.
+    """
+    # 1. 필수 파라미터 키 검증
+    required_keys = {"filter_name", "log_group_name", "filter_pattern", "destination_arn"}
+    assert required_keys.issubset(SUBSCRIPTION_FILTER_SPEC.keys())
+
+    # 2. 로그 그룹명이 CloudWatch Agent 수집 경로와 일치하는지 검증
+    agent_config_path = Path("src/collector/amazon-cloudwatch-agent.json")
+    assert agent_config_path.exists()
+    agent_data = json.loads(agent_config_path.read_text(encoding="utf-8"))
+    collect_list = agent_data["logs"]["logs_collected"]["files"]["collect_list"]
+    expected_log_group = collect_list[0]["log_group_name"]
+
+    assert SUBSCRIPTION_FILTER_SPEC["log_group_name"] == expected_log_group, (
+        f"구독 필터 대상 로그 그룹({SUBSCRIPTION_FILTER_SPEC['log_group_name']})이 "
+        f"CloudWatch Agent 수집 로그 그룹({expected_log_group})과 일치해야 합니다."
+    )
+
+    # 3. 필터 패턴 구문 유효성 검증
+    expected_pattern = '[mon, day, timestamp, host, process, msg = "*Failed password*", ...]'
+    assert SUBSCRIPTION_FILTER_SPEC["filter_pattern"] == expected_pattern
+
+
+def test_matches_subscription_filter_simulation() -> None:
+    """구독 필터 패턴([..., msg = "*Failed password*", ...]) 모의 매칭 검사.
+
+    Why:
+        실제 AWS 배포 전 로컬 테스트베드에서 정상 로그는 걸러내고
+        SSH 실패 공격 로그만 선별하여 Lambda로 라우팅되는지 사전 검증함.
+    """
+    # 공격 시그니처 로그 (매칭 성공 대상)
+    attack_line = (
+        "Sep 03 14:20:01 target-ec2 sshd[12341]: "
+        "Failed password for invalid user admin from 198.51.100.50 port 49152 ssh2"
+    )
+    assert matches_subscription_filter(attack_line) is True
+
+    # 정상 접속 로그 (필터링 제외 대상)
+    normal_line = (
+        "2026-09-04T15:00:01.102345+0000 target-ec2 sshd[21001]: "
+        "Accepted publickey for ubuntu from 192.0.2.10 port 52140 ssh2"
+    )
+    assert matches_subscription_filter(normal_line) is False
+
+    # 기타 시스템 로그 (필터링 제외 대상)
+    sudo_line = "Sep 03 14:21:00 target-ec2 sudo: pam_unix(sudo:session): session opened"
+    assert matches_subscription_filter(sudo_line) is False
+
+    # 엣지 케이스 (빈 문자열)
+    assert matches_subscription_filter("") is False
+
+
+def test_mock_lambda_subscription_filter_pipeline(sample_auth_log_lines: list[str]) -> None:
+    """로그 수집 -> 구독 필터 -> Gzip 인코딩 -> 모의 Lambda 디코딩 -> Syslog 계약 파싱 파이프라인.
+
+    Why:
+        단일 10초 관통 대응 파이프라인의 1~2단계(수집 및 필터링 -> Lambda 인입)가
+        실제 AWS 환경과 동일하게 압축/인코딩을 거쳐 무결하게 복원되는지 전체 연계를 증명함.
+    """
+    # 1. 구독 필터를 거쳐 'Failed password' 로그만 선별 (CloudWatch Subscription Filter 시뮬레이션)
+    filtered_lines = [line for line in sample_auth_log_lines if matches_subscription_filter(line)]
+    assert len(filtered_lines) >= 1, "모의 로그 내에 SSH 실패 이벤트가 1건 이상 존재해야 합니다."
+
+    # 2. CloudWatch Logs가 Lambda로 전달하는 Gzip 압축 + Base64 인코딩 페이로드 모의 생성
+    mock_cw_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup=SUBSCRIPTION_FILTER_SPEC["log_group_name"],
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=[SUBSCRIPTION_FILTER_SPEC["filter_name"]],
+        logEvents=[
+            {"id": f"event-{idx}", "timestamp": 1725373200000 + idx, "message": line}
+            for idx, line in enumerate(filtered_lines)
+        ],
+    )
+    mock_lambda_event = {"awslogs": {"data": mock_cw_payload.to_awslogs_data()}}
+
+    # 3. 모의 Lambda 환경에서 cw_processor.decode_cw_logs 실행
+    decoded_lines = decode_cw_logs(mock_lambda_event)
+    assert decoded_lines == filtered_lines
+
+    # 4. 복원된 각 로그 라인이 공통 계약(SyslogAuthEvent)으로 무결하게 파싱되는지 최종 검증
+    for line in decoded_lines:
+        parsed = SyslogAuthEvent.parse_line(line)
+        assert parsed is not None
+        assert parsed.source_ip != ""
+        assert "Failed password" in parsed.raw_message
 
 
 def test_amazon_cloudwatch_agent_config_validity() -> None:
