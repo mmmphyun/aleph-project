@@ -22,7 +22,7 @@ from contracts.events import CloudWatchLogsPayload
 SUBSCRIPTION_FILTER_SPEC: dict[str, Any] = {
     "filter_name": "CloudShield-SSH-FailedPassword-Filter",
     "log_group_name": "/cloudshield/target/auth-log",
-    "filter_pattern": '[mon, day, timestamp, host, process, msg = "*Failed password*", ...]',
+    "filter_pattern": '"Failed password"',
     "destination_type": "lambda",
     "destination_arn": "${aws_lambda_function.threat_orchestrator.arn}",
 }
@@ -30,22 +30,65 @@ SUBSCRIPTION_FILTER_SPEC: dict[str, Any] = {
 
 def matches_subscription_filter(
     log_line: str,
-    keyword: str = "Failed password",
+    pattern: str | None = None,
 ) -> bool:
-    """CloudWatch Logs 구독 필터 패턴([..., msg = "*Failed password*", ...])의 로컬 모의 매칭 검사.
+    """CloudWatch Logs 구독 필터 패턴 매칭 검사.
 
     Why:
         클라우드 B 수집 파이프라인에서 실제 AWS CloudWatch Logs 구독 필터가
-        대량의 정상 로그 중 'Failed password' 키워드가 포함된 라인만 선별하여
+        대량의 정상 로그 중 의심 키워드('Failed password')가 포함된 라인만 선별하여
         Lambda로 포워딩하는 동작을 로컬 테스트베드에서 완벽히 시뮬레이션하기 위함.
+        CloudWatch Logs 비정형 텍스트 필터("...") 및 공백 구분 필터([...])를 모의 평가함.
 
     Constraints:
         - log_line: 원시 Syslog 한 줄 문자열.
-        - keyword: 필터링 대상 의심 키워드 (기본값: 'Failed password').
+        - pattern: CloudWatch Logs 필터 패턴 (기본값: SUBSCRIPTION_FILTER_SPEC["filter_pattern"]).
+
+    Side-effects / Edge-cases:
+        - log_line이 비어 있거나 문자열이 아닌 경우 False 반환.
+        - 따옴표 구문("Failed password"): 전체 로그에서 대소문자 구분 exact phrase 매칭.
+        - 공백 구분 패턴([...]): 공백 토큰 인덱스별 조건식 평가 (단일 토큰 불일치 시 False).
     """
     if not log_line or not isinstance(log_line, str):
         return False
-    return keyword in log_line
+
+    default_pattern = SUBSCRIPTION_FILTER_SPEC.get("filter_pattern", '"Failed password"')
+    active_pattern = pattern if pattern is not None else default_pattern
+    active_pattern = active_pattern.strip()
+
+    # 1. 비정형 구문 매칭: "..." (Exact phrase match)
+    # Why: BSD(Sep 03...) 및 ISO 8601 타임스탬프 형식 차이에 구애받지 않고
+    #      로그 라인 전체에서 'Failed password' 정확한 구문을 탐색함.
+    if active_pattern.startswith('"') and active_pattern.endswith('"') and len(active_pattern) >= 2:
+        phrase = active_pattern[1:-1]
+        return phrase in log_line
+
+    # 2. 공백 구분 필드 매칭: [...] (Space-delimited filter)
+    # Why: CloudWatch Logs의 공백 분리 필터 구문을 모의하여 단일 토큰 비교 동작을 시뮬레이션함.
+    if active_pattern.startswith("[") and active_pattern.endswith("]"):
+        field_specs = [f.strip() for f in active_pattern[1:-1].split(",") if f.strip()]
+        tokens = log_line.split()
+
+        for idx, field_spec in enumerate(field_specs):
+            if field_spec == "...":
+                break
+            if "=" in field_spec:
+                _field_name, expected_val = [x.strip() for x in field_spec.split("=", 1)]
+                expected_val = expected_val.strip("\"'")
+                if idx >= len(tokens):
+                    return False
+                token_val = tokens[idx]
+                if expected_val.startswith("*") and expected_val.endswith("*"):
+                    clean_val = expected_val[1:-1]
+                    if clean_val not in token_val:
+                        return False
+                elif expected_val != token_val:
+                    return False
+
+        return True
+
+    # 3. 일반 키워드 검색 (Fallback)
+    return active_pattern in log_line
 
 
 def decode_cw_logs(payload: dict[str, Any]) -> list[str]:

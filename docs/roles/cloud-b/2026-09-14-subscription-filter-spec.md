@@ -17,9 +17,9 @@ CloudShield의 단일 10초 관통 대응 파이프라인(`공격 발생 -> 중�
                ▼ (CloudWatch Agent: PutLogEvents)
 [CloudWatch Logs 그룹: /cloudshield/target/auth-log]
                │
-               ▼ [구독 필터: [mon, day, timestamp, host, process, msg = "*Failed password*", ...]]
-               │ (의심 키워드 불일치 정상 로그: 비용 0원 즉시 드롭)
-               │ (의심 키워드 일치 공격 로그: Base64 + Gzip 압축 비동기 스트리밍)
+               ▼ [구독 필터: "Failed password"]
+               │ (의심 구문 불일치 정상 로그: 비용 0원 즉시 드롭)
+               │ (의심 구문 일치 공격 로그: Base64 + Gzip 압축 비동기 스트리밍)
                ▼
 [Lambda 위협 분석 오케스트레이터 (클라우드 A)] ──▶ [Boto3 복합 차단] ──▶ [Slack 알림]
 ```
@@ -38,7 +38,7 @@ CloudShield의 단일 10초 관통 대응 파이프라인(`공격 발생 -> 중�
 | :--- | :--- | :--- |
 | `name` | `CloudShield-SSH-FailedPassword-Filter` | 구독 필터 식별자 |
 | `log_group_name` | `/cloudshield/target/auth-log` | `amazon-cloudwatch-agent.json`의 수집 대상 로그 그룹명과 100% 일치 |
-| `filter_pattern` | `[mon, day, timestamp, host, process, msg = "*Failed password*", ...]` | Syslog 공백 토큰 기반 의심 키워드 선별 패턴 |
+| `filter_pattern` | `"Failed password"` | 비정형 텍스트 정확한 구문(Exact phrase) 매칭 패턴 (BSD 및 ISO 8601 무관 전체 라인 검색) |
 | `destination_arn` | `aws_lambda_function.threat_orchestrator.arn` | 클라우드 A가 배포한 위협 분석 오케스트레이터 Lambda 함수 ARN |
 | `distribution` | `ByLogStream` (선택적) | 로그 스트림별 배치 전달 분배 방식 |
 
@@ -48,17 +48,18 @@ CloudShield의 단일 10초 관통 대응 파이프라인(`공격 발생 -> 중�
 
 ### 3.1 패턴 구문
 ```text
-[mon, day, timestamp, host, process, msg = "*Failed password*", ...]
+"Failed password"
 ```
 
-### 3.2 토큰별 매핑 및 작동 원리
-- `mon`, `day`, `timestamp`: Syslog 헤더의 월, 일, 시간 필드를 공백 단위로 매핑 (예: `Sep`, `03`, `14:20:01`).
-- `host`: 로그 생성 인스턴스 호스트명 (예: `target-ec2`).
-- `process`: 로깅 프로세스 명칭 및 PID 블록 (예: `sshd[12341]:`).
-- `msg = "*Failed password*"`:
-  - 6번째 필드 이후 시작되는 메시지 본문(`msg`)에 `Failed password` 구문이 포함되어 있는지 와일드카드(`*`) 매칭 수행.
-  - SSH 무차별 대입(Brute-force) 시도 시 발생하는 `Failed password for invalid user ...` 및 `Failed password for root ...` 패턴을 포괄적으로 탐지.
-- `...`: 메시지 뒤에 이어지는 가변 길이 잔여 필드(출발지 IP, 포트, 프로토콜 등) 전체 수용.
+### 3.2 공백 구분 필터(`[...]`)의 구조적 결함 및 배포 불가 사유
+초기 검토되었던 공백 구분 필터(`[mon, day, timestamp, host, process, msg = "*Failed password*", ...]`)는 다음과 같은 이유로 실제 AWS 환경에서 동작하지 않습니다:
+1. **공백 토큰 매핑 실패**: CloudWatch Logs의 공백 구분 필터 구문에서 각 필드는 공백으로 구분되는 단일 단어(single token)에 매핑됩니다. 예시 로그(`Sep 03 14:20:01 target-ec2 sshd[12341]: Failed password for ...`)에서 6번째 토큰은 오직 `Failed` 하나뿐이므로, 공백이 포함된 `*Failed password*` 조건은 절대로 만족할 수 없습니다. 후속 `...` 구문 또한 앞선 필드에 텍스트를 병합하지 않고 나머지 필드의 존재만을 허용합니다.
+2. **타임스탬프 헤더 규격 가변성**: BSD Syslog 포맷(`Sep 03 14:20:01`)은 타임스탬프가 3개 필드(월, 일, 시간)를 차지하는 반면, 공통 계약 및 CloudWatch Agent가 지원하는 ISO 8601 포맷(`2026-09-04T15:00:01.102345+0000`)은 타임스탬프가 1개 필드입니다. 따라서 고정 인덱스 기반 필터는 헤더 포맷에 따라 필드 위치가 어긋나 공격 로그가 누락됩니다.
+
+### 3.3 비정형 텍스트 구문 매칭(`"Failed password"`) 채택 근거
+- **헤더 비의존적 탐색**: 쌍따옴표로 감싸진 구문(`"Failed password"`)은 대소문자를 구분하는 AWS CloudWatch Logs 비정형 정확 구문(Exact phrase) 검색으로 동작합니다.
+- **다양한 Syslog 포맷 포용**: BSD 포맷과 ISO 8601 포맷 모두에서 메시지 본문 내 `Failed password` 구문을 100% 탐지하여 Lambda로 포워딩합니다.
+- **정상 로그 완벽 제외**: 정상 SSH 인증(`Accepted publickey...`) 및 sudo/cron 로그는 해당 구문을 포함하지 않으므로 필터 단계에서 0원 즉시 드롭됩니다.
 
 ---
 
@@ -103,7 +104,7 @@ log_messages = [event.message for event in cw_payload.logEvents]
 resource "aws_cloudwatch_log_subscription_filter" "ssh_failed_password" {
   name            = "CloudShield-SSH-FailedPassword-Filter"
   log_group_name  = "/cloudshield/target/auth-log"
-  filter_pattern  = "[mon, day, timestamp, host, process, msg = \"*Failed password*\", ...]"
+  filter_pattern  = "\"Failed password\""
   destination_arn = aws_lambda_function.threat_orchestrator.arn
 
   depends_on = [
@@ -130,6 +131,7 @@ resource "aws_lambda_permission" "allow_cloudwatch_logs" {
 1. `test_decode_cw_logs_success`: 실제 Gzip 압축 페이로드(`mock_cw_event.json`)로부터 `Failed password` 로그 정상 복원 검증.
 2. `test_decode_cw_logs_empty_events`: 빈 이벤트 목록 인입 시 예외 없이 빈 리스트 반환 검증.
 3. `test_decode_cw_logs_invalid_inputs`: 잘못된 타입, 키 누락, 손상된 Base64/Gzip 데이터에 대한 방어적 예외 처리 검증.
-4. `test_subscription_filter_parameters_contract`: 정의된 파라미터가 `amazon-cloudwatch-agent.json`의 로그 그룹명과 정확히 일치하는지 정적 단언.
-5. `test_matches_subscription_filter_simulation`: 공격 로그(매칭 성공)와 정상 로그(필터 제외)의 로컬 시뮬레이션 동작 검증.
-6. `test_mock_lambda_subscription_filter_pipeline`: 수집 $\rightarrow$ 필터 선별 $\rightarrow$ Gzip 인코딩 $\rightarrow$ Lambda 디코딩 $\rightarrow$ `SyslogAuthEvent` 계약 파싱까지 E2E 연계 무결성 100% 검증.
+4. `test_subscription_filter_parameters_contract`: 정의된 파라미터가 `amazon-cloudwatch-agent.json`의 로그 그룹명과 정확히 일치하고, 패턴이 `"Failed password"`인지 정적 단언.
+5. `test_matches_subscription_filter_simulation`: BSD 및 ISO 8601 포맷 공격 로그(매칭 성공)와 정상/sudo 로그(필터 제외)의 로컬 시뮬레이션 동작 검증.
+6. `test_subscription_filter_pattern_syntax_verification`: 실제 설정된 비정형 구문 패턴(`"Failed password"`)의 포괄적 탐지 검증 및 이전 공백 구분 필터(`[...]`)의 구조적 매칭 실패 결함 회귀 검증.
+7. `test_mock_lambda_subscription_filter_pipeline`: 수집 $\rightarrow$ 필터 선별 $\rightarrow$ Gzip 인코딩 $\rightarrow$ Lambda 디코딩 $\rightarrow$ `SyslogAuthEvent` 계약 파싱까지 E2E 연계 무결성 100% 검증.
