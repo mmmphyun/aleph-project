@@ -11,7 +11,9 @@ from conftest import MockEc2Target, MockWafTarget
 from contracts.incident import IncidentReport
 from remediation.remediation import (
     apply_remediation,
+    block_ip_wafv2,
     find_quarantine_security_group,
+    find_waf_ip_set,
     quarantine_ec2_instance,
     validate_quarantine_security_group,
 )
@@ -185,7 +187,6 @@ def test_apply_remediation_action_routing(
     assert res_waf["quarantine_applied"] is False
 
 
-@pytest.mark.skip(reason="클라우드 A 후속 티켓(WAFv2 차단 구현)에서 활성화")
 def test_atomic_remediation_success(
     mocked_aws: None,
     mocked_ec2_target: MockEc2Target,
@@ -201,6 +202,15 @@ def test_atomic_remediation_success(
     assert result["waf_blocked"] is True
     assert result["quarantine_applied"] is True
     assert result["iam_revoked"] is False
+
+    # WAF IPSet 실제 차단 상태 검증
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    ip_set = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{sample_incident_report.source_ip}/32" in ip_set["IPSet"]["Addresses"]
 
 
 def test_validate_quarantine_security_group_success(mocked_ec2_target: MockEc2Target) -> None:
@@ -332,3 +342,149 @@ def test_quarantine_ec2_instance_fails_when_already_attached_sg_is_contaminated(
         ec2_client=ec2_client,
     )
     assert second_res is False
+
+
+def test_find_waf_ip_set_success(mocked_waf_ipset: MockWafTarget) -> None:
+    """기본 이름(CloudShield-Block-IPSet)으로 WAF IPSet 탐색 검증."""
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    found = find_waf_ip_set(waf_client)
+
+    assert found is not None
+    assert found["id"] == mocked_waf_ipset.ipset_id
+    assert found["name"] == mocked_waf_ipset.ipset_name
+    assert found["arn"] == mocked_waf_ipset.ipset_arn
+
+
+def test_find_waf_ip_set_not_found(mocked_aws: None) -> None:
+    """존재하지 않는 WAF IPSet 이름 조회 시 None 반환 검증."""
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    found = find_waf_ip_set(waf_client, ipset_name="NonExistentIPSet")
+
+    assert found is None
+
+
+def test_block_ip_wafv2_success(mocked_waf_ipset: MockWafTarget) -> None:
+    """단일 IPv4 주소가 /32 CIDR로 WAF IPSet에 원자적 추가되는지 검증."""
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    test_ip = "203.0.113.195"
+
+    success = block_ip_wafv2(
+        source_ip=test_ip,
+        waf_client=waf_client,
+    )
+    assert success is True
+
+    # IPSet 상태 검증
+    ip_set = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{test_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_block_ip_wafv2_idempotent(mocked_waf_ipset: MockWafTarget) -> None:
+    """동일 IP에 대한 연속 호출 시 멱등성(Idempotency) 보장 및 중복 추가 방지 검증."""
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    test_ip = "203.0.113.195"
+
+    first_res = block_ip_wafv2(source_ip=test_ip, waf_client=waf_client)
+    assert first_res is True
+
+    second_res = block_ip_wafv2(source_ip=test_ip, waf_client=waf_client)
+    assert second_res is True
+
+    ip_set = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    addresses = ip_set["IPSet"]["Addresses"]
+    assert addresses.count(f"{test_ip}/32") == 1
+
+
+def test_block_ip_wafv2_invalid_ip(mocked_waf_ipset: MockWafTarget) -> None:
+    """유효하지 않은 IPv4 주소 인입 시 에러 격리 및 False 반환 검증."""
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    assert block_ip_wafv2(source_ip="999.999.999.999", waf_client=waf_client) is False
+    assert block_ip_wafv2(source_ip="not-an-ip", waf_client=waf_client) is False
+
+
+def test_block_ip_wafv2_non_32_prefix_rejected(mocked_waf_ipset: MockWafTarget) -> None:
+    """폭발 반경(Blast Radius) 방지를 위해 /32 이외 서브넷(/24 등) 차단 거부 검증."""
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    assert block_ip_wafv2(source_ip="192.168.1.0/24", waf_client=waf_client) is False
+
+
+def test_block_ip_wafv2_not_found_ipset(mocked_aws: None) -> None:
+    """존재하지 않는 IPSet 대상 차단 시도 시 False 반환 및 ClientError 예외 격리 검증."""
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    success = block_ip_wafv2(
+        source_ip="203.0.113.195",
+        ipset_name="NonExistentIPSet",
+        waf_client=waf_client,
+    )
+    assert success is False
+
+
+def test_block_ip_wafv2_optimistic_lock_retry(
+    mocked_waf_ipset: MockWafTarget,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """동시 수정 충돌(WAFOptimisticLockException) 발생 시 자동 재시도 후 성공 검증."""
+    from botocore.exceptions import ClientError
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    original_update = waf_client.update_ip_set
+    call_count = 0
+
+    def mock_update_ip_set(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ClientError(
+                error_response={
+                    "Error": {
+                        "Code": "WAFOptimisticLockException",
+                        "Message": "Conflict",
+                    }
+                },
+                operation_name="UpdateIPSet",
+            )
+        return original_update(**kwargs)
+
+    monkeypatch.setattr(waf_client, "update_ip_set", mock_update_ip_set)
+
+    success = block_ip_wafv2(
+        source_ip="203.0.113.196",
+        waf_client=waf_client,
+    )
+    assert success is True
+    assert call_count == 2
+
+
+def test_apply_remediation_waf_action_routing(
+    mocked_waf_ipset: MockWafTarget,
+    sample_incident_report: IncidentReport,
+) -> None:
+    """WAF 관련 action_required 지시어별 분기 및 격리 미실행 라우팅 검증."""
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    # 1. BLOCK_WAF 단독
+    report_waf = sample_incident_report.model_copy(
+        update={"action_required": "BLOCK_WAF", "source_ip": "198.51.100.70"}
+    )
+    res_waf = apply_remediation(report_waf, waf_client=waf_client)
+    assert res_waf["waf_blocked"] is True
+    assert res_waf["quarantine_applied"] is False
+
+    # 2. BLOCK_IP_ONLY 단독
+    report_ip_only = sample_incident_report.model_copy(
+        update={"action_required": "BLOCK_IP_ONLY", "source_ip": "198.51.100.71"}
+    )
+    res_ip = apply_remediation(report_ip_only, waf_client=waf_client)
+    assert res_ip["waf_blocked"] is True
+    assert res_ip["quarantine_applied"] is False
