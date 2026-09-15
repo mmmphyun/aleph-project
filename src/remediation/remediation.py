@@ -14,6 +14,7 @@ Constraints:
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from typing import Any, TypedDict
@@ -26,6 +27,9 @@ from contracts.incident import IncidentReport
 logger = logging.getLogger(__name__)
 
 DEFAULT_QUARANTINE_SG_NAME = "CloudShield-Quarantine-SG"
+DEFAULT_WAF_IPSET_NAME = "CloudShield-Block-IPSet"
+DEFAULT_WAF_SCOPE = "REGIONAL"
+MAX_WAF_UPDATE_RETRIES = 3
 
 
 class RemediationResult(TypedDict):
@@ -213,12 +217,178 @@ def quarantine_ec2_instance(
         return False
 
 
+def find_waf_ip_set(
+    waf_client: Any,
+    ipset_name: str = DEFAULT_WAF_IPSET_NAME,
+    scope: str = DEFAULT_WAF_SCOPE,
+) -> dict[str, str] | None:
+    """AWS WAFv2 IPSet 목록에서 지정된 이름의 IPSet 메타데이터를 조회.
+
+    Why:
+        WAFv2 리소스는 수정 및 조회 시 Name뿐 아니라 고유 Id 및 Scope가 필수이므로,
+        사전 정의된 IPSet 명칭(CloudShield-Block-IPSet)을 기반으로 Id와 ARN을 동적 식별함.
+
+    Constraints:
+        - waf_client: Boto3 WAFv2 클라이언트 인스턴스.
+        - ipset_name: 대상 IPSet 명칭 (기본값: CloudShield-Block-IPSet).
+        - scope: 'REGIONAL' 또는 'CLOUDFRONT' (기본값: REGIONAL).
+        - 반환값: 탐색 성공 시 {"id": ..., "name": ..., "arn": ..., "lock_token": ...},
+          미발견 시 None.
+
+    Side-effects / Edge-cases:
+        - API 호출 실패(ClientError) 시 예외를 상위로 전파하지 않고 None을 반환하여
+          차단 파이프라인의 안전성을 유지함.
+    """
+    try:
+        response = waf_client.list_ip_sets(Scope=scope)
+        summaries = response.get("IPSets", response.get("IPSetSummaries", []))
+        for summary in summaries:
+            if summary.get("Name") == ipset_name:
+                return {
+                    "id": str(summary.get("Id", "")),
+                    "name": str(summary.get("Name", "")),
+                    "arn": str(summary.get("ARN", "")),
+                    "lock_token": str(summary.get("LockToken", "")),
+                }
+        logger.warning("WAF IPSet 탐색 실패: ipset_name=%s, scope=%s", ipset_name, scope)
+        return None
+    except ClientError as e:
+        logger.error("WAF IPSet 목록 조회 중 AWS ClientError 발생: %s", e)
+        return None
+
+
+def block_ip_wafv2(
+    source_ip: str,
+    ipset_name: str = DEFAULT_WAF_IPSET_NAME,
+    ipset_id: str | None = None,
+    scope: str = DEFAULT_WAF_SCOPE,
+    waf_client: Any = None,
+    max_retries: int = MAX_WAF_UPDATE_RETRIES,
+) -> bool:
+    """공격자 IP 주소를 AWS WAFv2 IPSet에 /32 CIDR 규격으로 원자적 등록 및 차단.
+
+    Why:
+        L7 침해 공격(스프레잉, 웹 무차별 대입 등) 발생 시 단일 공격자 IP만을 정밀 차단하여
+        정상 대역에 대한 오차단(Blast Radius)을 원천 방지하고, 동시성 충돌 시 LockToken 기반
+        낙관적 락 재시도를 통해 차단 정책의 원자적 일관성을 보장함.
+
+    Constraints:
+        - source_ip: 단일 유효 IPv4 주소 문자열. (서브넷 미포함 시 자동으로 /32 부가).
+        - ipset_id가 주어지지 않은 경우 ipset_name으로 자동 검색.
+        - max_retries: 동시성 충돌(WAFOptimisticLockException) 시 최대 재시도 횟수.
+
+    Side-effects / Edge-cases:
+        - 유효하지 않은 IP 형식이 전달될 경우 작업을 즉시 거부하고 False 반환.
+        - 이미 해당 IP(/32)가 차단 목록에 포함되어 있으면 중복 API 호출 없이 즉시 True 반환
+          (상태 기반 멱등성).
+        - 다른 프로세스와의 동시 수정 충돌 시 최신 LockToken을 재취득하여 최대 max_retries회 재시도.
+        - 권한 부족, 리소스 부재 등 AWS ClientError 발생 시 상위 파이프라인 중단을
+          방지하고 False 반환.
+    """
+    # 1. IPv4 유효성 검증 및 /32 CIDR 표준화
+    normalized_ip = source_ip.strip()
+    if "/" not in normalized_ip:
+        target_cidr = f"{normalized_ip}/32"
+    else:
+        target_cidr = normalized_ip
+
+    try:
+        network = ipaddress.ip_network(target_cidr, strict=False)
+        if network.version != 4:
+            logger.error("IPv4만 지원됩니다: %s", source_ip)
+            return False
+        # 단일 호스트(/32) 차단 규격 강제
+        if network.prefixlen != 32:
+            logger.warning("폭발 반경 방지를 위해 /32 단일 호스트 차단만 허용됩니다: %s", source_ip)
+            return False
+    except ValueError as e:
+        logger.error("유효하지 않은 IP 주소 규격: %s (%s)", source_ip, e)
+        return False
+
+    if waf_client is None:
+        region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        waf_client = boto3.client("wafv2", region_name=region)
+
+    for attempt in range(max_retries):
+        try:
+            # 2. IPSet ID 확정
+            target_ipset_id = ipset_id
+            if not target_ipset_id:
+                found = find_waf_ip_set(waf_client, ipset_name=ipset_name, scope=scope)
+                if not found:
+                    logger.error("대상 WAF IPSet(%s)을 찾을 수 없음", ipset_name)
+                    return False
+                target_ipset_id = found["id"]
+
+            # 3. 최신 IPSet 상세 정보 및 LockToken 조회
+            get_res = waf_client.get_ip_set(
+                Name=ipset_name,
+                Scope=scope,
+                Id=target_ipset_id,
+            )
+            ipset_data = get_res.get("IPSet", {})
+            current_addresses = ipset_data.get("Addresses", [])
+            lock_token = get_res.get("LockToken")
+            description = ipset_data.get("Description", "")
+
+            # 4. 멱등성 검사: 이미 차단 목록에 포함되어 있는지 확인
+            if target_cidr in current_addresses:
+                logger.info(
+                    "IP %s는 이미 WAF IPSet(%s)에 등록되어 있음 (멱등 처리)",
+                    target_cidr,
+                    ipset_name,
+                )
+                return True
+
+            # 5. 신규 주소 병합 (기존 순서 보존 및 중복 제거)
+            new_addresses = list(dict.fromkeys([*current_addresses, target_cidr]))
+
+            # 6. 낙관적 락 기반 원자적 갱신 호출
+            waf_client.update_ip_set(
+                Name=ipset_name,
+                Scope=scope,
+                Id=target_ipset_id,
+                Description=description,
+                Addresses=new_addresses,
+                LockToken=lock_token,
+            )
+            logger.info(
+                "WAF IPSet(%s) 차단 등록 완료: %s 추가 (총 %d개 IP 차단 중)",
+                ipset_name,
+                target_cidr,
+                len(new_addresses),
+            )
+            return True
+
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "WAFOptimisticLockException" and attempt < max_retries - 1:
+                logger.warning(
+                    "WAF IPSet(%s) 동시 수정 충돌 감지(WAFOptimisticLockException). 재시도 (%d/%d)",
+                    ipset_name,
+                    attempt + 1,
+                    max_retries,
+                )
+                continue
+            logger.error("WAF IPSet(%s) 차단 중 AWS ClientError 발생: %s", ipset_name, e)
+            return False
+        except Exception as e:
+            logger.error("WAF IPSet(%s) 차단 중 예기치 않은 오류 발생: %s", ipset_name, e)
+            return False
+
+    logger.error("WAF IPSet(%s) 갱신 최대 재시도 횟수(%d회) 초과 실패", ipset_name, max_retries)
+    return False
+
+
 def apply_remediation(
     report: IncidentReport,
     ec2_client: Any = None,
     waf_client: Any = None,
     iam_client: Any = None,
     quarantine_sg_id: str | None = None,
+    waf_ipset_name: str = DEFAULT_WAF_IPSET_NAME,
+    waf_ipset_id: str | None = None,
+    waf_scope: str = DEFAULT_WAF_SCOPE,
 ) -> RemediationResult:
     """침해사고 보고서를 기반으로 AWS 다중 계층 차단 조치를 실행하고 결과 반환.
 
@@ -257,10 +427,15 @@ def apply_remediation(
             quarantine_sg_id=quarantine_sg_id,
         )
 
-    # 2. L7 WAF IP 차단 조치 (후속 티켓 구현 영역)
+    # 2. L7 WAF IP 차단 조치 (BLOCK_WAF, BLOCK_AND_QUARANTINE, BLOCK_IP_ONLY)
     if action in ("BLOCK_WAF", "BLOCK_AND_QUARANTINE", "BLOCK_IP_ONLY"):
-        # TODO(cloud-a): WAFv2 IPSet /32 원자적 차단 티켓에서 연동 구현
-        result["waf_blocked"] = False
+        result["waf_blocked"] = block_ip_wafv2(
+            source_ip=report.source_ip,
+            ipset_name=waf_ipset_name,
+            ipset_id=waf_ipset_id,
+            scope=waf_scope,
+            waf_client=waf_client,
+        )
 
     # 3. Identity IAM 임시 세션 무효화 조치 (후속 연계 영역)
     if action == "REVOKE_IAM_SESSION":
