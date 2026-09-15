@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Slack Block Kit 안전 글자 수 상한
 MAX_FIELD_LENGTH = 500
+MAX_HEADER_LENGTH = 150
 
 
 def truncate_text(text: str, max_length: int = MAX_FIELD_LENGTH) -> str:
@@ -62,7 +63,7 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
     Constraints:
         - report: Pydantic으로 검증된 IncidentReport 인스턴스.
         - 4대 필수 키 누락 방지: incident_id, rule_name, source_ip, remediation_action
-        - 모든 가변 텍스트 필드는 500자 Truncate 안전 로직 적용.
+        - 라벨/마크다운 포함 모든 최종 표시 문자열은 500자(헤더 150자) 안전 잘라내기 적용.
 
     Side-effects / Edge-cases:
         - target_accounts 또는 recommendations가 빈 튜플인 경우 대체 기본 안내 문구 렌더링.
@@ -75,16 +76,11 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
     }
     emoji = risk_emojis.get(report.risk_level, "🔔")
 
-    # 500자 안전 자르기 적용
-    safe_summary = truncate_text(report.summary_ko, MAX_FIELD_LENGTH)
-    safe_attack_type = truncate_text(report.attack_type, MAX_FIELD_LENGTH)
-
     # 공격 대상 계정 포맷팅
     if report.target_accounts:
         accounts_text = ", ".join(report.target_accounts)
     else:
         accounts_text = "없음 (단일 호스트 스캔)"
-    safe_accounts_text = truncate_text(accounts_text, MAX_FIELD_LENGTH)
 
     # 사후 권고 조치 목록 포맷팅
     if report.recommendations:
@@ -92,14 +88,47 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
         recommendations_text = "\n".join(rec_lines)
     else:
         recommendations_text = "별도 권고 조치 없음 (대응 완료)"
-    safe_recommendations_text = truncate_text(recommendations_text, MAX_FIELD_LENGTH)
+
+    # 라벨 및 마크다운을 포함한 최종 표시 문자열 상한 적용 (Slack 규격 및 프로젝트 500자 기준 준수)
+    header_text = truncate_text(
+        f"{emoji} [CloudShield] 침해사고 긴급 탐지 및 자동 대응 알림", MAX_HEADER_LENGTH
+    )
+    summary_text = truncate_text(f"*사고 요약:*\n{report.summary_ko}", MAX_FIELD_LENGTH)
+    accounts_block_text = truncate_text(f"*공격 대상 계정:*\n{accounts_text}", MAX_FIELD_LENGTH)
+    recommendations_block_text = truncate_text(
+        f"*SecOps 권고 조치:*\n{recommendations_text}", MAX_FIELD_LENGTH
+    )
+    context_text = truncate_text(
+        f"MITRE ATT&CK: `{report.mitre_id}` | CloudShield 10-Second Auto-Remediation Pipeline",
+        MAX_FIELD_LENGTH,
+    )
+
+    # fields 섹션 내 6개 필드 최종 표시 문자열 500자 상한 적용
+    field_incident_id = truncate_text(
+        f"*사건 ID (incident_id):*\n`{report.incident_id}`", MAX_FIELD_LENGTH
+    )
+    field_attack_type = truncate_text(
+        f"*공격 유형 (rule_name):*\n{report.attack_type}", MAX_FIELD_LENGTH
+    )
+    field_source_ip = truncate_text(
+        f"*출발지 IP (source_ip):*\n`{report.source_ip}`", MAX_FIELD_LENGTH
+    )
+    field_risk_level = truncate_text(
+        f"*위험도 (risk_level):*\n*{report.risk_level}*", MAX_FIELD_LENGTH
+    )
+    field_target_id = truncate_text(
+        f"*타깃 식별자:*\n`{report.target_identifier}`", MAX_FIELD_LENGTH
+    )
+    field_remediation = truncate_text(
+        f"*대응 조치 (remediation_action):*\n*{report.action_required}*", MAX_FIELD_LENGTH
+    )
 
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": f"{emoji} [CloudShield] 침해사고 긴급 탐지 및 자동 대응 알림",
+                "text": header_text,
                 "emoji": True,
             },
         },
@@ -108,7 +137,7 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*사고 요약:*\n{safe_summary}",
+                "text": summary_text,
             },
         },
         {
@@ -116,27 +145,27 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
             "fields": [
                 {
                     "type": "mrkdwn",
-                    "text": f"*사건 ID (incident_id):*\n`{report.incident_id}`",
+                    "text": field_incident_id,
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*공격 유형 (rule_name):*\n{safe_attack_type}",
+                    "text": field_attack_type,
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*출발지 IP (source_ip):*\n`{report.source_ip}`",
+                    "text": field_source_ip,
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*위험도 (risk_level):*\n*{report.risk_level}*",
+                    "text": field_risk_level,
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*타깃 식별자:*\n`{report.target_identifier}`",
+                    "text": field_target_id,
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*대응 조치 (remediation_action):*\n*{report.action_required}*",
+                    "text": field_remediation,
                 },
             ],
         },
@@ -144,14 +173,14 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*공격 대상 계정:*\n{safe_accounts_text}",
+                "text": accounts_block_text,
             },
         },
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*SecOps 권고 조치:*\n{safe_recommendations_text}",
+                "text": recommendations_block_text,
             },
         },
         {"type": "divider"},
@@ -160,17 +189,15 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": (
-                        f"MITRE ATT&CK: `{report.mitre_id}` | "
-                        "CloudShield 10-Second Auto-Remediation Pipeline"
-                    ),
+                    "text": context_text,
                 }
             ],
         },
     ]
 
-    fallback_text = (
-        f"[{report.risk_level}] CloudShield 보안 경보 - {report.incident_id}: {safe_attack_type}"
+    fallback_text = truncate_text(
+        f"[{report.risk_level}] CloudShield 보안 경보 - {report.incident_id}: {report.attack_type}",
+        MAX_FIELD_LENGTH,
     )
 
     return {
@@ -202,26 +229,27 @@ def send_slack_alert(
         - 반환값: 발송 성공 여부 (HTTP 200 수신 시 True, 실패 시 False).
 
     Side-effects / Edge-cases:
+        - 잘못된 URL 형식(IPv6 대괄호 비정상 포함 등 ValueError) 및 비HTTPS 스킴 예외 격리.
         - Webhook 엔드포인트 네트워크 지연 또는 타임아웃(기본 5초) 방어.
         - Slack API 호출 제한(Rate Limit 429) 및 잘못된 Webhook URL(HTTP 404/403) 예외 격리.
         - report.recommendations 또는 target_accounts가 빈 튜플인 경우에도 레이아웃 무결성 유지.
     """
-    parsed = urllib.parse.urlparse(webhook_url)
-    if not (parsed.scheme == "https" and parsed.netloc):
-        logger.warning("유효하지 않은 Slack Webhook HTTPS URL입니다: %s", webhook_url)
-        return False
-
-    payload = build_slack_payload(report)
-    encoded_data = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        url=webhook_url,
-        data=encoded_data,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST",
-    )
-
     try:
+        parsed = urllib.parse.urlparse(webhook_url)
+        if not (parsed.scheme == "https" and parsed.netloc):
+            logger.warning("유효하지 않은 Slack Webhook HTTPS URL입니다: %s", webhook_url)
+            return False
+
+        payload = build_slack_payload(report)
+        encoded_data = json.dumps(payload).encode("utf-8")
+
+        req = urllib.request.Request(
+            url=webhook_url,
+            data=encoded_data,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+
         with urllib.request.urlopen(req, timeout=timeout) as response:
             status_code = getattr(response, "status", None) or response.getcode()
             if status_code == 200:
@@ -229,6 +257,11 @@ def send_slack_alert(
                 return True
             logger.warning("Slack Webhook 비정상 응답 코드: %s", status_code)
             return False
+    except ValueError as exc:
+        logger.warning(
+            "유효하지 않은 Slack Webhook URL 또는 요청 형식입니다: %s (%s)", webhook_url, exc
+        )
+        return False
     except urllib.error.HTTPError as exc:
         logger.error("Slack Webhook HTTP 오류 (%s): %s", exc.code, exc.reason)
         return False

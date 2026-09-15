@@ -21,6 +21,7 @@ import pytest
 from contracts.incident import IncidentReport
 from reporter.slack_notifier import (
     MAX_FIELD_LENGTH,
+    MAX_HEADER_LENGTH,
     build_slack_payload,
     send_slack_alert,
     truncate_text,
@@ -117,7 +118,105 @@ def test_build_slack_payload_truncation() -> None:
     )
     summary_content = summary_block["text"]["text"]
     assert "..." in summary_content
-    assert len(payload["text"]) <= 600
+    assert len(summary_content) <= MAX_FIELD_LENGTH
+    assert len(payload["text"]) <= MAX_FIELD_LENGTH
+
+
+def test_build_slack_payload_all_display_strings_length_limit() -> None:
+    """긴 식별자(incident_id 2,100자, mitre_id 3,100자) 및 초과 필드의 최종 표시 문자열 검증.
+
+    Why:
+        Slack Block Kit의 필드당 2,000자 / 텍스트 3,000자 초과를 방지하고 프로젝트의
+        필드별 500자(헤더 150자) 안전 기준을 최종 표시 문자열(라벨/마크다운 포함) 단위로 보장함.
+    """
+    long_incident_id = "INC-" + "A" * 2100
+    long_mitre_id = "T" + "B" * 3100
+    long_attack_type = "BruteForce-" + "C" * 1000
+    long_summary = "공격 요약 내용 " + "D" * 1000
+    long_accounts = tuple(f"user_{idx}_{'E' * 50}" for idx in range(30))
+    long_recommendations = tuple(f"조치 권고안 {idx}: {'F' * 100}" for idx in range(20))
+
+    report = IncidentReport(
+        incident_id=long_incident_id,
+        attack_type=long_attack_type,
+        mitre_id=long_mitre_id,
+        risk_level="HIGH",
+        source_ip="198.51.100.254",
+        target_identifier="i-abcdef01234567890",
+        target_accounts=long_accounts,
+        summary_ko=long_summary,
+        action_required="QUARANTINE_EC2",
+        recommendations=long_recommendations,
+    )
+
+    payload = build_slack_payload(report)
+
+    # 1. 4대 필수 키 구조화 데이터는 원본 무결성 보존 검증
+    assert payload["incident_id"] == long_incident_id
+    assert payload["rule_name"] == long_attack_type
+    assert payload["source_ip"] == "198.51.100.254"
+    assert payload["remediation_action"] == "QUARANTINE_EC2"
+
+    # 2. 최상위 fallback text 길이 검증 (500자 이하)
+    assert len(payload["text"]) <= MAX_FIELD_LENGTH
+    assert payload["text"].endswith("...")
+
+    # 3. 모든 블록 내 최종 표시 문자열 길이 검증
+    for block in payload["blocks"]:
+        block_type = block.get("type")
+
+        # 헤더 텍스트 검증 (Slack 규격 150자 이내)
+        if block_type == "header":
+            header_text = block["text"]["text"]
+            assert len(header_text) <= MAX_HEADER_LENGTH
+
+        # 섹션 단일 텍스트 검증 (프로젝트 500자 이내 및 Slack 규격 3,000자 이내)
+        if block_type == "section" and "text" in block:
+            section_text = block["text"]["text"]
+            assert len(section_text) <= MAX_FIELD_LENGTH
+            assert len(section_text) <= 3000
+
+        # 섹션 fields 검증 (프로젝트 500자 이내 및 Slack 규격 2,000자 이내)
+        if block_type == "section" and "fields" in block:
+            for field in block["fields"]:
+                field_text = field["text"]
+                assert len(field_text) <= MAX_FIELD_LENGTH
+                assert len(field_text) <= 2000
+
+        # context elements 검증 (프로젝트 500자 이내 및 Slack 규격 3,000자 이내)
+        if block_type == "context" and "elements" in block:
+            for elem in block["elements"]:
+                elem_text = elem["text"]
+                assert len(elem_text) <= MAX_FIELD_LENGTH
+                assert len(elem_text) <= 3000
+
+    # 4. 긴 incident_id, mitre_id, 요약, 공격유형 필드의 구체적 상한 및 말줄임표 검증
+    fields_section = next(
+        b for b in payload["blocks"] if b.get("type") == "section" and "fields" in b
+    )
+    incident_id_field = next(f["text"] for f in fields_section["fields"] if "*사건 ID" in f["text"])
+    attack_type_field = next(
+        f["text"] for f in fields_section["fields"] if "*공격 유형" in f["text"]
+    )
+
+    assert len(incident_id_field) <= MAX_FIELD_LENGTH
+    assert incident_id_field.endswith("...")
+
+    assert len(attack_type_field) <= MAX_FIELD_LENGTH
+    assert attack_type_field.endswith("...")
+
+    summary_section = next(
+        b
+        for b in payload["blocks"]
+        if b.get("type") == "section" and "*사고 요약" in b.get("text", {}).get("text", "")
+    )
+    assert len(summary_section["text"]["text"]) <= MAX_FIELD_LENGTH
+    assert summary_section["text"]["text"].endswith("...")
+
+    context_block = next(b for b in payload["blocks"] if b.get("type") == "context")
+    context_elem_text = context_block["elements"][0]["text"]
+    assert len(context_elem_text) <= MAX_FIELD_LENGTH
+    assert context_elem_text.endswith("...")
 
 
 def test_build_slack_payload_empty_targets_and_recommendations(
@@ -173,10 +272,11 @@ def test_build_slack_payload_risk_emojis(
 
 
 def test_send_slack_alert_invalid_url(sample_incident_report: IncidentReport) -> None:
-    """유효하지 않은 Webhook URL(HTTP 또는 스킴 누락) 전달 시 즉시 False를 반환하는지 검증."""
+    """유효하지 않은 Webhook URL(HTTP, 스킴 누락, 비정상 IPv6) 전달 시 False 반환 검증."""
     assert send_slack_alert(sample_incident_report, "http://insecure.slack.com/webhook") is False
     assert send_slack_alert(sample_incident_report, "invalid-url") is False
     assert send_slack_alert(sample_incident_report, "") is False
+    assert send_slack_alert(sample_incident_report, "https://[invalid") is False
 
 
 def test_send_slack_alert_success(
@@ -253,3 +353,23 @@ def test_send_slack_alert_url_error_and_timeout(
 
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen_url_error)
     assert send_slack_alert(sample_incident_report, dummy_webhook) is False
+
+
+def test_send_slack_alert_invalid_ipv6_url_regression(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """비정상 IPv6 대괄호 URL 전달 시 ValueError 예외 격리 및 urlopen 미호출 회귀 검증.
+
+    Why:
+        urlparse()에서 잘못된 IPv6 URL 파싱 시 발생하는 ValueError가 호출자에게 전파되지 않고
+        안전하게 False를 반환하는 예외 격리(Fault Tolerance)를 보장함.
+    """
+    mock_urlopen = MagicMock()
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    invalid_ipv6_url = "https://[invalid"
+    result = send_slack_alert(sample_incident_report, invalid_ipv6_url)
+
+    assert result is False
+    mock_urlopen.assert_not_called()
