@@ -240,16 +240,26 @@ def find_waf_ip_set(
           차단 파이프라인의 안전성을 유지함.
     """
     try:
-        response = waf_client.list_ip_sets(Scope=scope)
-        summaries = response.get("IPSets", response.get("IPSetSummaries", []))
-        for summary in summaries:
-            if summary.get("Name") == ipset_name:
-                return {
-                    "id": str(summary.get("Id", "")),
-                    "name": str(summary.get("Name", "")),
-                    "arn": str(summary.get("ARN", "")),
-                    "lock_token": str(summary.get("LockToken", "")),
-                }
+        next_marker: str | None = None
+        while True:
+            list_params: dict[str, Any] = {"Scope": scope}
+            if next_marker:
+                list_params["NextMarker"] = next_marker
+
+            response = waf_client.list_ip_sets(**list_params)
+            summaries = response.get("IPSets", response.get("IPSetSummaries", []))
+            for summary in summaries:
+                if summary.get("Name") == ipset_name:
+                    return {
+                        "id": str(summary.get("Id", "")),
+                        "name": str(summary.get("Name", "")),
+                        "arn": str(summary.get("ARN", "")),
+                        "lock_token": str(summary.get("LockToken", "")),
+                    }
+            next_marker = response.get("NextMarker")
+            if not next_marker:
+                break
+
         logger.warning("WAF IPSet 탐색 실패: ipset_name=%s, scope=%s", ipset_name, scope)
         return None
     except ClientError as e:
@@ -329,7 +339,7 @@ def block_ip_wafv2(
             ipset_data = get_res.get("IPSet", {})
             current_addresses = ipset_data.get("Addresses", [])
             lock_token = get_res.get("LockToken")
-            description = ipset_data.get("Description", "")
+            description = ipset_data.get("Description")
 
             # 4. 멱등성 검사: 이미 차단 목록에 포함되어 있는지 확인
             if target_cidr in current_addresses:
@@ -344,14 +354,18 @@ def block_ip_wafv2(
             new_addresses = list(dict.fromkeys([*current_addresses, target_cidr]))
 
             # 6. 낙관적 락 기반 원자적 갱신 호출
-            waf_client.update_ip_set(
-                Name=ipset_name,
-                Scope=scope,
-                Id=target_ipset_id,
-                Description=description,
-                Addresses=new_addresses,
-                LockToken=lock_token,
-            )
+            # Description은 존재할 때만 전달하여 빈 문자열 규격 에러 방어
+            update_kwargs: dict[str, Any] = {
+                "Name": ipset_name,
+                "Scope": scope,
+                "Id": target_ipset_id,
+                "Addresses": new_addresses,
+                "LockToken": lock_token,
+            }
+            if description:
+                update_kwargs["Description"] = description
+
+            waf_client.update_ip_set(**update_kwargs)
             logger.info(
                 "WAF IPSet(%s) 차단 등록 완료: %s 추가 (총 %d개 IP 차단 중)",
                 ipset_name,

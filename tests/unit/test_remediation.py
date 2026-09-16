@@ -488,3 +488,128 @@ def test_apply_remediation_waf_action_routing(
     res_ip = apply_remediation(report_ip_only, waf_client=waf_client)
     assert res_ip["waf_blocked"] is True
     assert res_ip["quarantine_applied"] is False
+
+
+def test_block_ip_wafv2_without_description(mocked_aws: None) -> None:
+    """설명(Description)이 없는 정상 IPSet에 대해서도 /32 차단 주소가 정상 등록되는지 검증.
+
+    Why:
+        AWS WAFv2 UpdateIPSet API에서 Description은 선택 필드이며 최소 길이가 1이므로,
+        설명이 정의되지 않은 IPSet에 빈 문자열("")을 전달하여 botocore 유효성 검증 오류
+        (ParamValidationError)가 발생하는 결함을 방지함.
+    """
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    ipset_name = "NoDesc-IPSet"
+    scope = "REGIONAL"
+
+    # Description 필드를 생략하고 IPSet 생성
+    create_res = waf_client.create_ip_set(
+        Name=ipset_name,
+        Scope=scope,
+        IPAddressVersion="IPV4",
+        Addresses=[],
+    )
+    summary = create_res["Summary"]
+
+    test_ip = "198.51.100.99"
+    success = block_ip_wafv2(
+        source_ip=test_ip,
+        ipset_name=ipset_name,
+        ipset_id=summary["Id"],
+        scope=scope,
+        waf_client=waf_client,
+    )
+    assert success is True
+
+    # IPSet 상태 검증 (/32 차단 주소 등록 확인)
+    ip_set = waf_client.get_ip_set(
+        Name=ipset_name,
+        Scope=scope,
+        Id=summary["Id"],
+    )
+    assert f"{test_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_find_waf_ip_set_pagination(
+    mocked_aws: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """list_ip_sets 응답에 NextMarker가 포함된 다중 페이지 환경에서 대상 IPSet 탐색 및 차단 검증.
+
+    Why:
+        WAF IPSet 리소스 수가 많아 결과가 페이지네이션될 때, 첫 페이지에 대상이 없더라도
+        NextMarker를 따라 후속 페이지까지 완전 순회하여 정상 리소스를 누락 없이 식별해야 함.
+    """
+    from typing import Any
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    scope = "REGIONAL"
+    target_ipset_name = "Page2-Target-IPSet"
+
+    # 실제 moto IPSet 1개 생성 (Page 2에서 반환할 실제 객체)
+    create_res = waf_client.create_ip_set(
+        Name=target_ipset_name,
+        Scope=scope,
+        IPAddressVersion="IPV4",
+        Addresses=[],
+        Description="Target IPSet on Page 2",
+    )
+    real_summary = create_res["Summary"]
+
+    # list_ip_sets 응답을 2페이지로 가상화 (1페이지: 더미 + NextMarker, 2페이지: 실제 타깃)
+    original_list_ip_sets = waf_client.list_ip_sets
+
+    def mock_list_ip_sets(**kwargs: Any) -> dict[str, Any]:
+        marker = kwargs.get("NextMarker")
+        if not marker:
+            return {
+                "NextMarker": "marker-page-2",
+                "IPSets": [
+                    {
+                        "Name": "Dummy-IPSet-Page-1",
+                        "Id": "dummy-id-1",
+                        "ARN": (
+                            "arn:aws:wafv2:us-east-1:123456789012:regional/ipset/Dummy-1/dummy-id-1"
+                        ),
+                        "LockToken": "dummy-token-1",
+                    }
+                ],
+            }
+        if marker == "marker-page-2":
+            return {
+                "IPSets": [
+                    {
+                        "Name": real_summary["Name"],
+                        "Id": real_summary["Id"],
+                        "ARN": real_summary["ARN"],
+                        "LockToken": real_summary["LockToken"],
+                    }
+                ],
+            }
+        return original_list_ip_sets(**kwargs)
+
+    monkeypatch.setattr(waf_client, "list_ip_sets", mock_list_ip_sets)
+
+    # 1. find_waf_ip_set 다중 페이지 탐색 검증
+    found = find_waf_ip_set(waf_client=waf_client, ipset_name=target_ipset_name, scope=scope)
+    assert found is not None
+    assert found["name"] == target_ipset_name
+    assert found["id"] == real_summary["Id"]
+
+    # 2. 이름 기반 차단(block_ip_wafv2)에서도 2페이지 대상을 정상 탐색하여 차단 성공하는지 검증
+    test_ip = "198.51.100.123"
+    success = block_ip_wafv2(
+        source_ip=test_ip,
+        ipset_name=target_ipset_name,
+        scope=scope,
+        waf_client=waf_client,
+    )
+    assert success is True
+
+    # 실제 WAF IPSet에 반영되었는지 확인
+    ip_set = waf_client.get_ip_set(
+        Name=target_ipset_name,
+        Scope=scope,
+        Id=real_summary["Id"],
+    )
+    assert f"{test_ip}/32" in ip_set["IPSet"]["Addresses"]
