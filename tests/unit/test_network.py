@@ -1,11 +1,215 @@
 """실제 SSH 대신 격리된 PATH의 가짜 실행 파일로 네트워크 부작용 없이 검증한다."""
 
+import importlib.util
+import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def docker_lab(tmp_path):
+    """Docker를 import 시 실행하지 않는 전용 러너를 임시 경로에서 검증한다."""
+    path = Path(__file__).resolve().parents[2] / "network/lab/run.py"
+    spec = importlib.util.spec_from_file_location("network_lab_runner", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module, module.Lab(tmp_path / "run")
+
+
+@pytest.mark.parametrize("role", ["client", "server"])
+def test_lab_container_isolation(docker_lab, monkeypatch, role):
+    _, lab = docker_lab
+    lab.network = "owned-network-id"
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "owned-container-id", "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    assert lab.create(role) == "owned-container-id"
+    create = calls[0]
+    assert create[create.index("--network") + 1] == "owned-network-id"
+    assert create[create.index("--cap-drop") + 1] == "ALL"
+    assert "no-new-privileges:true" in create
+    assert not {"--privileged", "--publish", "-p", "--mount", "--volume", "-v"} & set(create)
+    caps = [create[i + 1] for i, arg in enumerate(create) if arg == "--cap-add"]
+    if role == "client":
+        assert caps == ["NET_RAW"]
+    else:
+        assert "NET_ADMIN" not in caps and "NET_RAW" not in caps
+    assert lab.containers == ["owned-container-id"]
+
+
+def test_lab_failed_create_does_not_claim_existing_container(docker_lab, monkeypatch):
+    _, lab = docker_lab
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("name conflict")
+
+    monkeypatch.setattr(lab, "call", fail)
+    with pytest.raises(RuntimeError):
+        lab.create("client")
+    assert lab.containers == []
+
+
+@pytest.mark.parametrize("endpoint", ["tcp://127.0.0.1:2375", "ssh://remote"])
+def test_lab_rejects_remote_engine_before_info(docker_lab, monkeypatch, endpoint):
+    _, lab = docker_lab
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        value = (
+            "context"
+            if args == ("context", "show")
+            else json.dumps([{"Endpoints": {"docker": {"Host": endpoint}}}])
+        )
+        return subprocess.CompletedProcess(args, 0, value, "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    with pytest.raises(RuntimeError, match="로컬"):
+        lab.preflight()
+    assert len(calls) == 2
+
+
+def test_lab_cleanup_only_owned_ids_and_continues_on_failure(docker_lab, monkeypatch):
+    _, lab = docker_lab
+    lab.containers = ["owned-a", "owned-b"]
+    lab.network = "owned-net"
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, int(args[-1] == "owned-b"), "", "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    assert lab.cleanup() == ["owned-b"]
+    assert calls == [
+        ("rm", "-f", "owned-b"),
+        ("rm", "-f", "owned-a"),
+        ("network", "rm", "owned-net"),
+    ]
+
+
+def test_lab_output_never_overwrites(docker_lab):
+    module, lab = docker_lab
+    with pytest.raises(FileExistsError):
+        module.Lab(lab.output)
+
+
+@pytest.mark.parametrize(
+    "ready,ssh_status,capture_status",
+    [
+        (True, 0, 124),
+        (True, 0, 0),
+        (True, 255, 124),
+        (True, 0, 1),
+        (False, 0, 1),
+    ],
+)
+def test_lab_capture_readiness_single_ssh_and_failure(
+    docker_lab, monkeypatch, ready, ssh_status, capture_status
+):
+    module, lab = docker_lab
+    lab.context = "local"
+    calls = []
+
+    class FakeCapture:
+        returncode = None
+
+        def __init__(self, command, stdout, stderr, env):
+            assert command[-2:] == ["10", "1000"]
+            stderr.write(b"listening on eth0\n" if ready else b"permission denied\n")
+            stderr.flush()
+
+        def poll(self):
+            return None if ready else capture_status
+
+        def wait(self, timeout):
+            self.returncode = capture_status
+            return capture_status
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, ssh_status, "", "mock SSH")
+
+    monkeypatch.setattr(module.subprocess, "Popen", FakeCapture)
+    monkeypatch.setattr(lab, "call", fake)
+    if ready and ssh_status == 0 and capture_status in (0, 124):
+        lab.capture("owned-client", "192.0.2.2", "eth0")
+    else:
+        with pytest.raises(RuntimeError):
+            lab.capture("owned-client", "192.0.2.2", "eth0")
+    assert len(calls) == int(ready)
+    if ready:
+        assert calls[0] == (
+            "exec",
+            "--user",
+            "lab",
+            "--env",
+            "HOME=/home/lab",
+            "owned-client",
+            "timeout",
+            "15",
+            "bash",
+            "/opt/network/ssh_single_connect.sh",
+            "192.0.2.2",
+            "lab",
+            "2222",
+            "5",
+        )
+
+
+def test_lab_listen_probe_does_not_connect(docker_lab, monkeypatch):
+    _, lab = docker_lab
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "LISTEN 0 128 *:2222", "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    lab.wait_listener("owned-server")
+    assert calls == [("exec", "owned-server", "ss", "-H", "-lnt", "sport = :2222")]
+
+
+def test_lab_empty_capture_is_not_success(docker_lab, monkeypatch):
+    _, lab = docker_lab
+
+    def fake(*args, **kwargs):
+        if args[0] == "cp":
+            (lab.output / "capture.pcap").write_bytes(b"mock-header-not-real-pcap")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    with pytest.raises(RuntimeError, match="패킷 없음"):
+        lab.preserve("owned-client")
+    assert (lab.output / "capture.pcap").exists()
+
+
+def test_lab_failed_evidence_copy_keeps_original_container(docker_lab, monkeypatch):
+    _, lab = docker_lab
+    lab.containers = ["owned-server", "owned-client"]
+    lab.network = "owned-net"
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, int(args[0] == "cp"), "", "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    with pytest.raises(RuntimeError, match="pcap 확보 실패"):
+        lab.preserve("owned-client")
+    assert lab.cleanup() == ["owned-client", "owned-net"]
+    assert ("rm", "-f", "owned-server") in calls
+    assert ("rm", "-f", "owned-client") not in calls
+    assert not any(call[:2] == ("network", "rm") for call in calls)
+
 
 SCRIPT = Path(__file__).resolve().parents[2] / "network" / "ssh_single_connect.sh"
 
