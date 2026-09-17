@@ -102,6 +102,7 @@ def test_detect_role_from_branch() -> None:
     """브랜치명 규격으로부터 직무 추출 정규식 검증."""
     assert detect_role_from_branch("feat/cloud-b-cw-agent") == "cloud-b"
     assert detect_role_from_branch("fix/security-regex-fix") == "security"
+    assert detect_role_from_branch("hotfix/cloud-a-urgent-fix") == "cloud-a"
     assert detect_role_from_branch("feat/network-docker-lab") == "network"
     assert detect_role_from_branch("chore/cloud-a-harness") == "cloud-a"
     assert detect_role_from_branch("main") is None

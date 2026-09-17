@@ -115,6 +115,7 @@ def test_detect_role_from_branch() -> None:
     """브랜치명 접두어 직무 매칭 검증."""
     assert detect_role_from_branch("feat/cloud-b-task") == "cloud-b"
     assert detect_role_from_branch("fix/security-fix") == "security"
+    assert detect_role_from_branch("hotfix/cloud-a-urgent-fix") == "cloud-a"
     assert detect_role_from_branch("main") is None
 
 

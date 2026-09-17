@@ -101,9 +101,9 @@ def get_current_git_branch() -> str:
 
 
 def detect_role_from_branch(branch_name: str) -> str | None:
-    """브랜치명 접두어(feat/<role>-*, fix/<role>-*)로부터 직무 추출."""
+    """브랜치명 접두어(feat/<role>-*, fix/<role>-*, hotfix/<role>-*)로부터 직무 추출."""
     m = re.match(
-        r"^(?:feat|fix|chore|docs|refactor|test|style|perf|ci)/(cloud-a|cloud-b|security|network)(?:-|$)",
+        r"^(?:feat|fix|hotfix|chore|docs|refactor|test|style|perf|ci)/(cloud-a|cloud-b|security|network)(?:-|$)",
         branch_name,
     )
     if m:

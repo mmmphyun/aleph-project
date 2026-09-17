@@ -119,7 +119,7 @@ PR 작성자는 본인 직무의 1:1 짝꿍 리뷰어를 반드시 PR 리뷰어�
 
 ### 4.5 커밋 메시지 컨벤션
 - 형식: `<type>(<scope>): <한글 요약>` (마침표 없음)
-- Type: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`, `style`, `perf`, `ci`
+- Type: `feat`, `fix`, `hotfix` (테크 리드 @mmmphyun 전용 Fast-Track), `refactor`, `docs`, `chore`, `test`, `style`, `perf`, `ci`
 - Scope: 반드시 담당 직무 및 도메인 명시
   - `contract`: 공통 인터페이스 규격
   - `cloud-a`: 오케스트레이터 및 복합 차단 엔진

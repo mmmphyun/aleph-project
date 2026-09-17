@@ -20,6 +20,7 @@ jobs:
           types: |
             feat
             fix
+            hotfix
             refactor
             docs
             chore
@@ -49,21 +50,32 @@ jobs:
             const pr = context.payload.pull_request;
             const title = pr.title || "";
             const body = pr.body || "";
+            const author = pr.user ? pr.user.login : "";
 
-            // 직무 기능 PR 여부 판별 (network, cloud-b, security, cloud-a의 feat/fix)
+            const isHotfixPr = /^hotfix\((network|cloud-b|security|cloud-a)\)/.test(title);
             const isFeaturePr = /^(feat|fix)\((network|cloud-b|security|cloud-a)\)/.test(title);
-            if (!isFeaturePr) {
+
+            // 1. hotfix 하드가드: 오직 테크 리드(@mmmphyun)만 발행 가능
+            if (isHotfixPr) {
+              if (author !== "mmmphyun") {
+                core.setFailed(`[권한 차단] hotfix 타입은 테크 리드(@mmmphyun) 전용 긴급 패스트트랙입니다. 작업자(${author})는 정규 타입(feat/fix)을 사용하고 노션 태스크를 연결해야 합니다.`);
+                return;
+              }
+              console.log("테크 리드(@mmmphyun)의 핫픽스 PR로 확인되어 노션 URL 검증을 자동 면제합니다.");
+            } else if (!isFeaturePr) {
               console.log("기능 PR이 아니므로 메타데이터 검증을 건너뜁니다.");
               return;
             }
 
-            // 1. 노션 URL 검증 (32자리 hex 또는 UUID)
-            const notionRegex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?![0-9a-f])|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})(?![0-9a-f])/i;
-            if (!notionRegex.test(body)) {
-              core.setFailed("[검증 실패] PR 본문에 유효한 노션 카드 URL이 누락되었습니다. '- Notion Task: https://notion.so/...' 형식으로 기재해 주세요.");
+            // 2. 노션 URL 검증: 일반 기능(feat/fix)에만 필수 강제, hotfix는 자동 면제
+            if (isFeaturePr) {
+              const notionRegex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?![0-9a-f])|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})(?![0-9a-f])/i;
+              if (!notionRegex.test(body)) {
+                core.setFailed("[검증 실패] PR 본문에 유효한 노션 카드 URL이 누락되었습니다. '- Notion Task: https://notion.so/...' 형식으로 기재해 주세요.");
+              }
             }
 
-            // 2. GitHub 이슈 번호 검증 (#123 형식)
+            // 3. GitHub 이슈 번호 검증 (#123 형식): 핫픽스 포함 전 PR 필수 (최소 감사 추적성)
             const issueRegex = /#\d+/;
             if (!issueRegex.test(body)) {
               core.setFailed("[검증 실패] PR 본문에 연관된 GitHub Issue 번호(#<숫자>)가 누락되었습니다. 작업 착수 전 'gh issue create'로 이슈를 먼저 발행하고 PR에 연결해 주세요.");
