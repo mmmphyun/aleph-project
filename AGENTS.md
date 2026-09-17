@@ -43,7 +43,7 @@
 3. **3순위 (역질문 강제)**: 1, 2순위 모두 없을 경우 에이전트는 코드를 작성하지 말고 첫마디로 *"담당 직무(네트워크/클라우드 B/보안/클라우드 A)가 무엇인가요?"*를 역질문하여 역할을 확정한 뒤 착수한다.
 4. **설명 선행 원칙**: 코딩을 시작하기 전, 해당 작업의 핵심 개념과 원리를 사용자에게 2~3줄로 먼저 설명하여 담당자의 기술 이해도 및 면접 역량을 지원한다.
 5. **노션 연동 책임 분리 및 에이전트 수정 금지 원칙**:
-   - **조회(Read-only)**: 새 작업 착수 시 `node scripts/get_my_tasks.js` 또는 MCP를 통해 노션 [프로젝트 일정] DB의 `[시작 전]` 티켓을 조회하고, 일치하는 티켓 링크를 GitHub Issue 본문에 포함한다.
+   - **조회(Read-only)**: 새 작업 착수 시 `uv run python scripts/get_my_tasks.py` 또는 MCP를 통해 노션 [프로젝트 일정] DB의 `[시작 전]` 티켓을 조회하고, 일치하는 티켓 링크를 GitHub Issue 본문에 포함한다.
    - **상태 전이(Write 전담)**: 칸반 보드의 상태 전이(`[시작 전]` $\rightarrow$ `[진행 중]` $\rightarrow$ `[검토 중]` $\rightarrow$ `[완료]`)는 **GitHub Actions(`notion_sync.yml`)가 100% 자동 전담**한다.
    - **에이전트 조작 금지**: 에이전트는 노션 카드의 상태나 속성을 직접 변경하는 MCP 도구(`API-patch-page` 등)를 절대로 호출하지 않는다 (이중 쓰기 방지).
    - **Fallback (노션 API 미설정/조회 실패 시)**: 노션 API 키가 없는 경우에도 GitHub Issue 생성(`gh issue create`)은 필수이며, 작업자는 웹 브라우저에서 해당 노션 일감 카드 URL을 직접 복사하여 Issue/PR 본문에 반드시 기재한다.
@@ -79,7 +79,7 @@
    - 선행 PR이 머지되기 전에 후속 작업을 브랜치로 쌓는 행위(PR Stacking)를 엄격히 금지한다.
 2. **1단계 (main 최신화)**: `git checkout main && git pull origin main`으로 최신 커밋 동기화.
 3. **2단계 (GitHub Issue 선발행)**:
-   - `node scripts/get_my_tasks.js` 실행 (열린 PR 존재 시 하드 가드로 실행 차단됨).
+   - `uv run python scripts/get_my_tasks.py` 실행 (열린 PR 존재 시 하드 가드로 실행 차단됨).
    - `gh issue create --title "<타입>(<직무>): <제목>" --body "- Notion Task: <노션URL>\n- 브랜치: feat/<직무>-<기능명>"` 실행하여 이슈 번호 확보.
 4. **3단계 (작업 브랜치 분기)**: `git checkout -b feat/<직무>-<기능명>` 생성 후 개발 착수.
 5. **4단계 (로컬 통합 검증)**: PR 생성 전 `powershell .\scripts\check.ps1` 단일 게이트 100% 통과 (우회 플래그 사용 절대 금지).

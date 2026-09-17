@@ -5,18 +5,43 @@
 * @mmmphyun
 
 # [클라우드 A (전공자 / 테크 리드) 독점 영역 - 임의 수정 절대 금지]
-/src/contracts/     @mmmphyun
-/infra/             @mmmphyun
-/.github/           @mmmphyun
-/src/remediation/   @mmmphyun
-/pyproject.toml     @mmmphyun
+/src/contracts/                 @mmmphyun
+/infra/                         @mmmphyun
+/.github/                       @mmmphyun
+/src/remediation/               @mmmphyun
+/pyproject.toml                 @mmmphyun
+/uv.lock                        @mmmphyun
+/AGENTS.md                      @mmmphyun
+/scripts/                       @mmmphyun
+/tests/conftest.py              @mmmphyun
+/tests/test_contracts.py        @mmmphyun
+/tests/mock_data/               @mmmphyun
+/tests/unit/test_smoke.py       @mmmphyun
+/tests/unit/test_remediation.py @mmmphyun
+/tests/unit/test_notion_sync.py @mmmphyun
+/tests/unit/test_scripts.py     @mmmphyun
+/tests/unit/test_rnr_scope.py   @mmmphyun
+/tests/fixtures/                @mmmphyun
+/tests/integration/             @mmmphyun
 
 # [클라우드 B 담당 영역]
-/src/collector/     @wkdtlgns99-cell
-/src/reporter/      @wkdtlgns99-cell
+/src/collector/                 @wkdtlgns99-cell
+/src/reporter/                  @wkdtlgns99-cell
+/amazon-cloudwatch-agent.json   @wkdtlgns99-cell
+/init_target_server.sh          @wkdtlgns99-cell
+/nginx.conf                     @wkdtlgns99-cell
+/tests/unit/test_collector.py   @wkdtlgns99-cell
+/tests/unit/test_reporter.py    @wkdtlgns99-cell
+/tests/unit/test_target_server.py @wkdtlgns99-cell
+/docs/roles/cloud-b/            @wkdtlgns99-cell
 
 # [보안 담당 영역]
-/src/detection/     @gkacksdnjs22-stack
+/src/detection/                 @gkacksdnjs22-stack
+/tests/unit/test_rules.py       @gkacksdnjs22-stack
+/tests/unit/test_llm_analyzer.py @gkacksdnjs22-stack
+/docs/roles/security/           @gkacksdnjs22-stack
 
 # [네트워크 담당 영역]
-/network/           @RockCandy444
+/network/                       @RockCandy444
+/tests/unit/test_network.py     @RockCandy444
+/docs/roles/network/            @RockCandy444

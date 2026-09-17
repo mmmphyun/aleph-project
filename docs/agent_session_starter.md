@@ -44,7 +44,7 @@
 
 ### 에이전트 내부 자동 실행 프로토콜
 1. **역할 잠금**: `.agent-role`을 읽어 본인 직무 디렉토리로 작업 범위 한정.
-2. **노션 시작 전 티켓 조회**: `node scripts/get_my_tasks.js`를 실행하여 노션 [프로젝트 일정] DB의 본인 직무 `[시작 전]` 티켓을 조회.
+2. **노션 시작 전 티켓 조회**: `uv run python scripts/get_my_tasks.py`를 실행하여 노션 [프로젝트 일정] DB의 본인 직무 `[시작 전]` 티켓을 조회.
    - 일치 티켓 발견 시: 해당 노션 카드 URL을 담아 `gh issue create` 실행 $\rightarrow$ 칸반 보드가 자동으로 `[진행 중]`으로 전이됨.
    - 미발견 시(신규 일감): 즉시 `gh issue create` 실행 $\rightarrow$ 파이프라인이 노션에 `[진행 중]` 신규 카드를 자동 발급.
 3. **작업 환경 격리**: `git checkout -b feat/<직무>-<기능>` 브랜치 분기.
@@ -56,7 +56,7 @@
 
 | 단계 | 팀원 및 에이전트 행동 | 노션 칸반 상태 전이 |
 | :--- | :--- | :--- |
-| **1단계: 진입** | 대화창 오픈 $\rightarrow$ `node scripts/get_my_tasks.js`로 `[시작 전]` 티켓 확인 $\rightarrow$ 개념 문답 | `[시작 전]` 유지 |
+| **1단계: 진입** | 대화창 오픈 $\rightarrow$ `uv run python scripts/get_my_tasks.py`로 `[시작 전]` 티켓 확인 $\rightarrow$ 개념 문답 | `[시작 전]` 유지 |
 | **2단계: 착수** | `gh issue create`(노션 링크 바인딩) $\rightarrow$ 브랜치 분기 | **`[진행 중]` 자동 전이** (기간 start 기록) |
 | **3단계: 구현** | 본인 디렉토리 구현 $\rightarrow$ `powershell .\scripts\check.ps1` 검증 $\rightarrow$ 단위 커밋 | `[진행 중]` 유지 |
 | **4단계: 종료** | PR 생성 (기술 원리 3줄 요약 필수) $\rightarrow$ 리뷰 $\rightarrow$ 머지 $\rightarrow$ **대화창 종료** | **`[검토 중]` $\rightarrow$ `[완료]` 자동 전이** (Commit, 기간 end, 요약 블록) |
