@@ -48,8 +48,11 @@ RNR_WHITELIST: dict[str, list[str]] = {
         "src/detection/**",
         "tests/unit/test_rules.py",
         "tests/unit/test_llm_analyzer.py",
+        "tests/unit/test_incident_mapper.py",
         "docs/roles/security/**",
         "docs/shared/**",
+        "scripts/verify_rnr_scope.py",
+        "tests/unit/test_rnr_scope.py",
     ],
     "cloud-a": [
         "**",  # 플랫폼 전담: 전 영역 허용
