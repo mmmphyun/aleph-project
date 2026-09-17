@@ -6,6 +6,19 @@
 
 ## 1. 사전 준비 및 로컬 환경 설정 (1분 셋업)
 
+### 1.0 필수 사전 설치 도구 (Prerequisites)
+프로젝트 자동화 및 거버넌스 도구 실행을 위해 아래 도구가 로컬에 반드시 설치되어 있어야 합니다 (Node.js 불필요):
+
+* **uv**: 초고속 Python 패키지 매니저 및 가상환경 관리 도구 (Python 3.12+ 자동 관리).
+  ```powershell
+  winget install astral-sh.uv
+  ```
+* **GitHub CLI (`gh`)**: PR 조회, 이슈 자동 생성 및 협업 파이프라인 연동에 필수.
+  ```powershell
+  winget install GitHub.cli
+  gh auth login
+  ```
+
 ### 1.1 저장소 복제 및 의존성 동기화
 터미널(PowerShell 또는 Bash)에서 아래 명령어를 순차적으로 실행합니다:
 
@@ -47,7 +60,7 @@ uv sync
 
 새 작업을 시작할 때 노션 [프로젝트 일정] DB의 티켓을 확인하고 GitHub Issue를 먼저 생성합니다:
 
-1. **자동 조회 (`node scripts/get_my_tasks.js`)**:
+1. **자동 조회 (`uv run python scripts/get_my_tasks.py`)**:
    - `.env`에 `NOTION_API_KEY`가 설정된 경우 본인 직무의 `[시작 전]` 티켓 목록과 링크가 콘솔에 자동 출력됩니다.
 2. **수동 연동 (Fallback - API 키 미설정 시)**:
    - 노션 웹 칸반 보드에서 본인 일감 카드의 링크를 복사한 뒤, GitHub CLI로 이슈를 생성합니다:

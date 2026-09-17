@@ -134,7 +134,7 @@ flowchart LR
     subgraph Local ["로컬 에이전트 작업 환경"]
         direction TB
         L1["1. 역할 잠금 (.agent-role)<br>- 직무 외 디렉토리 수정 차단"]
-        L2["2. 세션 스타터 (get_my_tasks.js)<br>- 노션 [시작 전] 티켓 자동 바인딩"]
+        L2["2. 세션 스타터 (get_my_tasks.py)<br>- 노션 [시작 전] 티켓 자동 바인딩"]
         L3["3. Moto 로컬 가상 AWS 테스트베드<br>- 격리 인프라 단위 검증"]
     end
 
@@ -214,8 +214,10 @@ aleph-project/
 ├── infra/                            # [클라우드 A] Terraform AWS 인프라 IaC 모듈
 ├── scripts/
 │   ├── check.ps1                     # 로컬 품질 검사 일괄 실행 스크립트
-│   ├── get_my_tasks.js               # 노션 [시작 전] 티켓 자동 조회 CLI
-│   └── verify_notion_api.js          # 노션 API 연동 상태 진단 스크립트
+│   ├── get_my_tasks.py               # 노션 [시작 전] 티켓 자동 조회 CLI
+│   ├── list_team_members.py          # 노션 워크스페이스 팀원 목록 조회 CLI
+│   ├── verify_rnr_scope.py           # R&R 도메인 경계선 하드가드 검증 CLI
+│   └── verify_notion_api.py          # 노션 API 연동 상태 진단 스크립트
 ├── tests/
 │   ├── conftest.py                   # Moto 가상 AWS 리소스 및 표준 Mock 픽스처
 │   ├── mock_data/                    # 표준 공격 로그 및 Mock 인시던트 데이터셋 6종

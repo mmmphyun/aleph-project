@@ -8,15 +8,6 @@ if (Test-Path "C:\Program Files\Git\bin\bash.exe") {
     $env:PATH = "C:\Program Files\Git\bin;" + $env:PATH
 }
 
-Write-Host "[1/4] 테스트 파일 표준 경로 검사 중..." -ForegroundColor Cyan
-$wrongTests = Get-ChildItem -Path . -Recurse -Filter "test_*.py" -File | Where-Object { 
-    $_.FullName -notmatch "[\\/]tests[\\/]" -and $_.FullName -notmatch "[\\/]\.venv[\\/]" 
-}
-if ($wrongTests) {
-    Write-Error "[오류] 표준 경로(tests/) 외부에 단위 테스트 파일이 발견되었습니다:`n$($wrongTests.FullName -join "`n")`n모든 단위 테스트는 tests/unit/ 하위에 위치해야 합니다."
-    exit 1
-}
-
 # uv 실행 가능 여부 판단 및 가상환경(venv) 헬퍼 정의
 $hasUv = Get-Command uv -ErrorAction SilentlyContinue
 
@@ -33,13 +24,28 @@ function Run-Tool {
     }
 }
 
-Write-Host "[2/4] Ruff Lint 검사 실행 중..." -ForegroundColor Cyan
+Write-Host "[0/5] R&R 도메인 경계선(Scope) 검사 중..." -ForegroundColor Cyan
+Run-Tool "python" @("scripts/verify_rnr_scope.py")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+Write-Host "[1/5] 테스트 파일 표준 경로 검사 중..." -ForegroundColor Cyan
+$wrongTests = Get-ChildItem -Path . -Recurse -Filter "test_*.py" -File | Where-Object { 
+    $_.FullName -notmatch "[\\/]tests[\\/]" -and $_.FullName -notmatch "[\\/]\.venv[\\/]" 
+}
+if ($wrongTests) {
+    Write-Error "[오류] 표준 경로(tests/) 외부에 단위 테스트 파일이 발견되었습니다:`n$($wrongTests.FullName -join "`n")`n모든 단위 테스트는 tests/unit/ 하위에 위치해야 합니다."
+    exit 1
+}
+
+Write-Host "[2/5] Ruff Lint 검사 실행 중..." -ForegroundColor Cyan
 Run-Tool "ruff" @("check", ".")
 
-Write-Host "[3/4] Ruff Format 검사 실행 중..." -ForegroundColor Cyan
+Write-Host "[3/5] Ruff Format 검사 실행 중..." -ForegroundColor Cyan
 Run-Tool "ruff" @("format", "--check", ".")
 
-Write-Host "[4/4] Pytest 단위 및 계약 테스트 실행 중..." -ForegroundColor Cyan
+Write-Host "[4/5] Pytest 단위 및 계약 테스트 실행 중..." -ForegroundColor Cyan
 if ($hasUv) {
     uv run python -m pytest -v
 } elseif (Test-Path ".\.venv\Scripts\python.exe") {
