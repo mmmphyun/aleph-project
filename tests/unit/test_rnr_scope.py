@@ -59,6 +59,7 @@ def test_whitelist_matching_for_security() -> None:
     # 1. 허용 대상
     assert is_file_allowed("src/detection/rules.py", patterns)
     assert is_file_allowed("src/detection/llm_analyzer.py", patterns)
+    assert is_file_allowed("src/detection/incident_mapper.py", patterns)
     assert is_file_allowed("tests/unit/test_rules.py", patterns)
     assert is_file_allowed("tests/unit/test_llm_analyzer.py", patterns)
     assert is_file_allowed("tests/unit/test_incident_mapper.py", patterns)
