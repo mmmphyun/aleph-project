@@ -61,6 +61,7 @@ def test_whitelist_matching_for_security() -> None:
     assert is_file_allowed("src/detection/llm_analyzer.py", patterns)
     assert is_file_allowed("tests/unit/test_rules.py", patterns)
     assert is_file_allowed("tests/unit/test_llm_analyzer.py", patterns)
+    assert is_file_allowed("tests/unit/test_incident_mapper.py", patterns)
     assert is_file_allowed("docs/roles/security/report.md", patterns)
     assert is_file_allowed("docs/shared/ideas/idea.md", patterns)
 
