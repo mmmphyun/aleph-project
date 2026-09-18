@@ -48,6 +48,7 @@ RNR_WHITELIST: dict[str, list[str]] = {
         "src/detection/**",
         "tests/unit/test_rules.py",
         "tests/unit/test_llm_analyzer.py",
+        "tests/unit/test_incident_mapper.py",
         "docs/roles/security/**",
         "docs/shared/**",
     ],
