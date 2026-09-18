@@ -17,7 +17,9 @@
 
 - 매 실행 UUID 이름의 전용 `--internal` bridge 네트워크와 서버/클라이언트 컨테이너 각 1개.
 - 포트 공개, host 네트워크, bind mount, Docker 소켓, privileged 모드 없음.
-- `--cap-drop ALL` 뒤 클라이언트는 `NET_RAW`만 추가. `-p` 캡처로 promiscuous 모드를 사용하지 않는다.
+- `--cap-drop ALL` 뒤 클라이언트는 장치 열기용 `NET_RAW`와 Debian tcpdump의 전용
+  UID/GID 권한 강하용 `SETUID`, `SETGID`, 권한 강하 후 자식 생존 확인·종료용 `KILL`만
+  추가한다. `-p` 캡처로 promiscuous 모드를 사용하지 않는다.
 - 서버는 sshd의 UID/GID 전환·privilege separation에 필요한 `SETUID`, `SETGID`, `SYS_CHROOT`만 추가.
   포트는 2222이므로 `NET_BIND_SERVICE`가 필요 없다. 실제 이미지에서의 동작은 후속 검증 대상이다.
 - no-new-privileges, 메모리 256MiB 및 PID 64 제한. 권한 오류 시 자동으로 capability를 늘리지 않는다.
@@ -65,9 +67,11 @@ Docker CLI가 PATH에 없을 때 표준 설치 경로·설치 목록·서비스�
    외부 `timeout 15`로 전체 SSH 실행 시간까지 제한한다. 성공 시 원격 `true`만 실행한다.
 8. 캡처 종료 후 파일 복사·tcpdump 읽기·크기·SHA-256·종료 코드를 기록하고 해당 실행 자원만 정리한다.
 
-tcpdump 실행 어댑터 `/usr/local/bin/tcpdump`는 `-Z root`를 추가한다.
-Debian 기본 `-Z tcpdump`의 UID/GID 변경을 위해 불필요한 capability를 추가하지 않으려는 설정이다.
-캡처 프로세스는 root UID이지만 capability는 NET_RAW뿐이다.
+tcpdump 실행 어댑터 `/usr/local/bin/tcpdump`는 Debian 기본 `-Z tcpdump` 동작을 유지한다.
+장치를 열 때만 root와 NET_RAW를 사용하고 이후 전용 tcpdump UID/GID로 권한을 낮춘다.
+실측에서 `-Z root`도 UID/GID 전환 syscall 때문에 SETUID/SETGID 없이는 실패함을 확인했다.
+또한 권한 강하한 tcpdump를 부모 셸이 `kill -0`으로 감시하고 제한 시간에 종료하려면
+서로 다른 UID 간 신호용 KILL capability가 필요함을 격리된 loopback 진단으로 확인했다.
 [Debian tcpdump 매뉴얼](https://manpages.debian.org/bookworm/tcpdump/tcpdump.8.en.html)의 `-Z` 참고.
 기존 두 스크립트는 변경하지 않는다. 해당 권한 구성과 stdout FD flush는 실제 Docker에서 검증해야 한다.
 

@@ -79,7 +79,7 @@ class Lab:
     def create(self, role):
         name = self.run_id + "-" + role
         caps = (
-            ["NET_RAW"]
+            ["NET_RAW", "SETUID", "SETGID", "KILL"]
             if role == "client"
             else [
                 "SETUID",
@@ -130,6 +130,18 @@ class Lab:
                 return
             time.sleep(0.1)
         raise RuntimeError("SSH LISTEN 준비 시간 초과; SSH 실행하지 않음")
+
+    def read_public_key(self, client):
+        # 클라이언트는 DAC_OVERRIDE 없이 실행한다. 0600 키 파일은 소유 UID로만 읽어
+        # capability를 넓히지 않고 공개 키만 서버에 전달한다.
+        return self.call(
+            "exec",
+            "--user",
+            "lab",
+            client,
+            "cat",
+            "/home/lab/.ssh/id_ed25519.pub",
+        ).stdout
 
     def capture(self, client, server_ip, interface):
         args = [
@@ -270,7 +282,7 @@ class Lab:
                 "-f",
                 "/home/lab/.ssh/id_ed25519",
             )
-            public = self.call("exec", client, "cat", "/home/lab/.ssh/id_ed25519.pub").stdout
+            public = self.read_public_key(client)
             self.call(
                 "exec",
                 "-i",
