@@ -1,0 +1,8 @@
+**
+!tcpdump_capture.sh
+!lab/
+!lab/Hydra.Dockerfile
+!lab/tcpdump.sh
+!lab/hydra_server.sh
+!lab/hydra_sshd_config
+!lab/hydra_worker.py

@@ -5,9 +5,352 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def hydra_lab(tmp_path, monkeypatch):
+    directory = Path(__file__).resolve().parents[2] / "network/lab"
+    monkeypatch.syspath_prepend(str(directory))
+    modules = []
+    for name in ("hydra_lab", "hydra_worker"):
+        spec = importlib.util.spec_from_file_location(name, directory / (name + ".py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        modules.append(module)
+    host, worker = modules
+    return host, worker, host.HydraLab(tmp_path / "hydra")
+
+
+@pytest.mark.parametrize("args", [[], ["run"], ["plan", "--execute"]])
+def test_hydra_default_is_dry_run(hydra_lab, monkeypatch, args):
+    host, _, _ = hydra_lab
+    monkeypatch.setattr(host.HydraLab, "preflight", lambda *_: pytest.fail("Docker called"))
+    assert host.main(args) == 0
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--candidates", "0"),
+        ("--candidates", "11"),
+        ("--seconds", "56"),
+        ("--seconds", "0"),
+        ("--tasks", "2"),
+        ("--port", "22"),
+        ("--target", "10.0.0.1"),
+    ],
+)
+def test_hydra_invalid_limits_before_docker(hydra_lab, option, value):
+    host, _, _ = hydra_lab
+    with pytest.raises(SystemExit) as exc:
+        host.main(["run", "--execute", option, value])
+    assert exc.value.code == 2
+
+
+def hydra_spec():
+    return dict(
+        target="192.0.2.2", port=2222, tasks=1, candidates=6, seconds=3, run_id="cs-ssh-" + "a" * 32
+    )
+
+
+def test_hydra_command_is_bounded_argv(hydra_lab):
+    _, worker, _ = hydra_lab
+    path = Path("literal ; $(touch BAD)")
+    argv = worker.command("hydra", hydra_spec(), path)
+    assert argv[argv.index("-P") + 1] == str(path)
+    assert argv[argv.index("-t") + 1] == "1"
+    assert argv[-2:] == ["192.0.2.2", "ssh"]
+    assert {"-f", "-K", "-I"} <= set(argv)
+    assert not {"-p", "-V", "-R", "-e"} & set(argv)
+    with pytest.raises(ValueError):
+        worker.command("hydra", dict(hydra_spec(), target="127.0.0.1;id"), path)
+
+
+@pytest.mark.parametrize("role", ["server", "client"])
+def test_hydra_create_is_private_and_exactly_owned(hydra_lab, monkeypatch, role):
+    _, _, lab = hydra_lab
+    lab.network, lab.image_id = "owned-network", "sha256:owned-image"
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "owned-id", "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    assert lab.create(role) == "owned-id"
+    args = calls[0]
+    assert args[args.index("--network") + 1] == "owned-network"
+    assert args[args.index("--tmpfs") + 1] == "/run/private:rw,noexec,nosuid,mode=0700"
+    assert args[args.index("--cap-drop") + 1] == "ALL"
+    assert not {"--privileged", "-p", "--publish", "--mount", "-v", "--volume"} & set(args)
+    assert "sha256:owned-image" in args
+    assert lab.containers == ["owned-id"]
+
+
+def test_hydra_failed_create_never_claims_foreign_resource(hydra_lab, monkeypatch):
+    _, _, lab = hydra_lab
+
+    def fail(*a, **k):
+        raise RuntimeError("name already exists")
+
+    monkeypatch.setattr(lab, "call", fail)
+    with pytest.raises(RuntimeError):
+        lab.create("server")
+    assert lab.containers == []
+
+
+def test_hydra_server_logs_independently_count_failures_and_success(hydra_lab, monkeypatch):
+    _, _, lab = hydra_lab
+    log = (
+        "Failed password for hydralab from 192.0.2.3 port 4000 ssh2\n" * 3
+        + "Failed password for hydralab from 192.0.2.4 port 4001 ssh2\n"
+        + "Accepted password for hydralab from 192.0.2.3 port 4000 ssh2\n"
+    )
+    monkeypatch.setattr(lab, "call", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", log))
+    assert lab.server_evidence("server", "192.0.2.3") == (3, 1)
+    assert (lab.output / "sshd.log").read_text() == log
+
+
+@pytest.mark.parametrize(
+    "code,text,timed,interrupted,state",
+    [
+        (0, "", False, False, "unconfirmed"),
+        (0, "0 valid passwords found", False, False, "exhausted_without_success"),
+        (
+            0,
+            "[2222][ssh] host: X login: hydralab password: secret",
+            False,
+            False,
+            "unexpected_success",
+        ),
+        (1, "[ERROR] could not connect", False, False, "connection_error"),
+        (1, "[ERROR] bad module", False, False, "tool_error"),
+        (-15, "", True, False, "timeout"),
+        (-15, "", False, True, "interrupted"),
+    ],
+)
+def test_hydra_result_classification(hydra_lab, code, text, timed, interrupted, state):
+    assert hydra_lab[1].classify(code, text, timed, interrupted) == state
+
+
+@pytest.mark.parametrize("help_text", [None, "Supported services: ftp\nssh not compiled", ""])
+def test_hydra_missing_tool_or_ssh_never_executes(hydra_lab, monkeypatch, help_text):
+    _, worker, _ = hydra_lab
+    monkeypatch.setattr(
+        worker.shutil, "which", lambda _: "hydra" if help_text is not None else None
+    )
+    monkeypatch.setattr(
+        worker.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 255, help_text, "")
+    )
+    monkeypatch.setattr(worker.subprocess, "Popen", lambda *a, **k: pytest.fail("Hydra invoked"))
+    with pytest.raises(RuntimeError):
+        worker.execute(hydra_spec())
+
+
+@pytest.mark.parametrize("mode", ["normal", "timeout", "interrupt", "success", "launch_error"])
+def test_hydra_worker_removes_secrets_and_owned_process_group(
+    hydra_lab, monkeypatch, tmp_path, mode
+):
+    _, worker, _ = hydra_lab
+    original_temp = tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        worker.tempfile,
+        "TemporaryDirectory",
+        lambda **kw: original_temp(prefix="private-", dir=tmp_path),
+    )
+    monkeypatch.setattr(worker.os, "umask", lambda _: None)
+    monkeypatch.setattr(worker.shutil, "which", lambda _: "fake-hydra")
+    monkeypatch.setattr(
+        worker.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a, 255, "Hydra MOCK\n-K\nSupported services: ssh\n", ""
+        ),
+    )
+    clock = iter([0, 4])
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
+    killed = []
+    monkeypatch.setattr(worker.os, "killpg", lambda pid, sig: killed.append(pid), raising=False)
+    created = []
+
+    class FakeHydra:
+        pid = 7123
+        returncode = None
+
+        def __init__(self, argv, cwd, stdout, **kwargs):
+            created.append(cwd)
+            candidates = (cwd / "candidates").read_text().splitlines()
+            assert len(candidates) == 6 and all(p.startswith("WRONG-") for p in candidates)
+            assert all(p not in " ".join(argv) for p in candidates)
+            (cwd / "hydra.restore").write_text("MOCK PRIVATE")
+            if mode == "launch_error":
+                raise OSError("mock launch failure")
+            stdout.write(
+                "[2222][ssh] login: hydralab password: secret"
+                if mode == "success"
+                else "0 valid passwords found"
+                if mode == "normal"
+                else ""
+            )
+            stdout.flush()
+            if mode == "normal":
+                self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            self.returncode = -15
+            return -15
+
+    def interrupt():
+        raise KeyboardInterrupt()
+
+    if mode == "interrupt":
+        values = iter([0])
+        monkeypatch.setattr(
+            worker.time, "monotonic", lambda: next(values) if not created else interrupt()
+        )
+    monkeypatch.setattr(worker.subprocess, "Popen", FakeHydra)
+    if mode == "launch_error":
+        # 시작 직후 중단도 임시 디렉터리의 finally 정리를 검증한다.
+        with pytest.raises((OSError, KeyboardInterrupt)):
+            worker.execute(hydra_spec())
+    else:
+        result = worker.execute(hydra_spec())
+        assert (
+            result["state"]
+            == {
+                "normal": "exhausted_without_success",
+                "timeout": "timeout",
+                "success": "unexpected_success",
+                "interrupt": "interrupted",
+            }[mode]
+        )
+        assert "secret" not in json.dumps(result)
+    assert created and not created[0].exists()
+    if mode in ("timeout", "success", "interrupt"):
+        assert killed == [7123]
+
+
+@pytest.mark.parametrize(
+    "violation",
+    [None, "label", "external", "extra", "published", "privileged", "mount", "foreign", "port"],
+)
+def test_hydra_target_must_be_current_owned_pair(hydra_lab, monkeypatch, violation):
+    host, _, lab = hydra_lab
+    lab.network, lab.image_id, lab.containers = "net", "image", ["server", "client"]
+    net = dict(
+        Id="net",
+        Internal=True,
+        Driver="bridge",
+        Labels={host.LABEL: lab.run_id},
+        Containers={"server": {}, "client": {}},
+    )
+    item = dict(
+        Id="server",
+        Config={"Labels": {host.LABEL: lab.run_id}},
+        Image="image",
+        State={"Running": True},
+        HostConfig={},
+        Mounts=[],
+        NetworkSettings={"Networks": {"net": {"NetworkID": "net", "IPAddress": "192.0.2.2"}}},
+    )
+    if violation == "label":
+        item["Config"]["Labels"] = {}
+    elif violation == "external":
+        net["Internal"] = False
+    elif violation == "extra":
+        net["Containers"]["unrelated"] = {}
+    elif violation == "published":
+        item["HostConfig"]["PortBindings"] = {"2222/tcp": []}
+    elif violation == "privileged":
+        item["HostConfig"]["Privileged"] = True
+    elif violation == "mount":
+        item["Mounts"] = [{"Type": "bind"}]
+    elif violation == "foreign":
+        item["NetworkSettings"]["Networks"]["net"]["NetworkID"] = "foreign"
+
+    def fake(*args, **kwargs):
+        if args[0] == "network":
+            value = json.dumps([net])
+        elif args[0] == "inspect":
+            value = json.dumps([dict(item, Id=args[1])])
+        else:
+            value = (
+                "port 2222\npermitrootlogin no\nallowusers hydralab\n"
+                "passwordauthentication yes\nauthenticationmethods password"
+            )
+            if violation == "port":
+                value = value.replace("2222", "22")
+        return subprocess.CompletedProcess(args, 0, value, "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    if violation:
+        with pytest.raises(RuntimeError):
+            lab.verify_target("server", "client")
+    else:
+        assert lab.verify_target("server", "client") == ["192.0.2.2", "192.0.2.2"]
+
+
+@pytest.mark.parametrize(
+    "ready,code,state,failures,accepted",
+    [
+        (True, 124, "exhausted_without_success", 6, 0),
+        (True, 0, "exhausted_without_success", 6, 0),
+        (False, 1, "unconfirmed", 0, 0),
+        (True, 1, "exhausted_without_success", 6, 0),
+        (True, 124, "timeout", 2, 0),
+        (True, 124, "exhausted_without_success", 0, 0),
+        (True, 124, "unexpected_success", 0, 1),
+    ],
+)
+def test_hydra_capture_requires_ready_and_real_log_evidence(
+    hydra_lab, monkeypatch, ready, code, state, failures, accepted
+):
+    host, _, lab = hydra_lab
+    lab.context = "local"
+    calls = []
+
+    class Capture:
+        returncode = None
+
+        def __init__(self, args, stdout, stderr, env):
+            stderr.write(b"listening on eth0\n" if ready else b"permission denied\n")
+            stderr.flush()
+
+        def poll(self):
+            return self.returncode if ready else code
+
+        def wait(self, timeout):
+            self.returncode = code
+            return code
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, json.dumps({"state": state}), "")
+
+    monkeypatch.setattr(host.subprocess, "Popen", Capture)
+    monkeypatch.setattr(lab, "verify_target", lambda *a: ["192.0.2.2", "192.0.2.3"])
+    monkeypatch.setattr(lab, "server_evidence", lambda *a: (failures, accepted))
+    monkeypatch.setattr(lab, "call", fake)
+    if (
+        ready
+        and code in (0, 124)
+        and state == "exhausted_without_success"
+        and failures
+        and not accepted
+    ):
+        lab.capture_hydra("server", "client", "192.0.2.2", "192.0.2.3", "eth0")
+    else:
+        with pytest.raises(RuntimeError):
+            lab.capture_hydra("server", "client", "192.0.2.2", "192.0.2.3", "eth0")
+    assert len(calls) == int(ready)
+    assert lab.events[-1]["kernel_dropped_packets"] is None
 
 
 @pytest.fixture
