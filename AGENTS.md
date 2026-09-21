@@ -21,7 +21,7 @@
 [직무별 고유 도메인 영역 - 면접 핵심 무기: 상호 침범 절대 금지]
 1. 네트워크: 모의 공격 스크립트, 패킷 분석 보고서, 네트워크 단위 테스트 (network/, tests/unit/test_network.py, docs/roles/network/)
 2. 클라우드 B: CW Agent 설정, Slack 카드 알림 모듈, 수집/리포터 단위 테스트 (src/collector/, src/reporter/, tests/unit/test_collector.py, tests/unit/test_reporter.py, docs/roles/cloud-b/)
-3. 보안: 정규식 시그니처 룰, LLM 분석기, 탐지 단위 테스트 (src/detection/, tests/unit/test_rules.py, tests/unit/test_llm_analyzer.py, docs/roles/security/)
+3. 보안: 정규식 시그니처 룰, LLM 분석기, 탐지 단위 테스트 (src/detection/, tests/unit/test_rules.py, tests/unit/test_llm_analyzer.py, tests/unit/test_incident_mapper.py, docs/roles/security/)
 
 [클라우드 A 전담 플랫폼 영역 - 엔지니어링 깊이 확보]
 - 공통 데이터 인터페이스 계약 (src/contracts/)

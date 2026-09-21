@@ -39,7 +39,7 @@ def test_lab_container_isolation(docker_lab, monkeypatch, role):
     assert not {"--privileged", "--publish", "-p", "--mount", "--volume", "-v"} & set(create)
     caps = [create[i + 1] for i, arg in enumerate(create) if arg == "--cap-add"]
     if role == "client":
-        assert caps == ["NET_RAW"]
+        assert caps == ["NET_RAW", "SETUID", "SETGID", "KILL"]
     else:
         assert "NET_ADMIN" not in caps and "NET_RAW" not in caps
     assert lab.containers == ["owned-container-id"]
@@ -176,6 +176,28 @@ def test_lab_listen_probe_does_not_connect(docker_lab, monkeypatch):
     monkeypatch.setattr(lab, "call", fake)
     lab.wait_listener("owned-server")
     assert calls == [("exec", "owned-server", "ss", "-H", "-lnt", "sport = :2222")]
+
+
+def test_lab_reads_ephemeral_public_key_as_owner(docker_lab, monkeypatch):
+    _, lab = docker_lab
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "ssh-ed25519 mock\n", "")
+
+    monkeypatch.setattr(lab, "call", fake)
+    assert lab.read_public_key("owned-client") == "ssh-ed25519 mock\n"
+    assert calls == [
+        (
+            "exec",
+            "--user",
+            "lab",
+            "owned-client",
+            "cat",
+            "/home/lab/.ssh/id_ed25519.pub",
+        )
+    ]
 
 
 def test_lab_empty_capture_is_not_success(docker_lab, monkeypatch):

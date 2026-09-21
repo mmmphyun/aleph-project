@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Debian의 기본 권한 강하를 끈다. NET_RAW만 가진 캡처 프로세스에
-# SETUID/SETGID를 추가하지 않기 위한 로컬 실험 전용 어댑터다.
+# Debian tcpdump가 장치를 연 뒤 전용 tcpdump UID/GID로 권한을 낮추게 한다.
+# NET_RAW는 장치 열기에, SETUID/SETGID는 기본 권한 강하에만 사용한다.
 set -euo pipefail
-exec /usr/bin/tcpdump -Z root "$@"
+exec /usr/bin/tcpdump "$@"
