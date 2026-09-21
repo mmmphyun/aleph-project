@@ -187,3 +187,24 @@ def mocked_waf_ipset(mocked_aws: None) -> MockWafTarget:
         ipset_name=summary["Name"],
         scope=scope,
     )
+
+
+@pytest.fixture
+def mocked_dynamodb_table(mocked_aws: None) -> Any:
+    """moto 가상 DynamoDB 상태 윈도우 테이블 사전 생성.
+
+    Why:
+        CloudWatch Logs 분할 인입 시 5분 슬라이딩 윈도우 내 원자적 카운터 누적(AuthFailureWindow)
+        테스트 시 실제 DynamoDB 리소스 없이도 원자적 갱신(update_item)을 검증할 수 있는
+        테스트베드 제공.
+    """
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    table_name = "CloudShield-AuthFailure-Window"
+    table = dynamodb.create_table(
+        TableName=table_name,
+        KeySchema=[{"AttributeName": "target_key", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "target_key", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    table.wait_until_exists()
+    return table
