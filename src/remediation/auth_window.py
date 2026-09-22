@@ -33,6 +33,7 @@ DEFAULT_AUTH_FAILURE_TABLE_NAME = "CloudShield-AuthFailure-Window"
 BRUTE_FORCE_THRESHOLD = 5
 PASSWORD_SPRAYING_THRESHOLD = 2
 DEFAULT_WINDOW_SECONDS = 300
+MAX_OCC_RETRIES = 3
 
 
 class AuthFailureWindow:
@@ -113,91 +114,120 @@ class AuthFailureWindow:
             "spray_quarantined": False,
         }
 
-        # 1. 단일 계정 Brute Force 원자적 카운터 누적
-        try:
+        # 1. 단일 계정 Brute Force 원자적 카운터 누적 (동시성 CAS 재시도 루프)
+        for attempt in range(MAX_OCC_RETRIES):
             try:
-                # 1-1. 기존 유효 윈도우 내 원자적 증가 시도
-                res_bf = self._table.update_item(
-                    Key={"target_key": bf_key},
-                    UpdateExpression="ADD failure_count :inc SET last_seen = :now",
-                    ConditionExpression="attribute_exists(target_key) AND expire_at >= :now",
-                    ExpressionAttributeValues={
-                        ":inc": count,
-                        ":now": now,
-                    },
-                    ReturnValues="ALL_NEW",
-                )
-            except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                    # 1-2. 만료되었거나 신규 윈도우 개설
+                try:
+                    # 1-1. 기존 유효 윈도우 내 원자적 증가 시도
                     res_bf = self._table.update_item(
                         Key={"target_key": bf_key},
-                        UpdateExpression=(
-                            "SET failure_count = :inc, window_start = :now, "
-                            "expire_at = :expire_at, last_seen = :now, quarantined = :quarantined"
-                        ),
+                        UpdateExpression="ADD failure_count :inc SET last_seen = :now",
+                        ConditionExpression="attribute_exists(target_key) AND expire_at >= :now",
                         ExpressionAttributeValues={
                             ":inc": count,
                             ":now": now,
-                            ":expire_at": expire_at,
-                            ":quarantined": False,
                         },
                         ReturnValues="ALL_NEW",
                     )
-                else:
+                    attrs_bf = res_bf.get("Attributes", {})
+                    accumulated_result["bf_count"] = int(attrs_bf.get("failure_count", 0))
+                    accumulated_result["bf_quarantined"] = bool(attrs_bf.get("quarantined", False))
+                    break
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                        # 1-2. 만료되었거나 미존재 시 원자적 신규 윈도우 개설 시도
+                        # 동시 호출 덮어쓰기(Lost Update) 방지를 위해
+                        # 키 미존재 또는 기만료 조건 명시
+                        res_bf = self._table.update_item(
+                            Key={"target_key": bf_key},
+                            UpdateExpression=(
+                                "SET failure_count = :inc, window_start = :now, "
+                                "expire_at = :expire_at, last_seen = :now, "
+                                "quarantined = :quarantined"
+                            ),
+                            ConditionExpression=(
+                                "attribute_not_exists(target_key) OR expire_at < :now"
+                            ),
+                            ExpressionAttributeValues={
+                                ":inc": count,
+                                ":now": now,
+                                ":expire_at": expire_at,
+                                ":quarantined": False,
+                            },
+                            ReturnValues="ALL_NEW",
+                        )
+                        attrs_bf = res_bf.get("Attributes", {})
+                        accumulated_result["bf_count"] = int(attrs_bf.get("failure_count", 0))
+                        bf_quar = bool(attrs_bf.get("quarantined", False))
+                        accumulated_result["bf_quarantined"] = bf_quar
+                        break
                     raise
-
-            attrs_bf = res_bf.get("Attributes", {})
-            accumulated_result["bf_count"] = int(attrs_bf.get("failure_count", 0))
-            accumulated_result["bf_quarantined"] = bool(attrs_bf.get("quarantined", False))
-
-        except ClientError as e:
-            logger.error("DynamoDB Brute Force 카운터 갱신 실패 (key=%s): %s", bf_key, e)
-
-        # 2. 다중 계정 Password Spraying 고유 계정 집합 누적
-        try:
-            try:
-                # 2-1. 기존 유효 윈도우 내 계정 집합(String Set) 원자적 추가
-                res_spray = self._table.update_item(
-                    Key={"target_key": spray_key},
-                    UpdateExpression="ADD usernames :user_set SET last_seen = :now",
-                    ConditionExpression="attribute_exists(target_key) AND expire_at >= :now",
-                    ExpressionAttributeValues={
-                        ":user_set": {username},
-                        ":now": now,
-                    },
-                    ReturnValues="ALL_NEW",
-                )
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                    # 2-2. 만료되었거나 신규 윈도우 개설
+                    # 다른 동시 Lambda가 먼저 윈도우를 개설한 경우 다음 루프에서 ADD로 재시도
+                    if attempt < MAX_OCC_RETRIES - 1:
+                        continue
+                logger.error("DynamoDB Brute Force 카운터 갱신 실패 (key=%s): %s", bf_key, e)
+                break
+
+        # 2. 다중 계정 Password Spraying 고유 계정 집합 누적 (동시성 CAS 재시도 루프)
+        for attempt in range(MAX_OCC_RETRIES):
+            try:
+                try:
+                    # 2-1. 기존 유효 윈도우 내 계정 집합(String Set) 원자적 추가
                     res_spray = self._table.update_item(
                         Key={"target_key": spray_key},
-                        UpdateExpression=(
-                            "SET usernames = :user_set, window_start = :now, "
-                            "expire_at = :expire_at, last_seen = :now, quarantined = :quarantined"
-                        ),
+                        UpdateExpression="ADD usernames :user_set SET last_seen = :now",
+                        ConditionExpression="attribute_exists(target_key) AND expire_at >= :now",
                         ExpressionAttributeValues={
                             ":user_set": {username},
                             ":now": now,
-                            ":expire_at": expire_at,
-                            ":quarantined": False,
                         },
                         ReturnValues="ALL_NEW",
                     )
-                else:
+                    attrs_spray = res_spray.get("Attributes", {})
+                    accumulated_result["spray_users"] = set(attrs_spray.get("usernames", set()))
+                    spray_quar = bool(attrs_spray.get("quarantined", False))
+                    accumulated_result["spray_quarantined"] = spray_quar
+                    break
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                        # 2-2. 만료되었거나 미존재 시 원자적 신규 윈도우 개설 시도
+                        res_spray = self._table.update_item(
+                            Key={"target_key": spray_key},
+                            UpdateExpression=(
+                                "SET usernames = :user_set, window_start = :now, "
+                                "expire_at = :expire_at, last_seen = :now, "
+                                "quarantined = :quarantined"
+                            ),
+                            ConditionExpression=(
+                                "attribute_not_exists(target_key) OR expire_at < :now"
+                            ),
+                            ExpressionAttributeValues={
+                                ":user_set": {username},
+                                ":now": now,
+                                ":expire_at": expire_at,
+                                ":quarantined": False,
+                            },
+                            ReturnValues="ALL_NEW",
+                        )
+                        attrs_spray = res_spray.get("Attributes", {})
+                        accumulated_result["spray_users"] = set(attrs_spray.get("usernames", set()))
+                        spray_quar = bool(attrs_spray.get("quarantined", False))
+                        accumulated_result["spray_quarantined"] = spray_quar
+                        break
                     raise
-
-            attrs_spray = res_spray.get("Attributes", {})
-            accumulated_result["spray_users"] = set(attrs_spray.get("usernames", set()))
-            accumulated_result["spray_quarantined"] = bool(attrs_spray.get("quarantined", False))
-
-        except ClientError as e:
-            logger.error(
-                "DynamoDB Password Spraying 계정 집합 갱신 실패 (key=%s): %s",
-                spray_key,
-                e,
-            )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    # 다른 동시 Lambda가 먼저 윈도우를 개설한 경우 다음 루프에서 ADD로 재시도
+                    if attempt < MAX_OCC_RETRIES - 1:
+                        continue
+                logger.error(
+                    "DynamoDB Password Spraying 계정 집합 갱신 실패 (key=%s): %s",
+                    spray_key,
+                    e,
+                )
+                break
 
         return accumulated_result
 
@@ -212,6 +242,7 @@ class AuthFailureWindow:
             단일 배치에서 임계치에 미달했더라도 이전 분할 배치와 합산된 횟수가
             임계치(5회 또는 2개 계정)를 초과하는 즉시 탐지 신호를 발생시킴.
             보안 룰 우선순위 원칙에 따라 더 위험한 SSH_BRUTE_FORCE를 우선 평가함.
+            ConsistentRead=True를 지정하여 스토리지 복제 지연으로 인한 Stale Read를 원천 차단함.
 
         Returns:
             (is_threat: bool, rule_name: str | None, target_key: str)
@@ -221,9 +252,9 @@ class AuthFailureWindow:
         bf_key = self._get_bf_key(source_ip, username)
         spray_key = self._get_spray_key(source_ip)
 
-        # 1. SSH_BRUTE_FORCE 우선 검사
+        # 1. SSH_BRUTE_FORCE 우선 검사 (강한 일관성 읽기)
         try:
-            res_bf = self._table.get_item(Key={"target_key": bf_key})
+            res_bf = self._table.get_item(Key={"target_key": bf_key}, ConsistentRead=True)
             item_bf = res_bf.get("Item")
             if item_bf:
                 count = int(item_bf.get("failure_count", 0))
@@ -233,9 +264,9 @@ class AuthFailureWindow:
         except ClientError as e:
             logger.error("DynamoDB Brute Force 상태 조회 실패 (key=%s): %s", bf_key, e)
 
-        # 2. SSH_PASSWORD_SPRAYING 차순위 검사
+        # 2. SSH_PASSWORD_SPRAYING 차순위 검사 (강한 일관성 읽기)
         try:
-            res_spray = self._table.get_item(Key={"target_key": spray_key})
+            res_spray = self._table.get_item(Key={"target_key": spray_key}, ConsistentRead=True)
             item_spray = res_spray.get("Item")
             if item_spray:
                 usernames = set(item_spray.get("usernames", set()))

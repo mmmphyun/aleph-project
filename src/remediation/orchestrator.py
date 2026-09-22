@@ -24,11 +24,37 @@ from typing import Any
 from contracts.events import CloudWatchLogsPayload, SyslogAuthEvent
 from contracts.incident import IncidentReport
 from remediation.auth_window import AuthFailureWindow
-from remediation.remediation import apply_remediation
+from remediation.remediation import RemediationResult, apply_remediation
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_FALLBACK_INSTANCE_ID = "i-0abcd1234ef567890"
+
+
+def is_remediation_successful(action_required: str, result: RemediationResult) -> bool:
+    """조치 요구사항(action_required)에 부합하는 필수 차단 조치가 성공했는지 판정.
+
+    Why:
+        AWS API 호출 실패, 권한 부족, Throttling 등의 사유로 차단이 미완료되었음에도
+        격리 완료(quarantined=True)를 마킹하면 5분 윈도우 동안 후속 이벤트 재시도가 억제됨.
+        필수 보안 통제 계층이 확실히 적용된 경우에만 완료 마킹하여 방어 사각지대를 방지함.
+
+    Constraints:
+        - BLOCK_AND_QUARANTINE: L4 격리(quarantine_applied) 및
+          L7 차단(waf_blocked) 모두 성공해야 함.
+        - QUARANTINE_EC2: L4 격리(quarantine_applied) 성공해야 함.
+        - BLOCK_WAF / BLOCK_IP_ONLY: L7 차단(waf_blocked) 성공해야 함.
+        - REVOKE_IAM_SESSION: IAM 세션 무효화(iam_revoked) 성공해야 함.
+    """
+    if action_required == "BLOCK_AND_QUARANTINE":
+        return bool(result.get("quarantine_applied") and result.get("waf_blocked"))
+    if action_required == "QUARANTINE_EC2":
+        return bool(result.get("quarantine_applied"))
+    if action_required in ("BLOCK_WAF", "BLOCK_IP_ONLY"):
+        return bool(result.get("waf_blocked"))
+    if action_required == "REVOKE_IAM_SESSION":
+        return bool(result.get("iam_revoked"))
+    return False
 
 
 def threat_orchestrator_handler(
@@ -158,13 +184,22 @@ def threat_orchestrator_handler(
         )
         response["remediation_results"].append(remediation_result)
 
-        # 6. 격리 조치 완료 마킹 (중복 차단 억제 멱등성)
-        auth_window.mark_quarantined(target_key)
-        logger.info(
-            "위협 대응 완료: %s -> %s (결과: %s)",
-            rule_name,
-            source_ip,
-            remediation_result,
-        )
+        # 6. 필수 격리 조치 완료 검증 후 마킹 (중복 차단 억제 멱등성 및 실패 시 재시도 보장)
+        if is_remediation_successful(action_required, remediation_result):
+            auth_window.mark_quarantined(target_key)
+            logger.info(
+                "위협 대응 완료 및 격리 마킹 성공: %s -> %s (결과: %s)",
+                rule_name,
+                source_ip,
+                remediation_result,
+            )
+        else:
+            logger.warning(
+                "위협 대응 필수 조치 미완료로 격리 마킹 생략 (차기 이벤트 재시도 허용): "
+                "%s -> %s (결과: %s)",
+                rule_name,
+                source_ip,
+                remediation_result,
+            )
 
     return response
