@@ -3,11 +3,11 @@
 ## 1. 개요 및 목적
 
 - **목적**: 인프라 의존성으로 인해 개발이 직렬화(앞 사람이 끝나야 뒷 사람이 시작)되는 병목을 원천 차단.
-- **원칙**: 4개 직무는 아래 정의된 **3대 데이터 규격**을 기준으로 각자 로컬/독립 환경에서 모킹(Mocking) 개발을 진행하며, 통합 시에는 레고 블록처럼 결합한다.
+- **원칙**: 4개 직무는 아래에 명시한 **핵심 인터페이스 데이터 규격**을 기준으로 독립 환경에서 모킹(Mocking) 개발을 진행하며, 통합 단계에서 모듈 간 충돌 없이 결합한다.
 
 ---
 
-## 2. 3대 핵심 인터페이스 규격 (Data Contracts)
+## 2. 핵심 인터페이스 및 데이터 규격 (Data Contracts)
 
 ```mermaid
 flowchart LR
@@ -77,6 +77,8 @@ CloudWatch Logs Subscription Filter가 분석 Lambda 함수를 호출할 때 전
 
 - **Pydantic V2 불변 스키마 (`src/contracts/incident.py`)**:
   ```python
+  from typing import Literal
+
   from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -143,6 +145,9 @@ CloudWatch Logs의 분할 배치 인입 시에도 5분 내 공격 횟수를 안�
 차단 엔진(`remediation.py`)이 L4 격리 및 L7 차단을 실행한 후, Slack 알림 모듈(`slack_notifier.py`)에 전달하는 TypedDict 규격.
 
 ```python
+from typing import TypedDict
+
+
 class RemediationResult(TypedDict):
     waf_blocked: bool  # L7 AWS WAF IPSet 등록 성공 여부
     quarantine_applied: bool  # L4 EC2 Quarantine SG 교체 성공 여부

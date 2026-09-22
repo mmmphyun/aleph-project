@@ -65,7 +65,6 @@ sequenceDiagram
     participant CW as [클라우드 B] CloudWatch Logs (구독 필터)
     participant Lambda as [클라우드 A] 오케스트레이터 (orchestrator.py)
     participant DDB as [클라우드 A] DynamoDB (auth_window.py)
-    participant Rule as [보안] 1차 룰 엔진 (rules.py)
     participant Mapper as [보안] 침해사고 매퍼 (incident_mapper.py)
     participant WAF as [클라우드 A] AWS WAF IPSet (/32)
     participant EC2_API as [클라우드 A] EC2 API (Quarantine SG)
