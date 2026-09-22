@@ -32,12 +32,7 @@
 
 - [x] **Phase 1: 개발 하네스 및 가상 테스트베드 구축 (완료)**
   - Pydantic V2 기반 불변 데이터 계약 (`src/contracts/`) 확정 및 Drift Guard 검증
-  - Moto 기반 가상 AWS 리소스(EC2, SG, WAFv2, IAM) 테스트베드 구축 (27개 단위 테스트 통과)
-  - GitHub Actions 기반 품질 검사(Ruff, Pytest), PR 제목 린터, 경로 기반 자동 라벨러 구축
-  - GitHub Issue/PR과 노션 칸반 보드 간 상태 및 일정 자동 동기화 배관 구축
-- [x] **Phase 1: 개발 하네스 및 가상 테스트베드 구축 (완료)**
-  - Pydantic V2 기반 불변 데이터 계약 (`src/contracts/`) 확정 및 Drift Guard 검증
-  - Moto 기반 가상 AWS 리소스(EC2, SG, WAFv2, DynamoDB) 테스트베드 구축 (단위 테스트 통과)
+  - Moto 기반 가상 AWS 리소스(EC2, SG, WAFv2, DynamoDB, IAM) 테스트베드 구축 (단위 테스트 통과)
   - GitHub Actions 기반 품질 검사(Ruff, Pytest), PR 제목 린터, R&R 스코프 하드가드 구축
   - GitHub Issue/PR과 노션 칸반 보드 간 상태 및 일정 자동 동기화 배관 구축
 - [x] **Phase 2: 도메인별 코어 비즈니스 로직 구현 (완료)**
