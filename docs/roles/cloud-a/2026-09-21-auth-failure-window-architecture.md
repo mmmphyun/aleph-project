@@ -1,10 +1,11 @@
 # CloudShield DynamoDB 원자적 카운터 기반 5분 슬라이딩 윈도우 및 오케스트레이터 아키텍처 보고서
 
-> **작성일**: 2026-09-21  
+> **작성일**: 2026-09-21 (2026-09-22 2차 개정: 분산 동시성 CAS 루프 및 쿼럼 일관성 보완)  
 > **작성자**: 클라우드 A (플랫폼 엔지니어 / 테크 리드)  
 > **연동 이슈**: [#21](https://github.com/mmmphyun/aleph-project/issues/21)  
+> **PR 번호**: [#69](https://github.com/mmmphyun/aleph-project/pull/69)  
 > **노션 카드**: [Lambda 배치 간 인증 실패 집계 보존](https://notion.so/3d404d37c22581af92f2c5cef78bb164)  
-> **문서 상태**: 검증 완료 (Verified)
+> **문서 상태**: P1 피드백 반영 및 분산 일관성 검증 완료 (Verified)
 
 ---
 
@@ -36,17 +37,19 @@
        │
        ├─► 2. DynamoDB 원자적 카운터 누적 (AuthFailureWindow)
        │      - 파티션 키: "BF#<source_ip>#<username>" (Global Address)
-       │      - 해시 링 라우팅: MD5(PK) -> 특정 스토리지 노드 파티션 블록 O(1) 매핑
-       │      - Condition: attribute_exists(...) AND expire_at >= :now
-       │      - True  ──► ADD failure_count :inc (Lock-Free Storage Serialized)
-       │      - False ──► SET failure_count = :inc, expire_at = :now + 300 (CAS Reset)
+       │      - 1차: ADD failure_count :inc (attribute_exists AND expire_at >= :now)
+       │      - 충돌(OCC Abort) 시 2차: SET failure_count = :inc (attribute_not_exists OR expire_at < :now)
+       │      - 동시 경쟁 충돌 시: 1차 ADD로 재시도 (최대 3회 CAS Retry Loop, Lost Update 차단)
        │
-       ├─► 3. 위협 판정: failure_count >= 5 AND quarantined == False
+       ├─► 3. 위협 판정: check_threat (ConsistentRead=True 쿼럼 읽기, Stale Read 차단)
+       │      - failure_count >= 5 AND quarantined == False
        │
-       └─► 4. 다중 계층 복합 차단 (apply_remediation)
+       └─► 4. 다중 계층 복합 차단 & 조건부 마킹
               - L4: EC2 ModifyInstanceAttribute (CloudShield-Quarantine-SG)
               - L7: WAFv2 UpdateIPSet (/32 CIDR)
-              - State: DynamoDB quarantined = True 마킹 (멱등성 보장)
+              - 가드: is_remediation_successful (필수 조치 성공 검증)
+              - 성공 시: quarantined = True 마킹 (멱등성 보장)
+              - 실패 시: 마킹 생략 (차기 인입 이벤트 재시도 보장)
 ```
 
 ### 2.1 분산 프로세스 극복과 Consistent Hashing 물리 주소 매핑
@@ -65,16 +68,42 @@
 * **조건부 쓰기(`expire_at >= :now`)와 Compare-And-Swap(CAS)**:
   * DynamoDB의 내장 TTL은 백그라운드 청소 스레드가 비동기로 수집하므로 최대 48시간 지연 삭제될 수 있습니다. 300초 정각 하드웨어 삭제에 의존하면 심각한 오탐이 발생합니다.
   * 따라서 애플리케이션 레벨에서 **낙관적 동시성 제어(OCC) 기반 Compare-And-Swap(CAS)**을 적용했습니다.
-  * 스토리지 노드가 쓰기 직전 `expire_at >= :now`를 비교하여, 만료 시 작업을 즉시 Abort하고 `ConditionalCheckFailedException`을 반환합니다. 클라이언트는 이를 포착하여 `SET failure_count = 1, expire_at = now + 300`으로 윈도우를 강제 리셋합니다.
+  * 스토리지 노드가 쓰기 직전 `expire_at >= :now`를 비교하여, 만료 시 작업을 즉시 Abort하고 `ConditionalCheckFailedException`을 반환합니다.
 
-### 2.3 Lambda 위협 분석 및 대응 오케스트레이터 (`src/remediation/orchestrator.py`)
+### 2.3 분산 엣지케이스 심층 방어 메커니즘 (2차 개정 핵심)
+
+#### 2.3.1 초기화 동시성 경쟁(Lost Update) 방어와 CAS 재시도 루프
+* **결함 시나리오**:
+  * 2개의 Lambda 인스턴스가 콜드 스타트 또는 만료 직후 동시에 첫 실패 로그를 처리할 때, 둘 다 1차 `ADD` 조건에 실패하여 Fallback 블록으로 진입합니다.
+  * Fallback이 무조건 `SET failure_count = :inc`를 실행하면, 먼저 커밋된 카운터를 후속 프로세스가 1로 덮어쓰는 갱신 분실(Lost Update)이 발생합니다.
+* **방어 원리 (CAS Retry Loop)**:
+  * Fallback `update_item`에도 `ConditionExpression="attribute_not_exists(target_key) OR expire_at < :now"` 조건을 부여합니다.
+  * 경쟁에서 패배한 프로세스는 `ConditionalCheckFailedException`을 수신하고, 최대 3회(`MAX_OCC_RETRIES = 3`) 루프를 통해 다시 1차 `ADD`로 복귀하여 이미 개설된 윈도우에 원자적 누산(+1)을 수행합니다.
+
+#### 2.3.2 분산 복제 쿼럼($R + W > N$)과 Stale Read 방어
+* **결함 시나리오**:
+  * DynamoDB는 3개 가용 영역($N=3$)에 복제 노드를 유지하며, 과반수 쓰기($W=2$, Paxos Leader + 1 Follower) 완료 즉시 쓰기 성공을 반환합니다. 3번째 노드는 비동기로 복제됩니다.
+  * `check_threat`의 `get_item`이 최종 일관성($R=1$, `ConsistentRead=False`)을 사용할 경우, 복제가 지연된 3번째 노드를 읽어 방금 5회에 도달한 쓰기 상태를 놓치고 4회로 판정하여 탐지 및 L4 격리가 누락될 수 있습니다.
+* **방어 원리 (Strongly Consistent Read)**:
+  * `ConsistentRead=True`($R=2$)를 강제하여 정족수 수식 $R + W = 4 > N(3)$을 만족시킵니다.
+  * 비둘기집 원리에 의해 읽기 정족수와 쓰기 정족수 간에 최소 1개의 공통 최신 노드가 반드시 포함되며, 스토리지 엔진은 내부 LSN(Log Sequence Number)을 비교하여 항상 최신 커밋 스냅샷을 반환합니다.
+
+#### 2.3.3 부분 결함(Partial Failure) 감내와 멱등 상태 머신 전이
+* **결함 시나리오**:
+  * `apply_remediation` 실행 중 AWS EC2 API Throttling이나 IAM 오류로 L4 격리가 실패하더라도, 오케스트레이터가 예외 미발생을 성공으로 간주하여 `mark_quarantined`를 호출하면 향후 5분간 재시도가 차단됩니다.
+* **방어 원리**:
+  * `is_remediation_successful` 가드를 배치하여 `action_required`에 따른 필수 계층 조치 플래그(`quarantine_applied`, `waf_blocked`)가 실제로 `True`인 경우에만 `quarantined=True`를 마킹합니다.
+  * 실패 시 마킹을 보류하여 차기 인입 이벤트에서 자동 재시도되도록 보장하며, 앞서 성공한 조치는 조회 기반 No-op(멱등성, $f(f(x))=f(x)$)으로 중복 실행을 방지합니다.
+
+### 2.4 Lambda 위협 분석 및 대응 오케스트레이터 (`src/remediation/orchestrator.py`)
 * `threat_orchestrator_handler`:
   1. `CloudWatchLogsPayload.from_awslogs_data()`로 gzip 압축 해제 및 Base64 디코딩.
   2. `SyslogAuthEvent.parse_line()`으로 정규식 파싱 및 공격자 IP/계정 추출.
-  3. `AuthFailureWindow`에 인증 실패를 원자적으로 누적.
-  4. 5회 이상 누적 시 `IncidentReport` 자동 생성 (`mitre_id="T1110.001"`, `action_required="BLOCK_AND_QUARANTINE"`).
-  5. `apply_remediation` 호출로 L4 EC2 보안 그룹 교체 및 L7 WAF 차단 수행.
-  6. 차단 완료 시 `quarantined=True` 플래그를 설정하여 동일 윈도우 내 후속 실패로 인한 중복 차단 API 호출 억제(Idempotency).
+  3. `AuthFailureWindow`에 인증 실패를 CAS 루프 기반으로 원자적 누적.
+  4. 5회 이상 누적 시 `check_threat` 강한 일관성 읽기로 최신 상태 판정.
+  5. `IncidentReport` 자동 생성 (`mitre_id="T1110.001"`, `action_required="BLOCK_AND_QUARANTINE"`).
+  6. `apply_remediation` 호출로 L4 EC2 보안 그룹 교체 및 L7 WAF 차단 수행.
+  7. `is_remediation_successful` 검증 후 성공 시에만 `quarantined=True` 마킹.
 
 ---
 
@@ -102,7 +131,10 @@
 - **테스트베드**: `moto` 기반 가상 DynamoDB 테이블(`CloudShield-AuthFailure-Window`), 가상 EC2 타깃 및 Quarantine SG, 가상 WAFv2 IPSet.
 - **검증 케이스 (`tests/unit/test_auth_window.py`)**:
   1. `test_split_batches_cumulative_ssh_brute_force`: 3건 + 2건 분할 Lambda 호출 시 `SSH_BRUTE_FORCE` 누적 탐지, L4 보안 그룹 원자적 교체 및 WAF IPSet 등록 완결 검증 (이슈 #21 핵심 기준).
-  2. `test_auth_window_sliding_expiration_reset`: 301초 경과 후 인입 시 윈도우가 1로 리셋되어 오탐하지 않음을 검증.
+  2. `test_expired_window_resets_counter`: 301초 경과 후 인입 시 윈도우가 1로 리셋되어 오탐하지 않음을 검증.
   3. `test_split_batches_cumulative_password_spraying`: 분할 수신된 서로 다른 2개 계정 실패 시 `SSH_PASSWORD_SPRAYING` 탐지 및 WAF 차단 검증.
   4. `test_remediation_idempotency_suppression`: 이미 격리된 타깃에 대한 후속 6번째 실패 인입 시 중복 격리 API 호출 억제 검증.
-- **통합 검증 결과**: `powershell .\scripts\check.ps1` 단일 게이트 100% 통과 (R&R 검증, Ruff Lint/Format, 235개 단위/계약 테스트 전원 통과).
+  5. `test_concurrent_record_failure_race_condition`: `ThreadPoolExecutor`를 통한 다중 스레드 동시 인입 시 Lost Update 방어 및 원자적 카운트 보존 검증 (2차 개정 추가).
+  6. `test_check_threat_uses_consistent_read`: `check_threat` 내부의 `get_item`이 `ConsistentRead=True`를 강제함을 검증 (2차 개정 추가).
+  7. `test_remediation_failure_allows_retry_on_next_batch`: 조치 실패 시 마킹 보류 및 차기 이벤트 재시도 보장 검증 (2차 개정 추가).
+- **통합 검증 결과**: `powershell .\scripts\check.ps1` 단일 게이트 100% 통과 (R&R 검증, Ruff Lint/Format, 238개 단위/계약 테스트 전원 통과).
