@@ -1,15 +1,15 @@
-# CloudShield 탐지 엔진: 결정론적 침해사고 매퍼
+# CloudShield 탐지 엔진: LLM 심층 분석기
 # 소유자: 보안 담당
-"""결정론적 룰 기반 침해사고 변환기.
+"""LLM Structured Output 기반 침해사고 심층 분석기.
 
 Why:
-    1차 시그니처 룰에서 탐지된 공격 원문 로그와 정황을 분석하여
+    1차 룰에서 탐지된 공격 원문 로그와 정황을 LLM(Gemini / OpenAI)에 전달하여
     MITRE ATT&CK TTP 매핑, 공격 기법 분석, 한글 상황 요약문 및 관리자 권고 조치를
-    엄격한 Pydantic IncidentReport 스키마 형태로 구조화 승격함.
+    엄격한 Pydantic IncidentReport 스키마 형태로 구조화 추출함.
 
 Constraints:
-    - 생성되는 객체는 IncidentReport 스키마와 100% 필드 호환되어야 함.
-    - 10초 실시간 대응 SLA 보장을 위해 외부 LLM 호출 없이 결정론적 매핑을 수행함.
+    - LLM 응답은 IncidentReport 스키마와 100% 필드 호환되어야 함.
+    - Pydantic V2 model_validate_json 또는 구조화 출력(Structured Outputs) 연동 필수.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ _RULE_METADATA = {
 
 
 def analyze_incident(raw_logs: str) -> IncidentReport:
-    """원문 로그 텍스트를 정형화된 IncidentReport 객체로 변환.
+    """원문 로그 텍스트를 LLM에 전달하여 정형화된 IncidentReport 객체로 변환.
 
     Why:
         비정형 텍스트 로그에서 공격자 IP, 타깃 인스턴스, 대상 계정 목록을 추출하고
@@ -48,7 +48,7 @@ def analyze_incident(raw_logs: str) -> IncidentReport:
         - 반환값: IncidentReport 불변(frozen) 모델 인스턴스.
 
     Side-effects / Edge-cases:
-        - 로컬 시그니처 룰 결과를 IncidentReport로 승격하는 결정론적 매퍼 구조이다.
+        - 현재 구현은 로컬 시그니처 룰 결과를 IncidentReport로 승격하는 결정론적 Fallback이다.
           외부 LLM API를 호출하지 않아 단위 테스트와 10초 데모 파이프라인에서 재현성이 보장된다.
         - raw_logs에 탐지 가능한 SSH 실패 로그가 없거나 지원하지 않는 룰이면 ValueError를 발생시켜
           호출부가 ALERT_ONLY 또는 조기 종료 정책을 명시적으로 선택하게 한다.
