@@ -163,7 +163,7 @@ flowchart LR
 * **노션 칸반 자동 동기화 (`.github/workflows/notion_sync.yml`)**:
   - Issue/PR 수명주기와 노션 [프로젝트 일정] DB의 `[진행 중]` $\rightarrow$ `[검토 중]` $\rightarrow$ `[완료]` 및 작업 기간을 100% 자동 동기화.
 
-> 📖 **개발 하네스 상세 아키텍처 및 보고서**: [docs/07_collaboration_and_agent_setup.md](docs/07_collaboration_and_agent_setup.md) 및 [docs/roles/cloud-a/2026-09-04-agent-governance-harness.md](docs/roles/cloud-a/2026-09-04-agent-governance-harness.md)
+> **개발 하네스 상세 아키텍처 및 보고서**: [docs/07_collaboration_and_agent_setup.md](docs/07_collaboration_and_agent_setup.md) 및 [docs/roles/cloud-a/2026-09-04-agent-governance-harness.md](docs/roles/cloud-a/2026-09-04-agent-governance-harness.md)
 
 ---
 
