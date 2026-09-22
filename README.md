@@ -35,62 +35,68 @@
   - Moto 기반 가상 AWS 리소스(EC2, SG, WAFv2, IAM) 테스트베드 구축 (27개 단위 테스트 통과)
   - GitHub Actions 기반 품질 검사(Ruff, Pytest), PR 제목 린터, 경로 기반 자동 라벨러 구축
   - GitHub Issue/PR과 노션 칸반 보드 간 상태 및 일정 자동 동기화 배관 구축
-- [ ] **Phase 2: 도메인별 코어 비즈니스 로직 구현 (진행 중)**
-  - [ ] L4 EC2 격리 및 L7 WAF 차단 Boto3 엔진 구현 (`src/remediation/remediation.py`)
-  - [ ] 1차 시그니처 정규식 룰 및 LLM 구조화 분석기 구현 (`src/detection/`)
-  - [ ] CloudWatch Logs 페이로드 디코더 및 Slack Block Kit 전파 모듈 구현 (`src/collector/`, `src/reporter/`)
-- [ ] **Phase 3: AWS 인프라 프로비저닝 및 실제 환경 관통 실증 (예정)**
-  - [ ] VPC, EC2, WAF, Lambda 프로비저닝용 Terraform 모듈 작성 (`infra/terraform/`)
+- [x] **Phase 1: 개발 하네스 및 가상 테스트베드 구축 (완료)**
+  - Pydantic V2 기반 불변 데이터 계약 (`src/contracts/`) 확정 및 Drift Guard 검증
+  - Moto 기반 가상 AWS 리소스(EC2, SG, WAFv2, DynamoDB) 테스트베드 구축 (단위 테스트 통과)
+  - GitHub Actions 기반 품질 검사(Ruff, Pytest), PR 제목 린터, R&R 스코프 하드가드 구축
+  - GitHub Issue/PR과 노션 칸반 보드 간 상태 및 일정 자동 동기화 배관 구축
+- [x] **Phase 2: 도메인별 코어 비즈니스 로직 구현 (완료)**
+  - [x] L4 EC2 격리 및 L7 WAF IPSet 차단 Boto3 엔진 구현 (`src/remediation/remediation.py`)
+  - [x] DynamoDB 원자적 카운터 기반 5분 슬라이딩 윈도우 집계 모듈 구현 (`src/remediation/auth_window.py`)
+  - [x] 1차 시그니처 룰 및 결정론적 IncidentReport 매퍼 구현 (`src/detection/rules.py`, `src/detection/incident_mapper.py`)
+  - [x] CloudWatch Logs 페이로드 디코더 및 Slack Block Kit 전파 모듈 구현 (`src/collector/`, `src/reporter/`)
+- [ ] **Phase 3: 관통 시나리오 통합 테스트 및 AWS 인프라 배포 (진행 중)**
+  - [ ] 로컬 목 데이터 기반 10초 관통 E2E 시나리오 통합 테스트 작성 (`tests/integration/`)
+  - [ ] VPC, EC2, WAF, DynamoDB, Lambda 프로비저닝용 Terraform 모듈 작성 (`infra/terraform/`)
   - [ ] 실제 클라우드 인프라 환경에서 모의 공격 수행 및 파이프라인 레이턴시 실측 (목표: 10초 이내)
 
 ---
 
 ## 3. 10초 관통 파이프라인 아키텍처
 
-CloudShield는 L4 네트워크 레벨 공격과 L7 애플리케이션 레벨 공격을 동시에 수용하는 하이브리드 탐지·대응 파이프라인으로 설계되었습니다:
+CloudShield는 **"10초 실시간 원자적 차단(Critical Path)"**과 **"사후 비동기 심층 분석(Out-of-band LLM)"**을 분리한 이원화 하이브리드 구조를 채택했습니다. 실시간 차단 경로에 외부 LLM API를 동기 호출하면 네트워크 지연(RTT)과 API 응답 지연으로 골든타임(10초)을 놓칠 수 있으므로, 실시간 차단은 100% 로컬 결정론적 코드로 완결합니다.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Attacker as [네트워크] 침해 공격자 (Kali / Hydra / Nmap)
-    participant Target as [클라우드 B] 타깃 EC2 (auth.log / Nginx access.log)
+    actor Attacker as [네트워크] 침해 공격자 (Kali / Hydra)
+    participant Target as [클라우드 B] 타깃 EC2 (/var/log/auth.log)
     participant Agent as [클라우드 B] CloudWatch Agent
     participant CW as [클라우드 B] CloudWatch Logs (구독 필터)
-    participant Lambda as [클라우드 A] 파이프라인 총괄 Lambda
-    participant Rule as [보안] 1차 룰 탐지 엔진 (rules.py)
-    participant LLM as [보안] 2차 LLM 분석기 (llm_analyzer.py)
+    participant Lambda as [클라우드 A] 오케스트레이터 (orchestrator.py)
+    participant DDB as [클라우드 A] DynamoDB (auth_window.py)
+    participant Rule as [보안] 1차 룰 엔진 (rules.py)
+    participant Mapper as [보안] 침해사고 매퍼 (incident_mapper.py)
     participant WAF as [클라우드 A] AWS WAF IPSet (/32)
     participant EC2_API as [클라우드 A] EC2 API (Quarantine SG)
     participant Slack as [클라우드 B] Slack Webhook (Block Kit)
 
     %% 1. 침해 공격 및 중앙 수집
-    Note over Attacker, Target: [시나리오 1: SSH Brute Force] or [시나리오 2: Web L7 Scanning]
-    Attacker->>Target: 공격 트래픽 인입 (L4 패킷 덤프 / tcpdump)
-    Target->>Target: 시스템 및 웹 접근 로그 기록 (/var/log/auth.log)
-    Agent->>Target: 파일 모니터링
-    Agent->>CW: 실시간 스트리밍 전송 (< 3초)
+    Note over Attacker, Target: [시나리오: SSH Brute Force / Spraying]
+    Attacker->>Target: 공격 트래픽 인입 (Hydra 모의 공격)
+    Target->>Target: 시스템 인증 실패 로그 기록 (/var/log/auth.log)
+    Agent->>CW: 로그 실시간 스트리밍 (< 3초)
 
-    %% 2. 트리거 및 탐지 판정
-    CW->>Lambda: 구독 필터 매칭 이벤트 전달 (Base64 + Gzip)
-    Lambda->>Rule: 디코딩된 로그 스트림 전달
-    Rule-->>Lambda: 1차 분석 결과 (임계치 초과 판정, HIGH)
+    %% 2. 트리거 및 분산 상태 누적
+    CW->>Lambda: 구독 필터 조건 일치 ("Failed password") → Gzip 배치 전달
+    Lambda->>DDB: 배치 로그 파싱 후 5분 윈도우 원자적 카운터 갱신 (ADD failure_count)
+    DDB-->>Lambda: 누적 실패 횟수 및 고유 계정 수 반환
 
-    %% 3. 선제적 원자적 차단 (클라우드 A)
-    opt 위험도 HIGH 식별 시 (골든타임 선제 차단)
-        alt Web L7 공격인 경우
-            Lambda->>WAF: 공격자 IP 즉시 등록 (boto3 update_ip_set)
-        else SSH 무차별 대입인 경우
-            Lambda->>EC2_API: 타깃 인스턴스 Quarantine SG 단독 교체 (격리)
+    %% 3. 위협 판정 및 IncidentReport 승격 (외부 API 배제)
+    alt 5분 내 실패 5회 이상 (Brute Force) 또는 고유 계정 2개 이상 (Spraying)
+        Lambda->>Mapper: 탐지 정보 전달
+        Mapper-->>Lambda: 결정론적 IncidentReport 반환 (외부 API 제로)
+
+        %% 4. L4 / L7 원자적 차단
+        par 원자적 다중 계층 차단
+            Lambda->>WAF: L7 공격자 IP /32 인바운드 차단 등록 (boto3 update_ip_set)
+            Lambda->>EC2_API: L4 침해 인스턴스 격리 SG 교체 (modify_instance_attribute)
         end
+
+        %% 5. SecOps 상황 전파
+        Lambda->>Slack: IncidentReport 및 차단 결과 기반 Block Kit 카드 전송 (< 2초)
+        Note over Slack: 관리자에게 10초 이내 격리 완료 상황 전파
     end
-
-    %% 4. LLM 심층 침해 분석 (보안)
-    Lambda->>LLM: 공격 로그 원문 + 1차 메타데이터 전송
-    LLM-->>Lambda: Pydantic 기반 정형 JSON 반환 (MITRE ID, 요약, 권고안)
-
-    %% 5. SecOps 상황 전파 (클라우드 B)
-    Lambda->>Slack: JSON IncidentReport 기반 카드형 알림 전송 (< 2초)
-    Note over Slack: 차단 성공 여부 및 AI 요약이 포함된 침해 보고 수신
 ```
 
 ---
@@ -120,8 +126,8 @@ CloudShield는 실무에서 빈번히 발생하는 2대 침해 공격을 대상�
 | :--- | :--- | :--- | :---: |
 | **네트워크** | - VPC/Subnet 네트워크 토폴로지 설계<br>- Hydra/Nmap 모의 공격 시뮬레이션<br>- tcpdump/Wireshark L4 TCP 플래그 분석<br>- 격리 Security Group 인/아웃바운드 규칙 명세 | `network/attack_simulation.sh`<br>`network/reports/` (Wireshark 분석) | [네트워크 기술 문서](docs/roles/network/README.md) |
 | **클라우드 B** | - 타깃 인스턴스(Ubuntu/Nginx) 환경 구성<br>- CloudWatch Agent 중앙 로깅 파이프라인<br>- CloudWatch Subscription Filter 설계<br>- Slack Incoming Webhook + Block Kit 알림 모듈 | `amazon-cloudwatch-agent.json`<br>`src/collector/cw_processor.py`<br>`src/reporter/slack_notifier.py` | [클라우드 B 기술 문서](docs/roles/cloud-b/README.md) |
-| **보안** | - 정규식 기반 1차 시그니처 룰 엔진 (`rules.py`)<br>- MITRE ATT&CK TTP 1:1 매핑 정의<br>- LLM Few-shot 프롬프트 & Pydantic 구조화 출력<br>- 오탐/정탐 분류 기준 및 대응 우선순위 수립 | `src/detection/rules.py`<br>`src/detection/llm_analyzer.py`<br>`tests/unit/test_rules.py` | [보안 기술 문서](docs/roles/security/README.md) |
-| **클라우드 A<br>(플랫폼 리드)** | - Terraform 기반 AWS 인프라 IaC 모듈 설계<br>- Boto3 기반 다중 계층 차단 엔진 (`remediation.py`) 개발<br>- GitHub Actions CI/CD 배관 및 Moto 가상 테스트베드 구축 | `infra/terraform/`<br>`src/remediation/remediation.py`<br>`tests/conftest.py`<br>`.github/workflows/` | [클라우드 A 기술 문서](docs/roles/cloud-a/README.md) |
+| **보안** | - 정규식 기반 1차 시그니처 룰 엔진 (`rules.py`)<br>- MITRE ATT&CK TTP 1:1 매핑 정의<br>- 결정론적 IncidentReport 매퍼 (`incident_mapper.py`)<br>- 오탐/정탐 분류 기준 및 대응 우선순위 수립 | `src/detection/rules.py`<br>`src/detection/incident_mapper.py`<br>`tests/unit/test_rules.py`<br>`tests/unit/test_incident_mapper.py` | [보안 기술 문서](docs/roles/security/README.md) |
+| **클라우드 A<br>(플랫폼 리드)** | - Terraform 기반 AWS 인프라 IaC 모듈 설계<br>- DynamoDB 원자적 카운터 기반 5분 윈도우 집계 (`auth_window.py`)<br>- Boto3 기반 다중 계층 차단 오케스트레이터 (`orchestrator.py`, `remediation.py`) 개발<br>- GitHub Actions CI/CD 배관 및 Moto 가상 테스트베드 구축 | `infra/terraform/`<br>`src/remediation/auth_window.py`<br>`src/remediation/orchestrator.py`<br>`src/remediation/remediation.py`<br>`tests/conftest.py`<br>`.github/workflows/` | [클라우드 A 기술 문서](docs/roles/cloud-a/README.md) |
 
 ---
 
@@ -207,8 +213,8 @@ aleph-project/
 │   │   ├── incident.py               # IncidentReport 불변 모델
 │   │   └── events.py                 # SyslogAuthEvent 및 CW Logs 페이로드 모델
 │   ├── collector/                    # [클라우드 B] CW Logs 수신 및 Gzip 디코더
-│   ├── detection/                    # [보안] 1차 룰 엔진(rules.py) 및 LLM 분석기
-│   ├── remediation/                  # [클라우드 A] Boto3 WAF/SG/IAM 차단 엔진
+│   ├── detection/                    # [보안] 1차 룰 엔진(rules.py) 및 침해사고 매퍼(incident_mapper.py)
+│   ├── remediation/                  # [클라우드 A] DynamoDB 윈도우 집계 및 Boto3 WAF/SG 차단 오케스트레이터
 │   └── reporter/                     # [클라우드 B] Slack Block Kit 카드 알림 모듈
 ├── network/                          # [네트워크] Hydra/Nmap 모의 공격 스크립트 및 패킷 분석
 ├── infra/                            # [클라우드 A] Terraform AWS 인프라 IaC 모듈

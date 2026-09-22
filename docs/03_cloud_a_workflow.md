@@ -44,19 +44,20 @@ flowchart TD
   - 보안 담당자의 분석 결과(`IncidentReport`)를 인자로 받아 실제 AWS 리소스를 변경하는 `remediation.py` 구현.
   - **L4 차단**: 침해 EC2의 기존 SG를 네트워크 담당자가 명세한 격리 보안 그룹으로 즉시 교체(`ec2.modify_instance_attribute`).
   - **L7 차단**: 공격자 IP를 AWS WAF IPSet에 추가(`wafv2.update_ip_set`, CIDR `/32` 검증 포함).
-  - **Identity 차단**: 타깃 서버에 연결된 IAM 임시 자격증명 무효화(`iam.revoke_security_tokens`) 연동.
+  - **Identity 차단**: 타깃 서버에 연결된 IAM 임시 자격증명 무효화 연동. (Phase 1 SSH 브루트포스 시나리오는 Linux OS 계정 침해이므로 L4/L7 차단에 집중하고, IAM 세션 무효화는 IAM 자격증명 탈취 시나리오 단계로 분리)
   - 트랜잭션 예외 처리: 각 차단 단계 실패 시 에러 로깅 및 안전한 폴백(Fallback) 보장.
 - **산출물**:
-  - 다중 계층 리소스 제어 모듈 (`remediation.py`).
+  - 다중 계층 리소스 제어 모듈 (`src/remediation/remediation.py`).
 
-### 3단계: 서버리스 Lambda 오케스트레이터 통합 패키징
+### 3단계: 서버리스 Lambda 오케스트레이터 및 분산 상태 관리 패키징
 - **내용**:
   - CloudWatch Logs Subscription Filter 페이로드 수신 및 Base64/Gzip 디코딩 (클라우드 B 규격 연동).
-  - 보안 담당자의 `rules.py` 및 `llm_analyzer.py` 호출.
+  - **분할 배치 상태 누적**: CloudWatch의 분할 배치(예: 3건 + 2건) 인입 시 브루트포스 횟수가 누락되지 않도록 DynamoDB 원자적 카운터(`ADD`) 기반 5분 슬라이딩 윈도우 관리 (`auth_window.py`).
+  - 보안 담당자의 `rules.py` 및 `incident_mapper.py` 호출을 통한 결정론적 IncidentReport 승격 (10초 관통 SLA를 위해 외부 LLM 동기 호출 배제).
   - 위험도 HIGH 판정 시 2단계의 `remediation.py` 원자적 호출.
-  - 최종 조치 결과를 클라우드 B의 `slack_notifier.py`로 전달하여 알림 발송.
+  - 최종 조치 결과를 클라우드 B의 `slack_notifier.py`로 전달하여 상황 전파.
 - **산출물**:
-  - Lambda 메인 엔트리포인트 (`lambda_function.py`).
+  - 런타임 오케스트레이터 및 윈도우 상태 관리 모듈 (`src/remediation/orchestrator.py`, `src/remediation/auth_window.py`).
 
 ### 4단계: GitHub OIDC 무인증 CI/CD 파이프라인 구축
 - **내용**:
