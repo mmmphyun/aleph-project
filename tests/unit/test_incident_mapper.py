@@ -1,11 +1,11 @@
-# CloudShield 단위 테스트: LLM 심층 분석기
+# CloudShield 단위 테스트: 결정론적 침해사고 매퍼
 # 소유자: 보안 담당
-"""LLM 심층 분석기(llm_analyzer.py) 단위 테스트."""
+"""결정론적 침해사고 매퍼(incident_mapper.py) 단위 테스트."""
 
 from __future__ import annotations
 
 from contracts.incident import IncidentReport
-from detection.llm_analyzer import analyze_incident
+from detection.incident_mapper import analyze_incident
 
 
 def test_analyze_incident_interface(sample_auth_log_lines: list[str]) -> None:

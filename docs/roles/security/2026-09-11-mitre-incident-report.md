@@ -5,7 +5,7 @@
 - 작업 일자: 2026-09-11
 - 담당 직무: 보안
 - 커밋: `f66ab06 feat(security): MITRE T1110.001 IncidentReport 연동`
-- 작업 범위: `src/detection/llm_analyzer.py`, `tests/unit/test_llm_analyzer.py`
+- 작업 범위: `src/detection/incident_mapper.py`, `tests/unit/test_incident_mapper.py`
 - 목적: SSH 인증 실패 로그를 탐지 룰 결과와 MITRE ATT&CK 기법으로 매핑하고, 공통 `IncidentReport` 계약 객체로 변환
 
 ## 1.1 전체 보안 작업 이력
@@ -51,7 +51,7 @@
 
 ## 3. 테스트 내용
 
-`tests/unit/test_llm_analyzer.py`에 다음 검증을 반영했다.
+`tests/unit/test_incident_mapper.py`에 다음 검증을 반영했다.
 
 1. 다중 계정 인증 실패 로그가 `T1110.003` 및 `BLOCK_IP_ONLY`로 변환되는지 검증
 2. 동일 계정 반복 실패 로그가 `T1110.001`, `HIGH`, `BLOCK_AND_QUARANTINE`으로 변환되는지 검증
