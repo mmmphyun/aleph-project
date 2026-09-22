@@ -315,6 +315,7 @@ def test_hydra_capture_requires_ready_and_real_log_evidence(
     host, _, lab = hydra_lab
     lab.context = "local"
     calls = []
+    capture_waits = []
 
     class Capture:
         returncode = None
@@ -327,6 +328,7 @@ def test_hydra_capture_requires_ready_and_real_log_evidence(
             return self.returncode if ready else code
 
         def wait(self, timeout):
+            capture_waits.append(timeout)
             self.returncode = code
             return code
 
@@ -346,6 +348,7 @@ def test_hydra_capture_requires_ready_and_real_log_evidence(
         and not accepted
     ):
         lab.capture_hydra("server", "client", "192.0.2.2", "192.0.2.3", "eth0")
+        assert capture_waits == [lab.seconds + 6]
     else:
         with pytest.raises(RuntimeError):
             lab.capture_hydra("server", "client", "192.0.2.2", "192.0.2.3", "eth0")

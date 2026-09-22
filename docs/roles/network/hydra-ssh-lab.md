@@ -1,5 +1,8 @@
 # Docker 내부 Hydra 인증 실패 재현
 
+실측 결과와 TCP 스트림 분석은
+[Hydra SSH 인증 실패 격리 실험 보고서](2026-09-21-hydra-validation.md)에 기록한다.
+
 ## 목적과 승인 경계
 
 기존 `network/lab/run.py`의 로컬 엔진 검사, LISTEN 준비 확인, PCAP 보존 및 소유 리소스

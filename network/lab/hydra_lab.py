@@ -204,7 +204,9 @@ class HydraLab(Lab):
                 )
                 hydra = json.loads(result.stdout)
                 self.events.append({"hydra": hydra, "worker_exit": result.returncode})
-                code = proc.wait(timeout=10)
+                # 캡처는 Hydra 종료 뒤에도 설정된 관측 구간까지 계속된다. 공격 시간보다 짧은
+                # 고정 대기는 정상 캡처를 실패로 오판하므로 캡처 상한과 종료 유예를 함께 기다린다.
+                code = proc.wait(timeout=self.seconds + 6)
                 self.events.append({"capture_exit": code})
                 failures, accepted = self.server_evidence(server, client_ip)
                 if accepted or hydra["state"] == "unexpected_success":

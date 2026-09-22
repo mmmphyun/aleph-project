@@ -1,131 +1,134 @@
-# Hydra 실험 준비 검증 및 Docker 엔진 차단 기록
+# Hydra SSH 인증 실패 격리 실험 보고서
 
 ## 1. 상태와 추적 관계
 
-**구현·모의 검증 완료, 실제 Hydra 실험 미실행.** 새 실패 로그나 PCAP을 확보하지 못했으며,
-인증 실패 재현·탐지·차단 성공으로 표시하지 않는다.
+**Docker 내부 격리 환경에서 Hydra 인증 실패 재현과 PCAP 분석을 완료했다.**
+인증 성공은 0건이고 서버 실패 로그는 7건이다. 이번 검증은 네트워크 담당 범위인
+모의 공격·패킷 분석까지이며 CloudWatch, Lambda, 자동 차단과 Slack 전파는 실행하지 않았다.
 
 - Notion: https://notion.so/3d404d37c225819b9e05fc015bc4df3d
 - Issue: https://github.com/mmmphyun/aleph-project/issues/67
 - 브랜치: `feat/network-hydra-isolated-lab`
 - 실행 가이드: [hydra-ssh-lab.md](hydra-ssh-lab.md)
+- 성공 실행 증거: `network/lab/runs/20260922T072454Z-hydra-0fed7e8a/`
 
-착수 시 네트워크 열린 PR은 없었고, `main`을 `git pull --ff-only origin main`으로 확인했다.
-노션 카드는 `시작 전`, 본문 블록 0개였으며 활성 연결 이슈가 없어 새 이슈를 발행했다.
-보관 PR 15는 CLOSED, 연결 이슈 미지정이며 브랜치 `feat/network-ssh-bruteforce`의
-`d29080a5a0eb2c978ed290ddf90753bf02c45ba3`을 수정·삭제·재사용하지 않았다.
-선행 PR 30·35·56·59는 원격 MERGED 상태다. 정상 기준선 머지 커밋은
-`498f0bb2e46d92af3c23e6e1e4172a9c42a8f9bb`와 일치한다.
+분석은 `tshark`, `capinfos` CLI와 보존된 서버 로그·manifest를 사용했다. Wireshark GUI는
+사용하지 않았다. 컨테이너 시각은 UTC, 호스트 보고 시각은 KST(UTC+09:00)로 구분한다.
 
-`notion_sync.yml`은 PR 본문의 모든 `#숫자`를 머지 시 이슈 종료 대상으로 해석한다.
-따라서 PR에는 이번 이슈만 그 형식으로 적고 과거 작업은 URL로 연결한다.
-노션 속성은 에이전트가 직접 수정하지 않는다.
-
-## 2. 환경과 실제 실행 차단 근거
+## 2. 환경과 격리 조건
 
 | 항목 | 확인값 |
 | --- | --- |
-| 확인일 | 2026-09-21, 호스트 Asia/Seoul, UTC+09:00 |
-| 호스트 | Windows 11 / Python platform: Windows-11-10.0.26200-SP0 |
-| Docker Desktop | 4.91.0, 사용자별 설치 |
-| Docker CLI | 29.8.0 / API 1.56 / windows amd64 |
-| 실행 파일 | `C:\Users\User\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe` |
-| context | desktop-linux, 로컬 named pipe |
-| tshark / capinfos | Wireshark 4.6.8 |
-| Python / pytest | 3.12.14 / 8.4.2 |
-| 이번 이미지 ID·Hydra·sshd·tcpdump 버전 | 이미지 미빌드, 확인 불가 |
-| 이번 대상 IP·인터페이스·실제 필터 | 컨테이너 미생성, 미확정 |
+| 실행 시각 | 2026-09-22 16:24:59~16:25:04 KST |
+| 호스트 | Windows 11, WSL2 kernel 6.18.33.2 |
+| Docker Desktop / Engine·CLI | 4.91.0 / 29.8.0, API 1.56 |
+| 컨테이너 OS | Debian 12 bookworm |
+| Hydra | 9.4 |
+| OpenSSH / OpenSSL | 9.2p1 Debian-2+deb12u10 / 3.0.20 |
+| tcpdump / libpcap | 4.99.3 / 1.10.3 |
+| tshark / capinfos | 4.6.8 |
+| 이미지 | `cloudshield-network-hydra-lab:local` |
+| 이미지 ID | `sha256:a3292bb4b40bc105d0ad040dae798fafb621263e87fd0ded2d681172b66de7f9` |
+| 대상 | `172.21.0.2:2222`, 인터페이스 `eth0` |
+| 공격 클라이언트 | `172.21.0.3`, 동시성 1 |
 
-설치 경로를 찾아 Docker Desktop 시작을 시도했다. 백엔드 로그의
-2026-09-21T05:10:42Z(14:10:42 KST) 오류는 다음과 같다.
+러너가 소유한 `--internal` Docker bridge에서만 실행했으며 호스트 포트, 외부 서버,
+privileged 모드, bind mount와 Docker 소켓 마운트를 사용하지 않았다. 실행 후 manifest의
+`remaining_resources`는 빈 배열이고 CloudShield 라벨의 컨테이너와 네트워크가 남지 않았다.
+재현용 이미지만 보존했으며 다른 Docker 프로젝트는 건드리지 않았다.
 
-```text
-starting services: initializing Ingest server
-sailor-ingest.sock -> sailor-ingest.sock.stale
-The file cannot be accessed by the system.
-```
+## 3. Hydra와 서버 인증 증거
 
-백엔드가 시작 실패 후 종료되었으며 엔진 named pipe가 존재하지 않았다.
-초기화·재설치·소켓 파일 삭제·시스템 설정 변경·재부팅은 수행하지 않았다.
-Docker Desktop 복구는 별도 승인 범위로 남긴다.
+| 지표 | 실측값 |
+| --- | --- |
+| 실행 ID | `cs-ssh-0e2ac094a4e64a4a859f8b09d4b3c4c0` |
+| Hydra 시작·종료 | 16:25:00.685971~16:25:04.209992 KST |
+| 합성 실패 후보 | 6개 |
+| Hydra 작업 수 | 1 |
+| Hydra 상태 / 종료 코드 | `exhausted_without_success` / 0 |
+| SSH 성공 로그 | 0건 |
+| SSH 실패 로그 | 7건 |
+| 실패 로그의 클라이언트 포트 | 59420 6건, 59424 1건 |
+| 로그 수집원 | sshd stderr |
 
-현재 러너로 명시적 `run --execute` 사전 점검을 수행한 시각은
-2026-09-21T05:12:57Z~05:12:58.565010Z(14:12:57~14:12:58 KST)이다.
-`docker info` 단계에서 중단했고 manifest의 exit는 1이다. Hydra 시작·종료 시각과 종료 코드는
-**없음**이다. 후보 생성·서버 인증·캡처를 실행하기 전 단계에서 막혔다.
+후보 6개와 실패 로그 7건, TCP 스트림 3개는 서로 같은 단위가 아니다. Hydra는 준비·협상
+연결 뒤 인증 연결을 만들었고, 스트림 1에서 `MaxAuthTries` 6회에 도달해 연결이 닫힌 후
+스트림 2에서 실패 로그가 한 건 더 발생했다. SSH 페이로드는 암호화되어 있으며 원시 후보와
+Hydra 복구 파일은 안전상 보존하지 않았으므로 각 후보를 개별 로그에 억지로 대응시키지 않는다.
 
-로컬 진단 증거:
+보안 룰의 동일 IP·계정, 300초 내 5회 조건에는 수량과 시간 측면에서 부합한다. 그러나 이번
+Docker 로그는 RFC3339 시각과 sshd stderr 조합이고 계약 파서가 요구하는
+`host sshd[PID]:` syslog 접두어가 없다. 따라서 실제 탐지 파이프라인 성공으로 표시하지 않는다.
 
-- `C:\Aleph\network\lab\runs\20260921T051257Z-hydra-9706e4fd\manifest.json`
-- Docker 원본 진단: `C:\Users\User\AppData\Local\Docker\log\host\com.docker.backend.exe.log`
+## 4. PCAP 무결성과 TCP 분석
 
-새 PCAP 위치·크기·SHA-256·읽기 결과·패킷 수·드롭 통계·서버 실패 수는 모두 **미측정**이다.
-이를 0으로 표기하지 않는다. 실행 가이드의 자동 보존 경로는 실제 실험 성공 증거가 아니다.
+| 항목 | 실측값 |
+| --- | --- |
+| 파일 | `network/lab/runs/20260922T072454Z-hydra-0fed7e8a/capture.pcap` |
+| 크기 | 16,204 bytes |
+| SHA-256 | `0b46b249ef082c0dbe404081c775d31e437f631d1fafae71a0ac533372e95e35` |
+| 패킷 / TCP 스트림 | 78 / 3 |
+| 캡처 구간 | 16:25:00.715897~16:25:04.183249 KST, 3.467352초 |
+| SYN / SYN-ACK | 3 / 3 |
+| FIN / RST | 6 / 0 |
+| TCP 재전송 | 0 |
+| 커널 드롭 | 0 (`78 captured`, `78 received by filter`) |
+| tshark 읽기 | 성공, 종료 코드 0 |
 
-## 3. 기존 정상 기준선 재확인과 비교
-
-기존 PCAP을 capinfos와 tshark CLI로 다시 읽었다. 새 Hydra 증거로 재사용하지 않는다.
-Wireshark GUI 확인은 이번에도 미수행이다.
-
-| 지표 | 기존 정상 단일 연결 | 이번 Hydra 시나리오 |
-| --- | --- | --- |
-| 실제 수행 | 2026-09-16 키 인증 연결 | 엔진 사전 점검 실패, 미실행 |
-| 계정 / 후보 | lab / 키 인증 | 계획 hydralab / 합성 실패 후보 6개 |
-| TCP 스트림 | 1개 | 미측정 |
-| 인증 실패 수 | 기준선 실패 시나리오 아님 | 미측정 |
-| 패킷 수 / 파일 크기 | 39 / 10,472 bytes | 미측정 |
-| SYN / SYN-ACK | 각각 1개 | 미측정 |
-| FIN | 양방향 FIN | 미측정 |
-| RST / 재전송 | 0 / 0 | 미측정 |
-| 드롭 | 원본 종료 통계 미확보, 알 수 없음 | 미측정 |
-| 탐지·차단 | 검증 범위 밖 | 미실행 |
-
-기준선 원본:
-`C:\Aleph\network\lab\runs\20260916T033900Z-707fb648\capture.pcap`
-
-SHA-256: `2a63b868f1f3334eaafeb60601811101263daf2287fc1bc4a13d9c6cc3ace667`
-
-다음 표는 **기존 정상 PCAP의 재확인값**이다. Hydra 스트림 표는 새 PCAP 확보 전에는 작성할 수 없다.
-4-tuple은 `172.18.0.3:53320 ↔ 172.18.0.2:2222`이며 Seq/Ack는 tshark 상대값이다.
+스트림 0은 Hydra의 SSH 모듈 준비·협상 연결이며 서버 실패 로그가 없다. 스트림 1은 실패
+6건과 `MaxAuthTries` 종료를 포함하고, 스트림 2는 실패 1건을 포함한다. 대표 스트림 1의
+Seq/Ack는 tshark 상대값이다.
 
 | 프레임 | 상대 시각(초) | 방향 | 플래그 | Seq | Ack |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 0.000000 | client → server | SYN | 0 | 0 |
-| 2 | 0.000023 | server → client | SYN, ACK | 0 | 1 |
-| 3 | 0.000030 | client → server | ACK | 1 | 1 |
-| 36 | 0.175410 | client → server | FIN, ACK | 3674 | 3562 |
-| 38 | 0.176054 | server → client | FIN, ACK | 3562 | 3675 |
+| 23 | 0.270310 | `172.21.0.3:59420 → 172.21.0.2:2222` | SYN | 0 | 0 |
+| 24 | 0.270358 | `172.21.0.2:2222 → 172.21.0.3:59420` | SYN, ACK | 0 | 1 |
+| 25 | 0.270365 | client → server | ACK | 1 | 1 |
+| 53 | 0.406042 | client → server | FIN, ACK | 1800 | 2038 |
+| 54 | 0.406523 | server → client | FIN, ACK | 2038 | 1801 |
+| 55 | 0.406531 | client → server | ACK | 1801 | 2039 |
 
-재분석 시 tshark는 기존 SSH post-quantum KEX의 개인키 복호화 미지원 경고를 출력했다.
-TCP 프레임 판독 실패는 아니며 SSH 인증 내용을 복호화했다는 의미도 아니다.
-기존 실측의 캡처 종료 감시 문제와 이후 loopback 검증 이력은 원래 보고서에 보존한다.
-수정된 캡처의 실제 시작·종료·보존·정리 전 구간을 이번 Hydra 환경에서 재검증하는 일은 남아 있다.
+RST와 재전송 없이 세 스트림 모두 정상 TCP 연결·종료 형태를 보였다. 공격성은 비정상 TCP
+플래그보다 짧은 시간에 같은 출발지와 계정에서 반복된 SSH 인증 실패로 드러난다.
 
-## 4. 모의 검증과 회귀
+## 5. 정상 기준선 비교
 
-입력 상한, dry-run, 안전한 argv, 정확한 대상 소유권·내부 네트워크·포트 검증,
-도구/SSH 모듈 부재, timeout·중단·예상 밖 성공·연결 오류 분류,
-후보·복구 파일 정리, 캡처 준비 전 공격 금지, 서버 로그와 종료 코드의 독립 판정을 모의 검증했다.
-기존 SSH·tcpdump 모의 테스트를 유지했다. 실제 Docker·이미지 다운로드·네트워크 실행은
-기본 pytest에 포함하지 않는다.
+정상 기준선은 기존 키 인증 단일 연결 PCAP
+`network/lab/runs/20260916T033900Z-707fb648/capture.pcap`이다. 크기는 10,472 bytes,
+SHA-256은 `2a63b868f1f3334eaafeb60601811101263daf2287fc1bc4a13d9c6cc3ace667`이다.
 
-최종 `powershell .\scripts\check.ps1` 결과는 역할 범위·테스트 경로·Ruff lint·format 모두 통과,
-pytest **278 passed, 0 skipped, 1 warning**이다. Hydra 신규 모의 검증 46개를 포함한다.
-기존 `test_network_socket_is_blocked_by_default`의 pytest-socket 경고 1건은 의도된 차단 검증에서
-발생하며 새 Hydra 경고와 구분한다. 새 셸 파일 두 개의 `bash -n`도 통과했다.
-PowerShell 5의 기존 한글 배너는 인코딩이 깨져 출력됐지만 각 단계 결과는 별도로 확인했다.
+| 지표 | 정상 키 인증 | Hydra 실패 실험 |
+| --- | ---: | ---: |
+| TCP 스트림 | 1 | 3 |
+| 패킷 | 39 | 78 |
+| 캡처 시간 | 약 0.176초 | 3.467352초 |
+| SYN / SYN-ACK | 1 / 1 | 3 / 3 |
+| FIN | 2 | 6 |
+| RST / 재전송 | 0 / 0 | 0 / 0 |
+| 서버 실패 로그 | 0 | 7 |
+| 드롭 | 원본 통계 미보존 | 0 |
 
-## 5. 남은 검증·협의·정리
+Hydra 실험은 정상 기준선보다 스트림과 패킷이 늘고 인증 실패가 집중됐다. 두 캡처 모두
+TCP 플래그 이상이나 재전송은 없으므로 탐지 근거는 반복 인증 실패 로그와 시간 창이어야 한다.
 
-- Docker 엔진 복구 후 이미지 빌드와 1회 제한 실험, 버전·IP·필터·실행 시각 확보.
-- 실제 실패 로그 수와 후보·TCP 연결 수 비교, 스트림별 SYN/ACK/FIN/RST·재전송 분석.
-- 드롭 통계와 PCAP 보존·컨테이너 정리 전 구간 검증. 예상치 못한 성공은 즉시 중단·원인 기록.
-- 보안 담당 조건은 동일 IP·계정 300초 내 실패 5회. 현재 실제 실패 횟수는 확인되지 않았다.
-- stderr 로그와 계약 파서의 syslog 접두어 차이는 수집 담당과 협의한다. 배치 간 누적도 별도 범위다.
-- 전체 탐지·차단 및 외부 클라우드 성능은 미검증이다.
+## 6. 첫 실행 실패와 러너 수정
 
-이번 실행은 컨테이너·네트워크·이미지·비밀번호 후보·Hydra 복구 파일을 생성하지 않았다.
-manifest의 `remaining_resources`는 빈 배열이며 진단 폴더만 보존한다.
-엔진이 내려가 있어 기존 Docker 전체 리소스의 현재 목록은 조회하지 못했다.
-Docker Desktop 앱은 시작 오류 화면 상태일 수 있으며 사용자 설정이나 기존 이미지를 삭제하지 않았다.
-기존 미추적 회의록은 수정·스테이징하지 않는다.
+첫 실측 `network/lab/runs/20260921T062044Z-hydra-c3549953/`은 78 packets, 서버 실패
+7건, 성공 0건을 확보했지만 manifest가 exit 1이었다. 캡처 프로세스는 33초 제한인데 러너가
+Hydra 종료 후 10초만 기다려 정상 캡처를 timeout으로 오판한 것이 원인이었다.
+
+대기 상한을 `실험 seconds + 6초`로 바꾸고 단위 테스트에서 전달값을 검증했다. 수정 후 같은
+격리 조건으로 재실행해 manifest exit 0, 캡처 제한 종료 코드 124, 증거 보존과 리소스 정리
+성공을 확인했다. 캡처의 124는 유한한 `timeout`이 관측 구간을 끝낸 값이며 실험 실패가 아니다.
+
+## 7. 검증 범위와 남은 연계
+
+- `pwsh .\scripts\check.ps1`의 역할 경계, 테스트 경로, Ruff lint·format과 pytest를 통과했다.
+  결과는 **278 passed, 1 warning**이며 경고는 기존 소켓 차단 검증에서 발생했다.
+- 네트워크 단위 테스트는 입력 상한, dry-run, 소유 리소스 검증, 캡처 준비, 종료·정리와 실제
+  로그 판정을 검증한다.
+- 실제 CloudWatch 수집, 계약 파싱, Lambda 탐지, SG/WAF/IAM 차단과 Slack 전파는 수행하지 않았다.
+- 수집 담당과 syslog 접두어 형식을 맞춘 뒤 보안 담당이 동일 IP·계정 5회/300초 룰을 통합
+  환경에서 검증해야 한다.
+- 실험 증거와 manifest는 보존했고 합성 비밀번호 후보·Hydra 복구 파일은 정리했다.
+- 재현용 Docker 이미지는 후속 반복 실험을 위해 남겼다. 제거 시 정확한 이미지 ID를 사용한다.
