@@ -7,16 +7,16 @@ CloudShield는 **"10초 실시간 원자적 차단(Critical Path)"**과 **"사�
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Attacker as [네트워크] 공격자 (Kali / Hydra / Nmap)
-    participant Target as [클라우드 B] 타깃 EC2 (auth.log)
+    actor Attacker as [네트워크] 공격자 (Kali / Hydra)
+    participant Target as [클라우드 B] 타깃 EC2 (/var/log/auth.log)
     participant Agent as [클라우드 B] CloudWatch Agent
     participant CW as [클라우드 B] CloudWatch Logs (구독 필터)
-    participant Lambda as [클라우드 A] 실시간 총괄 Lambda
-    participant Rule as [보안] 1차 룰 엔진 (rules.py)
-    participant Mapper as [보안] 룰 승격기 (incident_mapper.py)
-    participant WAF as [클라우드 A] AWS WAF IPSet
+    participant Lambda as [클라우드 A] 오케스트레이터 (orchestrator.py)
+    participant DDB as [클라우드 A] DynamoDB (auth_window.py)
+    participant Mapper as [보안] 침해사고 매퍼 (incident_mapper.py)
+    participant WAF as [클라우드 A] AWS WAF IPSet (/32)
     participant EC2_API as [클라우드 A] EC2 API (격리 SG)
-    participant Slack as [클라우드 B] Slack Webhook
+    participant Slack as [클라우드 B] Slack Webhook (Block Kit)
     participant EventBus as [클라우드 A] EventBridge / SQS
     participant LLM_Worker as [보안] 비동기 LLM 분석기 (RAG)
 
@@ -24,21 +24,24 @@ sequenceDiagram
     rect rgb(240, 248, 255)
         Note over Attacker, Slack: [경로 A] 10초 실시간 원자적 차단 (Critical Path)
         Attacker->>Target: SSH 무차별 대입 공격 (Hydra) 시뮬레이션
-        Target->>Target: /var/log/auth.log에 실패 기록 적재
+        Target->>Target: /var/log/auth.log에 인증 실패 기록 적재
         Agent->>CW: 로그 실시간 스트리밍
         CW->>Lambda: 구독 필터 조건 일치 ("Failed password") → Gzip 배치 트리거
-        Lambda->>Rule: 인입 로그 전달
-        Rule-->>Lambda: 1차 룰 판정 (동일 IP 5회 실패, HIGH)
-        Lambda->>Mapper: 탐지 결과 전달
-        Mapper-->>Lambda: 결정론적 IncidentReport 반환 (외부 API 제로)
+        Lambda->>DDB: 개별 실패 로그 파싱 후 DynamoDB 5분 윈도우 원자적 누적 (ADD failure_count)
+        DDB-->>Lambda: 5분 내 누적 실패 수 및 고유 계정 수 반환
 
-        par 원자적 다중 계층 차단
-            Lambda->>WAF: L7 공격자 IP 차단 (boto3 update_ip_set /32)
-            Lambda->>EC2_API: L4 타깃 인스턴스 격리 SG 적용
+        alt 누적 임계치 도달 시 (5분 내 5회 이상 / 고유 계정 2개 이상)
+            Lambda->>Mapper: 탐지 컨텍스트 전달
+            Mapper-->>Lambda: 결정론적 IncidentReport 반환 (외부 API 제로)
+
+            par 원자적 다중 계층 차단
+                Lambda->>WAF: L7 공격자 IP /32 인바운드 차단 (boto3 update_ip_set)
+                Lambda->>EC2_API: L4 타깃 인스턴스 격리 SG 교체 (modify_instance_attribute)
+            end
+
+            Lambda->>Slack: 1차 긴급 차단 알림 카드 발송 (Block Kit)
+            Note over Slack: 관리자에게 10초 이내 긴급 격리 완료 전파
         end
-
-        Lambda->>Slack: 1차 긴급 차단 알림 카드 발송 (Block Kit)
-        Note over Slack: 관리자에게 10초 이내 긴급 격리 완료 전파
     end
 
     %% [경로 B] 사후 비동기 심층 분석 (Out-of-band - 지능형 RAG & LLM)
@@ -67,8 +70,10 @@ sequenceDiagram
 - **동작**: CloudWatch Logs의 Subscription Filter가 키워드 매칭 시 Lambda로 Base64 인코딩 및 Gzip 압축된 JSON 이벤트 페이로드 전달.
 - **데이터 규격**: `event['awslogs']['data']` (Lambda에서 Gzip 해제 후 텍스트 추출).
 
-### [구간 3] 클라우드 A $\leftrightarrow$ 보안 (Lambda $\leftrightarrow$ 1차 룰 및 결정론적 IncidentReport 승격)
-- **동작**: Lambda가 보안 담당자의 `rules.py`와 `incident_mapper.py`를 호출하여 10초 관통 대응을 위한 표준 객체 획득 (외부 네트워크 I/O 제로).
+### [구간 3] 클라우드 A $\leftrightarrow$ 보안 (Lambda $\leftrightarrow$ 윈도우 누적 및 결정론적 IncidentReport 승격)
+- **동작**: 
+  1. Lambda 오케스트레이터가 인입된 로그 배치를 파싱하고, CloudWatch의 분할 배치 전송(예: 3건 + 2건) 시에도 브루트포스 횟수가 누락되지 않도록 DynamoDB 원자적 카운터(`auth_window.py`)로 5분 슬라이딩 윈도우를 갱신.
+  2. 5분 내 임계치(5회 실패 또는 2개 이상 고유 계정) 도달 시, 보안 담당자의 `incident_mapper.py`를 호출하여 10초 관통 대응을 위한 표준 `IncidentReport` 객체 획득 (외부 네트워크/LLM API I/O 제로).
 - **인터페이스 (보안 담당자가 제공하는 IncidentReport 규격)**:
   ```json
   {
@@ -79,12 +84,11 @@ sequenceDiagram
     "source_ip": "198.51.100.24",
     "target_identifier": "i-0abcd1234ef567890",
     "target_accounts": ["admin"],
-    "summary_ko": "출발지 IP 198.51.100.24에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다.",
+    "summary_ko": "동일 IP(198.51.100.24) 및 계정(admin)에 대한 5분 내 5회 이상 무차별 대입 공격이 탐지되었습니다.",
     "action_required": "BLOCK_AND_QUARANTINE",
     "recommendations": [
-      "AWS WAF IPSet에 198.51.100.24/32를 등록해 반복 접근을 차단",
-      "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
-      "타깃 EC2 인스턴스(i-0abcd1234ef567890)를 Quarantine 보안 그룹으로 격리"
+      "L4 보안 그룹 전면 격리 상태 유지",
+      "WAF IPSet /32 단일 호스트 차단 등록 확인"
     ]
   }
   ```
@@ -93,6 +97,7 @@ sequenceDiagram
 - **동작**: `action_required == "BLOCK_AND_QUARANTINE"` 조건 만족 시:
   1. `boto3.client('wafv2').update_ip_set(...)` $\rightarrow$ 공격자 IP /32 WAF 원자적 등록 차단 (L7 방어).
   2. `boto3.client('ec2').modify_instance_attribute(Groups=['<Quarantine_SG_ID>'])` $\rightarrow$ 침해 인스턴스 네트워크 격리 (L4 방어).
+  *(참고: SSH 공격 시나리오는 Linux OS 계정 침해이므로 L4 SG 및 L7 WAF 차단에 집중하며, Identity IAM 세션 무효화는 AWS 자격증명 탈취 시나리오로 분리)*
 
 ### [구간 5] 클라우드 A $\rightarrow$ 클라우드 B (실시간 상황 전파 $\rightarrow$ Slack 알림)
 - **동작**: 클라우드 B가 작성한 `slack_notifier.py`에 `IncidentReport`와 차단 집행 결과(`waf_blocked: true`, `quarantine_applied: true`)를 전달하여 Slack Block Kit 카드 발송.

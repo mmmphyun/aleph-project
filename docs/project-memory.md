@@ -1,6 +1,6 @@
 # CloudShield: 팀 프로젝트 메모리 스냅샷 (Project Context & Decisions)
 
-> **최종 갱신일**: 2026-09-04  
+> **최종 갱신일**: 2026-09-22  
 > **용도**: 프로젝트 영구 지속성 메모리. 아키텍처 결정 사항(ADR), R&R 경계선, 기술 제약조건 및 개발 가이드라인을 추적함.
 
 ---
@@ -23,14 +23,14 @@
 flowchart TD
     subgraph S1 ["도메인별 고유 담당 영역 (직무 핵심 역량: 침범 금지)"]
         NET["네트워크: 모의 공격 재현 & L4 패킷 플래그 분석 보고서"]
-        SEC["보안: rules.py 1차 룰 & Pydantic LLM 프롬프트"]
+        SEC["보안: rules.py 1차 룰 & incident_mapper.py"]
         CLB["클라우드 B: CW Agent 중앙 수집 & slack_notifier.py"]
     end
 
     subgraph S2 ["클라우드 A(플랫폼) 영역 (인프라 및 런타임 오케스트레이션)"]
         TF["1. Terraform IaC 모듈화 & Trivy 보안 검증"]
         CICD["2. GitHub OIDC 기반 무인증 CI/CD 파이프라인"]
-        ORCH["3. Lambda 오케스트레이터 & Boto3 원자적 차단 엔진"]
+        ORCH["3. Lambda 오케스트레이터 & DynamoDB 윈도우 & Boto3 원자적 차단 엔진"]
         HARNESS["4. moto 기반 로컬 테스트베드 & 개발 하네스 구축"]
     end
 
@@ -58,14 +58,15 @@ flowchart TD
    * Slack Incoming Webhook + Block Kit 카드 전송 모듈(`slack_notifier.py`).
 3. **보안 담당**:
    * 정규표현식 기반 1차 시그니처 룰 엔진(`rules.py`).
-   * MITRE ATT&CK TTP(T1110 등) 1:1 매핑 테이블 정의.
-   * Pydantic 기반 정형 침해사고 스키마 설계.
-   * LLM 프롬프트 Few-shot 엔지니어링 및 오탐/정탐 검증 테스트.
+   * MITRE ATT&CK TTP(T1110.001, T1110.003 등) 1:1 매핑 테이블 정의.
+   * 결정론적 IncidentReport 매퍼(`incident_mapper.py`).
+   * 오탐/정탐 검증 및 ReDoS 방어 단위 테스트.
 4. **클라우드 A 담당 (테크 리드 & 플랫폼 엔지니어)**:
-   * 팀원 모듈이 단 한 줄 수정 없이 플러그인처럼 결합되는 **Lambda 오케스트레이터**.
-   * Boto3 기반 다중 계층(L4 SG 격리 + L7 WAF IPSet + Identity IAM 세션 취소) 원자적 차단 엔진(`remediation.py`).
+   * 팀원 모듈이 단 한 줄 수정 없이 결합되는 **Lambda 오케스트레이터**(`orchestrator.py`).
+   * CloudWatch Logs 분할 배치 누락 방지를 위한 **DynamoDB 5분 슬라이딩 윈도우 원자적 카운터**(`auth_window.py`).
+   * Boto3 기반 다중 계층(L4 SG 격리 + L7 WAF IPSet) 원자적 차단 엔진(`remediation.py`).
    * 전체 AWS 인프라 Terraform IaC 모듈화.
-   * GitHub Actions OIDC 무인증 배포 CI/CD 파이프라인.
+   * GitHub Actions OIDC 무인증 배포 CI/CD 및 R&R 하드가드 구축.
    * `moto` 기반 로컬 가상 AWS 테스트베드 및 개발 하네스 구축.
 
 ---
@@ -83,6 +84,7 @@ flowchart TD
 | **0005** | [`ADR-0005: Ruleset 단일화 및 1:1 상호 리뷰 거버넌스`](adr/0005-repository-ruleset-unification-and-peer-review-governance.md) | Accepted | 2026-09-09 | Classic 보호 규칙 충돌을 제거하고 Ruleset 단일화 및 1:1 상호 짝꿍 리뷰 체계 확립 |
 | **0006** | [`ADR-0006: 에이전트 하네스 이원화 및 감사 투명성 설계`](adr/0006-agent-harness-dual-guard-architecture.md) | Accepted | 2026-09-09 | PR 메타데이터/테스트 경로 하드 가드 강제 및 솔직한 우회 증적(Audit Trail) 보존을 위한 이원화 설계 |
 | **0007** | [`ADR-0007: 룰 엔진 무상태성 보장 및 상태 관리 경계 분리`](adr/0007-stateless-rule-engine-and-state-boundary.md) | Accepted | 2026-09-09 | 룰 엔진은 순수 함수로 유지하고, CW 배치 분할 세션 상태 유지는 오케스트레이터(클라우드 A) 책임으로 분리 |
+| **0008** | [`ADR-0008: 결정론적 R&R 스코프 가드 및 단일 런타임 통일`](adr/0008-deterministic-rnr-scope-guard-and-single-runtime.md) | Accepted | 2026-09-17 | Node.js/Python 런타임 파편화를 단일 Python으로 통일하고 PR #45 R&R 침범 방지 물리적 하드가드 구축 |
 
 ---
 
@@ -99,22 +101,21 @@ flowchart TD
 
 ## 5. 실행 로드맵 및 현재 구축 진행 상태
 
-* **완료 내역 (하네스 및 거버넌스 파이프라인 완성)**:
-  * **Day 1 기반 완성**: 레거시(SentinelHub) 완전 제거, Pydantic V2 기반 `src/contracts/` 2종 확정, `tests/mock_data/` 3종 생성, 계약 불변성(Drift Guard) 테스트 통과.
-  * **에이전트 거버넌스 체계**: `.agent-role` 로컬 역할 잠금, `CLAUDE.md`, `.cursorrules`, `AGENTS.md` 개정 (경계선 소유권 매트릭스, 4대 직무별 산출물 특화 표준 명시).
-  * **GitHub 배관 및 원격 가드**:
-    * CI 파이프라인 (`.github/workflows/ci.yml`): `setup-uv` 캐시 적용 10초 컷.
-    * PR 제목 린터 (`.github/workflows/pr_title_lint.yml`): Conventional Commit + 직무 스코프 강제.
-    * 자동 라벨러 (`.github/workflows/labeler.yml`): 경로 기반 `role:*`, `area:*`, `type:*` 자동 부착.
-    * 노션 동기화 배관 (`.github/workflows/notion_sync.yml`): PR 상태 단방향 동기화.
-    * 브랜치 보호 및 머지 정책: Squash Merge 단독 활성화, 머지 후 브랜치 자동 삭제.
-  * **문서 아카이브 체계**:
-    * `docs/roles/{network,cloud-b,security,cloud-a}/`: 직무별 완결 산출물 자유 마크다운 저장소.
-    * `docs/shared/{meetings,ideas}/`: 회의록 및 아이디어 공유 디렉토리 분리 신설.
+* **완료 내역 (하네스, 거버넌스 및 코어 도메인 로직 완성)**:
+  * **Day 1 기반 완성**: 레거시(SentinelHub) 제거, Pydantic V2 기반 `src/contracts/` 2종 확정, `tests/mock_data/` 표준 데이터셋 생성, 계약 불변성(Drift Guard) 테스트 통과.
+  * **에이전트 거버넌스 및 R&R 하드가드**:
+    * `.agent-role` 역할 잠금, `verify_rnr_scope.py` 물리적 스코프 하드가드 구축 (PR #45 사후 분석 및 ADR-0008 반영).
+    * Python 단일 런타임(`uv run python`) 통일.
+  * **Day 2 코어 플랫폼 및 도메인 로직 완결**:
+    * Boto3 L4 EC2 Quarantine SG 격리 및 L7 WAF IPSet /32 원자적 차단 엔진 (`remediation.py`).
+    * CloudWatch Logs 분할 배치 누락 방지용 DynamoDB 5분 윈도우 원자적 카운터 (`auth_window.py`).
+    * 1차 시그니처 룰(`rules.py`) 및 결정론적 IncidentReport 매퍼(`incident_mapper.py`).
+    * CloudWatch Logs 구독 필터 명세 및 Slack Block Kit 전파 모듈 (`cw_processor.py`, `slack_notifier.py`).
+    * **2026-09-16 긴급 회의 의결 사항 반영**: 10초 관통 SLA를 위해 실시간 차단 경로에서 외부 LLM API를 배제하고 결정론적 매퍼로 완결하며, LLM은 사후 비동기(Out-of-band)로 이원화.
 
-* **차기 착수 단계 (Day 2 플랫폼 엔지니어링)**:
-  1. `pyproject.toml`에 `boto3`, `moto[ec2,wafv2,iam]` 의존성 추가.
-  2. `tests/conftest.py`에 Moto 가상 AWS 리소스(Quarantine SG, WAFv2 IPSet, IAM Role) 픽스처 구축.
-  3. `src/remediation/remediation.py` 다중 계층(L4 SG 격리 / L7 WAF IPSet / IAM 세션 무효화) 원자적 복합 차단 엔진 구현.
-  4. `tests/test_remediation.py` 가상 런타임 관통 검증.
+* **차기 착수 단계 (Day 3 관통 시나리오 통합 및 인프라 실증)**:
+  1. `threat_orchestrator_handler`에 클라우드 B `slack_notifier` 연동 및 보안 `incident_mapper` 인터페이스 결합.
+  2. 로컬 목 데이터 기반 10초 관통 E2E 시나리오 통합 테스트 작성 (`tests/integration/test_pipeline_scenario.py`).
+  3. Docker Hydra SSH 공격 랩 실측 완료 (PR #68).
+  4. Terraform IaC 모듈 작성 및 AWS 환경 관통 실증.
 

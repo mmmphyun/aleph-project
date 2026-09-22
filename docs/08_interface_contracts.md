@@ -3,11 +3,11 @@
 ## 1. 개요 및 목적
 
 - **목적**: 인프라 의존성으로 인해 개발이 직렬화(앞 사람이 끝나야 뒷 사람이 시작)되는 병목을 원천 차단.
-- **원칙**: 4개 직무는 아래 정의된 **3대 데이터 규격**을 기준으로 각자 로컬/독립 환경에서 모킹(Mocking) 개발을 진행하며, 통합 시에는 레고 블록처럼 결합한다.
+- **원칙**: 4개 직무는 아래에 명시한 **핵심 인터페이스 데이터 규격**을 기준으로 독립 환경에서 모킹(Mocking) 개발을 진행하며, 통합 단계에서 모듈 간 충돌 없이 결합한다.
 
 ---
 
-## 2. 3대 핵심 인터페이스 규격 (Data Contracts)
+## 2. 핵심 인터페이스 및 데이터 규격 (Data Contracts)
 
 ```mermaid
 flowchart LR
@@ -72,62 +72,97 @@ CloudWatch Logs Subscription Filter가 분석 Lambda 함수를 호출할 때 전
 
 ### [규격 3] 보안 $\rightarrow$ 클라우드 A & B: 최종 침해사고 분석 객체 (`IncidentReport`)
 
-**★ 프로젝트 전체에서 가장 핵심이 되는 표준 규격.**  
-보안 담당자의 분석 함수(`analyze_incident()`)가 리턴하고, 클라우드 A는 이를 보고 차단하며, 클라우드 B는 이를 보고 Slack 메시지를 만듦.
+**프로젝트 전체의 핵심 인터페이스 규격.**  
+보안 담당자의 룰 승격기(`incident_mapper.py`의 `analyze_incident()`)가 반환하고, 클라우드 A는 이를 기반으로 L4/L7 차단을 집행하며, 클라우드 B는 이를 기반으로 Slack 알림 카드를 구성함.
 
-- **Pydantic 스키마 정의 (`schema.py`)**:
+- **Pydantic V2 불변 스키마 (`src/contracts/incident.py`)**:
   ```python
-  from pydantic import BaseModel, Field
-  from typing import List, Literal
+  from typing import Literal
+
+  from pydantic import BaseModel, ConfigDict, Field
 
 
   class IncidentReport(BaseModel):
-      incident_id: str = Field(description="사건 고유 ID (예: INC-20260903-01)")
-      attack_type: str = Field(description="공격 유형 (예: SSH Brute Force, Multi-Account Spraying)")
+      model_config = ConfigDict(frozen=True, extra="forbid")
+
+      incident_id: str = Field(description="사건 고유 식별자 (예: INC-SIG-SSH-AUTH-001)")
+      attack_type: str = Field(description="공격 유형 (예: SSH Brute Force, SSH Password Spraying)")
       mitre_id: str = Field(description="MITRE ATT&CK 기법 ID (예: T1110.001)")
-      risk_level: Literal["HIGH", "MEDIUM", "LOW"] = Field(description="위험도")
-      source_ip: str = Field(description="공격자 출발지 IP")
-      target_accounts: List[str] = Field(description="공격 대상 계정 목록")
-      summary_ko: str = Field(description="LLM이 생성한 2~3줄 침해사고 요약문")
-      action_required: Literal["BLOCK_AND_QUARANTINE", "BLOCK_IP_ONLY", "ALERT_ONLY", "NONE"] = Field(
-          description="인프라 대응 지시사항"
-      )
-      recommendations: List[str] = Field(description="관리자 권고 조치 리스트")
+      risk_level: Literal["HIGH", "MEDIUM", "LOW"] = Field(description="위험도 판정")
+      source_ip: str = Field(description="공격자 IPv4 주소")
+      target_identifier: str = Field(description="공격 대상 리소스 식별자 (예: EC2 Instance ID)")
+      target_accounts: tuple[str, ...] = Field(description="공격 대상 계정 튜플")
+      summary_ko: str = Field(description="결정론적 매퍼 또는 LLM이 생성한 상황 요약문")
+      action_required: Literal[
+          "BLOCK_AND_QUARANTINE",
+          "BLOCK_WAF",
+          "BLOCK_IP_ONLY",
+          "QUARANTINE_EC2",
+          "REVOKE_IAM_SESSION",
+          "ALERT_ONLY",
+          "NONE",
+      ] = Field(description="필수 인프라 대응 조치 지침")
+      recommendations: tuple[str, ...] = Field(description="관리자 권고 조치 목록 튜플")
   ```
 
 - **실제 데이터 예시 (Mock Data)**:
   ```json
   {
-    "incident_id": "INC-20260903-001",
+    "incident_id": "INC-SIG-SSH-AUTH-001",
     "attack_type": "SSH Brute Force",
     "mitre_id": "T1110.001",
     "risk_level": "HIGH",
     "source_ip": "198.51.100.50",
-    "target_accounts": ["admin", "root", "guest"],
-    "summary_ko": "출발지 IP 198.51.100.50에서 5초 이내에 다수의 관리자 계정(admin, root)을 대상으로 무차별 대입 공격이 감지되었습니다.",
+    "target_identifier": "i-0abcd1234ef567890",
+    "target_accounts": ["admin"],
+    "summary_ko": "동일 IP(198.51.100.50) 및 계정(admin)에 대한 5분 내 5회 이상 무차별 대입 공격이 탐지되었습니다.",
     "action_required": "BLOCK_AND_QUARANTINE",
     "recommendations": [
-      "WAF IPSet에 198.51.100.50 등록 및 인바운드 차단",
-      "타깃 인스턴스에 Quarantine 보안 그룹 적용",
-      "비밀번호 기반 SSH 접속 비활성화"
+      "L4 보안 그룹 전면 격리 상태 유지",
+      "WAF IPSet /32 단일 호스트 차단 등록 확인"
     ]
   }
   ```
 
-- **독립 개발 활용법**:
-  - **보안 담당**: LLM API 호출 후 리턴값이 위 JSON과 완벽히 일치하는지 로컬에서 검증.
-  - **클라우드 A**: 이 mock JSON을 받아 `action_required == "BLOCK_AND_QUARANTINE"`일 때 WAF API와 EC2 SG 변경 API가 잘 도는지 로컬/테스트 환경에서 검증.
-  - **클라우드 B**: 이 mock JSON을 받아 Slack Incoming Webhook으로 카드가 예쁘게 나가는지 슬랙 테스트 채널에서 단독 검증.
+---
+
+### [규격 4] 클라우드 A 분산 상태 관리: DynamoDB 5분 슬라이딩 윈도우 스키마
+
+CloudWatch Logs의 분할 배치 인입 시에도 5분 내 공격 횟수를 안전하게 보존하기 위한 원자적 카운터 테이블 명세.
+
+- **테이블명**: `CloudShield-AuthFailure-Window`
+- **파티션 키 (Hash Key)**: `target_key` (String, 형식: `ip:<source_ip>#user:<username>`)
+- **속성 명세**:
+  - `failure_count` (Number): 5분 슬라이딩 윈도우 내 누적 실패 횟수 (`ADD failure_count :inc`)
+  - `usernames` (StringSet): 공격자가 시도한 고유 계정 집합 (스프레잉 판별용)
+  - `expire_at` (Number): 윈도우 만료 Epoch Unix Timestamp (TTL 기준 초 단위)
+  - `quarantined` (Boolean): 차단 조치 집행 완료 여부 (중복 차단 억제 멱등 플래그)
 
 ---
 
-## 4. 직무별 Mocking 개발 가이드 요약
+### [규격 5] 클라우드 A $\rightarrow$ 클라우드 B: 다중 계층 차단 결과 모델 (`RemediationResult`)
 
-| 직무 | 로컬에서 독립적으로 개발할 때 사용하는 Mocking 대상 |
+차단 엔진(`remediation.py`)이 L4 격리 및 L7 차단을 실행한 후, Slack 알림 모듈(`slack_notifier.py`)에 전달하는 TypedDict 규격.
+
+```python
+from typing import TypedDict
+
+
+class RemediationResult(TypedDict):
+    waf_blocked: bool  # L7 AWS WAF IPSet 등록 성공 여부
+    quarantine_applied: bool  # L4 EC2 Quarantine SG 교체 성공 여부
+    iam_revoked: bool  # Identity IAM 세션 무효화 성공 여부 (현재 False 기본값)
+```
+
+---
+
+## 3. 직무별 Mocking 개발 및 결합 가이드
+
+| 직무 | 로컬 개발 및 단위 검증 시 사용하는 도구 및 Mock 객체 |
 | :--- | :--- |
-| **네트워크** | 로컬 가상머신(Ubuntu) 2대 띄워놓고 Hydra로 공격 쏘며 `tcpdump`/Wireshark 분석 완료 |
-| **클라우드 A** | `IncidentReport` Mock JSON을 인풋으로 받아 WAF 차단 / SG 교체 로직 완성 |
-| **클라우드 B** | `IncidentReport` Mock JSON을 인풋으로 받아 Slack 카드 포맷팅 및 발송 로직 완성 |
-| **보안** | `mock_auth.log` 텍스트 파일을 읽어서 `IncidentReport` JSON을 뱉는 분석기 완성 |
+| **네트워크** | Docker 격리 sshd 컨테이너 및 Hydra 모의 공격 스크립트(`hydra_ssh_lab.sh`), `tcpdump` 캡처 분석 |
+| **클라우드 B** | `mock_cw_event.json` 디코딩 단위 검증, `IncidentReport` Mock JSON을 통한 Slack Block Kit 전송 검증 |
+| **보안** | `mock_auth.log`를 파싱하여 순수 룰 엔진(`rules.py`) 및 결정론적 `IncidentReport` 매퍼(`incident_mapper.py`) 검증 |
+| **클라우드 A** | `moto` 기반 가상 AWS(EC2, WAF, DynamoDB) 환경에서 윈도우 누적(`auth_window.py`) 및 복합 차단(`remediation.py`) 검증 |
 
-이 3가지 규격만 고정해 두면, 팀원들이 각자의 방에서 작업을 끝내고 Git에 올렸을 때 충돌 없이 바로 결합됩니다.
+인터페이스 규격이 명문화되어 있으므로, 4개 도메인이 로컬에서 독립적으로 단위 테스트를 통과한 후 통합 시 충돌 없이 결합됩니다.

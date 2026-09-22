@@ -21,11 +21,11 @@
 [직무별 고유 도메인 영역 - 면접 핵심 무기: 상호 침범 절대 금지]
 1. 네트워크: 모의 공격 스크립트, 패킷 분석 보고서, 네트워크 단위 테스트 (network/, tests/unit/test_network.py, docs/roles/network/)
 2. 클라우드 B: CW Agent 설정, Slack 카드 알림 모듈, 수집/리포터 단위 테스트 (src/collector/, src/reporter/, tests/unit/test_collector.py, tests/unit/test_reporter.py, docs/roles/cloud-b/)
-3. 보안: 정규식 시그니처 룰, LLM 분석기, 탐지 단위 테스트 (src/detection/, tests/unit/test_rules.py, tests/unit/test_llm_analyzer.py, tests/unit/test_incident_mapper.py, docs/roles/security/)
+3. 보안: 정규식 시그니처 룰, 침해사고 매퍼(incident_mapper), 탐지 단위 테스트 (src/detection/, tests/unit/test_rules.py, tests/unit/test_incident_mapper.py, docs/roles/security/)
 
 [클라우드 A 전담 플랫폼 영역 - 엔지니어링 깊이 확보]
 - 공통 데이터 인터페이스 계약 (src/contracts/)
-- Lambda 런타임 오케스트레이터 및 Boto3 원자적 복합 차단 엔진 (src/remediation/, tests/unit/test_remediation.py)
+- Lambda 런타임 오케스트레이터, DynamoDB 윈도우 및 Boto3 원자적 차단 엔진 (src/remediation/, tests/unit/test_remediation.py, tests/unit/test_auth_window.py)
 - Terraform IaC 모듈화 및 Trivy 검증 (infra/)
 - GitHub Actions OIDC 무인증 CI/CD 파이프라인 (.github/)
 - moto 기반 가상 AWS 테스트베드 및 개발 하네스 (tests/conftest.py, tests/test_contracts.py, tests/mock_data/)
@@ -87,7 +87,7 @@
    - **PR 본문 작성 표준 파이프라인 (템플릿 준수 필수)**:
      - 에이전트는 PR을 발행하기 전 반드시 `.github/pull_request_template.md` 파일을 먼저 확인한다.
      - 템플릿의 정규 5단계 섹션(`## 1` ~ `## 5`) 구조를 100% 유지하며 내용을 채워 넣는다.
-     - 에이전트 임의의 이모지 헤딩(📌, 💡, 🔍 등) 생성을 엄격히 금지한다.
+     - 에이전트 임의의 이모지 헤딩 생성을 엄격히 금지한다.
      - 특히 `## 3. 기술적 원리 요약 (1. 2. 3. 필수)`과 `## 5. 보안 및 계약 영향도` 체크리스트 누락을 엄격히 금지한다.
    - `gh pr create --title "<타입>(<직무>): <제목>" --body "<템플릿_채운_내용>" --reviewer "<짝꿍ID>"` 실행하여 상호 리뷰 요청.
 
