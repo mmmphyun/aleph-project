@@ -203,9 +203,36 @@ def build_slack_payload(
         waf_blocked = bool(remediation_result.get("waf_blocked", False))
         iam_revoked = bool(remediation_result.get("iam_revoked", False))
 
-        l4_status = "✅ 격리 성공 (SG 전면 차단)" if quarantine_applied else "❌ 격리 미적용 / 실패"
-        l7_status = "✅ IPSet 차단 완료 (/32)" if waf_blocked else "ℹ️ 차단 미적용 (WAF 정상)"
-        iam_status = "✅ 세션 만료 완료" if iam_revoked else "ℹ️ 미적용 (SSH 시나리오 제외)"
+        # 1. L4 EC2 격리: BLOCK_AND_QUARANTINE 또는 QUARANTINE_EC2 시 필수 조치
+        req_l4 = report.action_required in ("BLOCK_AND_QUARANTINE", "QUARANTINE_EC2")
+        if quarantine_applied:
+            l4_status = "✅ 격리 성공 (SG 전면 차단)"
+        elif req_l4:
+            l4_status = "❌ 격리 실패 / 미완료"
+        else:
+            l4_status = "ℹ️ 격리 미대상"
+
+        # 2. L7 WAF IP 차단: BLOCK_AND_QUARANTINE, BLOCK_WAF, BLOCK_IP_ONLY 시 필수 조치
+        req_l7 = report.action_required in (
+            "BLOCK_AND_QUARANTINE",
+            "BLOCK_WAF",
+            "BLOCK_IP_ONLY",
+        )
+        if waf_blocked:
+            l7_status = "✅ IPSet 차단 완료 (/32)"
+        elif req_l7:
+            l7_status = "❌ 차단 실패 / 미완료"
+        else:
+            l7_status = "ℹ️ 차단 미대상"
+
+        # 3. Identity IAM 세션 무효화: REVOKE_IAM_SESSION 시 필수 조치
+        req_iam = report.action_required == "REVOKE_IAM_SESSION"
+        if iam_revoked:
+            iam_status = "✅ 세션 만료 완료"
+        elif req_iam:
+            iam_status = "❌ 세션 무효화 실패 / 미완료"
+        else:
+            iam_status = "ℹ️ 미대상 (SSH 시나리오 제외)"
 
         remediation_status_text = truncate_text(
             f"*인프라 원자적 차단 집행 현황:*\n"
@@ -321,7 +348,22 @@ def send_slack_alert(
         logger.error("Slack Block Kit 페이로드 직렬화 실패: %s", exc)
         return False
 
+    start_time = time.monotonic()
+
     for attempt in range(max_retries + 1):
+        elapsed = time.monotonic() - start_time
+        remaining_budget = timeout - elapsed
+        if remaining_budget <= 0:
+            logger.error(
+                "Slack Webhook 전체 시간 예산(%.2f초) 소진으로 전송 중단 (시도: %d)",
+                timeout,
+                attempt + 1,
+            )
+            return False
+
+        # 첫 시도 시 오버헤드에 의한 미세 오차 방지 (3.0초 정확도 호환)
+        req_timeout = timeout if (attempt == 0 and elapsed < 0.05) else remaining_budget
+
         try:
             req = urllib.request.Request(
                 url=webhook_url,
@@ -330,7 +372,7 @@ def send_slack_alert(
                 method="POST",
             )
 
-            with urllib.request.urlopen(req, timeout=timeout) as response:
+            with urllib.request.urlopen(req, timeout=req_timeout) as response:
                 status_code = getattr(response, "status", None) or response.getcode()
                 if status_code == 200:
                     logger.info(
@@ -350,22 +392,42 @@ def send_slack_alert(
             # 4xx 오류(클라이언트 잘못)는 재시도해도 실패하므로 즉시 종료
             if exc.code < 500:
                 return False
-        except urllib.error.URLError as exc:
-            logger.error("Slack Webhook 네트워크 연결 실패: %s (시도: %d)", exc.reason, attempt + 1)
         except TimeoutError:
             logger.error(
-                "Slack Webhook 요청 시간 초과 (timeout=%s초, 시도: %d)", timeout, attempt + 1
+                "Slack Webhook 요청 시간 초과 (timeout=%.2f초, 시도: %d)",
+                req_timeout,
+                attempt + 1,
             )
+            # 타임아웃 발생 시 재시도하지 않고 즉시 종료하여 3초 SLA 예산 준수
+            return False
+        except urllib.error.URLError as exc:
+            # URLError 내부 원인이 타임아웃(TimeoutError 또는 문자열)인지 판별
+            is_timeout_reason = isinstance(exc.reason, TimeoutError) or (
+                isinstance(exc.reason, str) and "timed out" in exc.reason.lower()
+            )
+            if is_timeout_reason:
+                logger.error(
+                    "Slack Webhook 연결 시간 초과: %s (시도: %d)",
+                    exc.reason,
+                    attempt + 1,
+                )
+                return False
+            logger.error("Slack Webhook 네트워크 연결 실패: %s (시도: %d)", exc.reason, attempt + 1)
         except Exception as exc:
             logger.error(
                 "Slack Webhook 전송 중 예기치 않은 오류 발생: %s (시도: %d)", exc, attempt + 1
             )
             return False
 
-        # 남은 재시도 횟수가 있으면 대기 후 재시도
+        # 남은 재시도 횟수가 있으면 시간 예산 내에서 대기 후 재시도
         if attempt < max_retries:
-            logger.info("Slack Webhook 일시 오류로 재시도 대기 (delay=%.1f초)...", retry_delay)
-            time.sleep(retry_delay)
+            remaining_before_sleep = timeout - (time.monotonic() - start_time)
+            if remaining_before_sleep <= 0:
+                logger.warning("Slack Webhook 시간 예산 소진으로 재시도 대기 생략 및 중단")
+                return False
+            sleep_duration = min(retry_delay, remaining_before_sleep)
+            logger.info("Slack Webhook 일시 오류로 재시도 대기 (delay=%.2f초)...", sleep_duration)
+            time.sleep(sleep_duration)
 
     logger.error("Slack Webhook 최대 재시도 횟수(%d회) 초과로 최종 전송 실패 격리", max_retries + 1)
     return False

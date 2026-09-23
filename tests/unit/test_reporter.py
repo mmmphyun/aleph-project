@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import urllib.error
 from typing import Any
 from unittest.mock import MagicMock
@@ -355,6 +356,180 @@ def test_send_slack_alert_url_error_and_timeout(
     assert send_slack_alert(sample_incident_report, dummy_webhook) is False
 
 
+def test_send_slack_alert_direct_timeout_immediate_exit(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """직접적인 TimeoutError 발생 시 재시도 없이 1회 호출만에 즉시 False 반환 검증.
+
+    Why:
+        3초 타임아웃 발생 후 재시도(3초 + 0.5초 + 3초 = 6.5초)를 진행하면
+        E2E 파이프라인 10초 관통 SLA를 위협하므로 1회 타임아웃 시 즉시 종료해야 함.
+    """
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/DIRECT_TIMEOUT"
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    result = send_slack_alert(
+        sample_incident_report,
+        dummy_webhook,
+        timeout=3.0,
+        max_retries=1,
+        retry_delay=0.5,
+    )
+    assert result is False
+    assert call_count == 1, "타임아웃 발생 시 재시도 없이 1회만에 즉시 종료되어야 함"
+
+
+def test_send_slack_alert_url_error_wrapped_timeout_immediate_exit(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """URLError로 래핑된 TimeoutError 발생 시 1회 호출만에 즉시 False 반환 검증.
+
+    Why:
+        urllib.request는 네트워크 타임아웃 시 URLError(reason=TimeoutError) 형태로
+        예외를 감싸서 발생시킬 수 있으므로 동일하게 재시도 없이 즉시 종료되어야 함.
+    """
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/WRAPPED_TIMEOUT"
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    result = send_slack_alert(
+        sample_incident_report,
+        dummy_webhook,
+        timeout=3.0,
+        max_retries=1,
+        retry_delay=0.5,
+    )
+    assert result is False
+    assert call_count == 1, "URLError(TimeoutError) 발생 시 즉시 종료되어야 함"
+
+
+def test_send_slack_alert_delayed_5xx_cumulative_time_budget(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """지연된 5xx 응답 시 전체 시간 예산(3초)을 공유하여 남은 예산에 맞춰 호출/중단 검증.
+
+    Why:
+        1차 시도가 2.8초 지연된 후 503 에러가 발생한 경우, 0.5초 대기와 3초 재시도를
+        그대로 수행하면 6.3초가 소요되므로 남은 예산(0.2초) 내에서 처리되거나 차단되어야 함.
+    """
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/DELAYED_5XX"
+    call_count = 0
+    simulated_current_time = 100.0
+
+    def mock_monotonic() -> float:
+        return simulated_current_time
+
+    def mock_sleep(seconds: float) -> None:
+        nonlocal simulated_current_time
+        simulated_current_time += seconds
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> MagicMock:
+        nonlocal call_count, simulated_current_time
+        call_count += 1
+        # 1차 시도에서 2.8초가 소요된 후 503 반환
+        simulated_current_time += 2.8
+        raise urllib.error.HTTPError(
+            url=dummy_webhook,
+            code=503,
+            msg="Service Unavailable",
+            hdrs=MagicMock(),  # type: ignore[arg-type]
+            fp=io.BytesIO(b"transient_delay"),
+        )
+
+    monkeypatch.setattr(time, "monotonic", mock_monotonic)
+    monkeypatch.setattr(time, "sleep", mock_sleep)
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    result = send_slack_alert(
+        sample_incident_report,
+        dummy_webhook,
+        timeout=3.0,
+        max_retries=1,
+        retry_delay=0.5,
+    )
+
+    assert result is False
+    # 2.8초 소요 후 남은 대기 시간은 min(0.5, 0.2) = 0.2초로 제한되고,
+    # 그 후 시간 예산(3.0초) 소진으로 2차 시도 없이 안전하게 격리됨
+    assert call_count == 1
+    assert simulated_current_time <= 103.001, "총 실행 시간은 3.0초 예산을 초과하지 않아야 함"
+
+
+def test_send_slack_alert_time_budget_shared_across_retries(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1차 시도에서 1.0초 지연 후 503 발생 시 잔여 예산 전달 검증.
+
+    Why:
+        2차 시도에 잔여 예산(1.5초)이 timeout 인자로 정확히 계산되어 전달되는지 확인함.
+    """
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/SHARED_BUDGET"
+    captured_timeouts: list[float] = []
+    simulated_current_time = 100.0
+
+    def mock_monotonic() -> float:
+        return simulated_current_time
+
+    def mock_sleep(seconds: float) -> None:
+        nonlocal simulated_current_time
+        simulated_current_time += seconds
+
+    mock_success_response = MagicMock()
+    mock_success_response.getcode.return_value = 200
+    mock_success_response.status = 200
+    mock_success_response.__enter__.return_value = mock_success_response
+    mock_success_response.__exit__.return_value = None
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> MagicMock:
+        nonlocal simulated_current_time
+        captured_timeouts.append(timeout)
+        if len(captured_timeouts) == 1:
+            simulated_current_time += 1.0  # 1차 시도 1.0초 소요
+            raise urllib.error.HTTPError(
+                url=dummy_webhook,
+                code=503,
+                msg="Service Unavailable",
+                hdrs=MagicMock(),  # type: ignore[arg-type]
+                fp=io.BytesIO(b"transient_error"),
+            )
+        return mock_success_response
+
+    monkeypatch.setattr(time, "monotonic", mock_monotonic)
+    monkeypatch.setattr(time, "sleep", mock_sleep)
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    result = send_slack_alert(
+        sample_incident_report,
+        dummy_webhook,
+        timeout=3.0,
+        max_retries=1,
+        retry_delay=0.5,
+    )
+
+    assert result is True
+    assert len(captured_timeouts) == 2
+    assert captured_timeouts[0] == 3.0
+    # 3.0초 예산에서 1.0초(요청) + 0.5초(대기) = 1.5초 경과 후 잔여 1.5초 전달 확인
+    assert abs(captured_timeouts[1] - 1.5) < 0.01
+
+
 def test_send_slack_alert_invalid_ipv6_url_regression(
     sample_incident_report: IncidentReport,
     monkeypatch: pytest.MonkeyPatch,
@@ -416,13 +591,18 @@ def test_build_slack_payload_with_remediation_result_success(
     block_text = remediation_block["text"]["text"]
     assert "• L4 EC2 네트워크 격리: ✅ 격리 성공 (SG 전면 차단)" in block_text
     assert "• L7 WAFv2 IP 차단: ✅ IPSet 차단 완료 (/32)" in block_text
-    assert "• Identity IAM 세션 무효화: ℹ️ 미적용 (SSH 시나리오 제외)" in block_text
+    assert "• Identity IAM 세션 무효화: ℹ️ 미대상 (SSH 시나리오 제외)" in block_text
 
 
 def test_build_slack_payload_with_partial_remediation_failure(
     sample_incident_report: IncidentReport,
 ) -> None:
-    """차단 조치 중 일부가 미적용 또는 실패한 경우의 UI 렌더링 검증."""
+    """차단 조치 중 요청된 조치(BLOCK_AND_QUARANTINE)가 실패한 경우의 UI 렌더링 검증.
+
+    Why:
+        요청된 액션(L4 격리, L7 차단)의 실패는 '실패/미완료'로 표시되어야 하며,
+        정상/미적용으로 잘못 표시되어 관제 판단을 흐리지 않도록 보장함.
+    """
     remediation_res = {
         "waf_blocked": False,
         "quarantine_applied": False,
@@ -436,8 +616,67 @@ def test_build_slack_payload_with_partial_remediation_failure(
         if "*인프라 원자적 차단 집행 현황:*" in b.get("text", {}).get("text", "")
     )
     block_text = remediation_block["text"]["text"]
-    assert "• L4 EC2 네트워크 격리: ❌ 격리 미적용 / 실패" in block_text
-    assert "• L7 WAFv2 IP 차단: ℹ️ 차단 미적용 (WAF 정상)" in block_text
+    assert "• L4 EC2 네트워크 격리: ❌ 격리 실패 / 미완료" in block_text
+    assert "• L7 WAFv2 IP 차단: ❌ 차단 실패 / 미완료" in block_text
+    assert "• Identity IAM 세션 무효화: ℹ️ 미대상 (SSH 시나리오 제외)" in block_text
+
+
+def test_build_slack_payload_with_iam_requested_failure(
+    sample_incident_data: dict[str, Any],
+) -> None:
+    """REVOKE_IAM_SESSION 액션 요청 시 IAM 세션 무효화 실패 및 L4/L7 미대상 표시 검증.
+
+    Why:
+        IAM 세션 취소가 지시된 경우 미완료는 실패로 표시되고,
+        네트워크 격리나 WAF 차단은 미대상으로 명확히 구분되어야 함.
+    """
+    data = dict(sample_incident_data)
+    data["action_required"] = "REVOKE_IAM_SESSION"
+    data["attack_type"] = "IAM Credential Abuse"
+    report = IncidentReport.model_validate(data)
+
+    remediation_res = {
+        "waf_blocked": False,
+        "quarantine_applied": False,
+        "iam_revoked": False,
+    }
+    payload = build_slack_payload(report, remediation_result=remediation_res)
+
+    remediation_block = next(
+        b
+        for b in payload["blocks"]
+        if "*인프라 원자적 차단 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    block_text = remediation_block["text"]["text"]
+    assert "• L4 EC2 네트워크 격리: ℹ️ 격리 미대상" in block_text
+    assert "• L7 WAFv2 IP 차단: ℹ️ 차단 미대상" in block_text
+    assert "• Identity IAM 세션 무효화: ❌ 세션 무효화 실패 / 미완료" in block_text
+
+
+def test_build_slack_payload_with_non_target_and_waf_only(
+    sample_incident_data: dict[str, Any],
+) -> None:
+    """BLOCK_WAF 요청 시 WAF 성공 및 L4/IAM 미대상 표시 검증."""
+    data = dict(sample_incident_data)
+    data["action_required"] = "BLOCK_WAF"
+    report = IncidentReport.model_validate(data)
+
+    remediation_res = {
+        "waf_blocked": True,
+        "quarantine_applied": False,
+        "iam_revoked": False,
+    }
+    payload = build_slack_payload(report, remediation_result=remediation_res)
+
+    remediation_block = next(
+        b
+        for b in payload["blocks"]
+        if "*인프라 원자적 차단 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    block_text = remediation_block["text"]["text"]
+    assert "• L4 EC2 네트워크 격리: ℹ️ 격리 미대상" in block_text
+    assert "• L7 WAFv2 IP 차단: ✅ IPSet 차단 완료 (/32)" in block_text
+    assert "• Identity IAM 세션 무효화: ℹ️ 미대상 (SSH 시나리오 제외)" in block_text
 
 
 def test_send_slack_alert_default_timeout_is_three_seconds(

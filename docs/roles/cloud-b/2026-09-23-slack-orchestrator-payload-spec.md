@@ -32,17 +32,22 @@ class RemediationResult(TypedDict):
 
 ### 2.2 `build_slack_payload` 확장 레이아웃
 `remediation_result`가 전달될 경우, 기존 4대 필수 식별자 섹션에 더해 **"인프라 원자적 차단 집행 현황"** 섹션 블록이 동적으로 생성됩니다.
+`report.action_required` 계약 지시 사항과 집행 결과를 상호 교차 검증하여 **성공(✅) / 실패·미완료(❌) / 미대상(ℹ️)**을 엄격히 구분합니다.
 
 ```json
 {
   "type": "section",
   "text": {
     "type": "mrkdwn",
-    "text": "*인프라 원자적 차단 집행 현황:*\n• L4 EC2 네트워크 격리: ✅ 격리 성공 (SG 전면 차단)\n• L7 WAFv2 IP 차단: ✅ IPSet 차단 완료 (/32)\n• Identity IAM 세션 무효화: ℹ️ 미적용 (SSH 시나리오 제외)"
+    "text": "*인프라 원자적 차단 집행 현황:*\n• L4 EC2 네트워크 격리: ✅ 격리 성공 (SG 전면 차단)\n• L7 WAFv2 IP 차단: ✅ IPSet 차단 완료 (/32)\n• Identity IAM 세션 무효화: ℹ️ 미대상 (SSH 시나리오 제외)"
   }
 }
 ```
 
+- **표시 상태 매핑 규칙**:
+  - **L4 EC2 격리**: `action_required in ("BLOCK_AND_QUARANTINE", "QUARANTINE_EC2")`인 경우 실패 시 `❌ 격리 실패 / 미완료`, 미지시 시 `ℹ️ 격리 미대상`.
+  - **L7 WAF 차단**: `action_required in ("BLOCK_AND_QUARANTINE", "BLOCK_WAF", "BLOCK_IP_ONLY")`인 경우 실패 시 `❌ 차단 실패 / 미완료`, 미지시 시 `ℹ️ 차단 미대상`.
+  - **Identity IAM 세션**: `action_required == "REVOKE_IAM_SESSION"`인 경우 실패 시 `❌ 세션 무효화 실패 / 미완료`, 미지시 시 `ℹ️ 미대상 (SSH 시나리오 제외)`.
 - 모든 텍스트 블록은 Slack Block Kit API 제약조건(섹션 필드 2,000자, 일반 텍스트 3,000자) 및 프로젝트 헌법 5.1-3(표시 문자열 500자 상한)에 따라 `truncate_text(..., 500)`를 통과합니다.
 - 반환 딕셔너리에 4대 필수 키(`incident_id`, `rule_name`, `source_ip`, `remediation_action`) 및 `remediation_result` 구조화 데이터가 안전하게 포함됩니다.
 
@@ -50,18 +55,19 @@ class RemediationResult(TypedDict):
 
 ## 3. 네트워크 타임아웃 및 결함 격리(Fault Isolation) 설계
 
-### 3.1 3초 타임아웃 강제 (SLA Protection)
+### 3.1 3초 타임아웃 강제 (SLA Protection) 및 누적 시간 예산(Time Budget)
 - 기존 기본 타임아웃 `5.0초` $\rightarrow$ **`3.0초` 단축**
 - **근거**: 전체 E2E 파이프라인의 허용 시간은 10초입니다. 로그 수집(2~3초) + Lambda 구동 및 L4/L7 차단(2~3초)을 감안할 때, 알림 전파 단계에 허용 가능한 최대 지연 시간은 3초입니다.
+- **시간 예산 관리 기법**: 단순 개별 HTTP 타임아웃에 의존하지 않고, 전체 루프 시작 시점 기준 마감 시한(`deadline = start + timeout`)을 설정하여 5xx 재시도 및 대기(`time.sleep`) 시간 누적이 3초 예산을 절대 초과하지 않도록 제한합니다.
 
 ### 3.2 일시 장애 재시도 및 예외 전파 차단 매트릭스
 
 | 장애 유형 | HTTP 코드 / 예외 | 처리 전략 | 비고 |
 | :--- | :--- | :--- | :--- |
 | **클라이언트 오류** | HTTP 400, 403, 404, 429 | 재시도 없이 즉시 `False` 반환 | 페이로드/URL 오류로 재시도 무의미 |
-| **서버 일시 장애** | HTTP 500, 502, 503, 504 | 1회 안전 재시도(`retry_delay=0.5s`) 후 소진 시 `False` | Slack 서버 일시적 순단 대응 |
-| **요청 시간 초과** | `TimeoutError`, `socket.timeout` | 에러 로깅 후 즉시 `False` 반환 | 3초 이상 블로킹 방지 |
-| **네트워크 단절** | `urllib.error.URLError` | 에러 로깅 후 1회 재시도, 최종 `False` | DNS 일시 오류 등 방어 |
+| **서버 일시 장애** | HTTP 500, 502, 503, 504 | 잔여 시간 예산 내 1회 재시도 후 소진 시 `False` | Slack 서버 일시적 순단 대응 및 시간 예산 준수 |
+| **요청 시간 초과** | `TimeoutError`, `URLError(reason=TimeoutError)` | 에러 로깅 후 재시도 없이 즉시 `False` 반환 | 3초 이상 블로킹 방지 (호출 1회로 제한) |
+| **네트워크 단절** | `urllib.error.URLError` | 잔여 시간 예산 내 1회 재시도, 최종 `False` | DNS 일시 오류 등 방어 |
 | **기타 미처리 예외** | `Exception` | 에러 로깅 후 안전하게 `False` 반환 | 람다 런타임 비정상 종료 원천 차단 |
 
 ---
@@ -69,8 +75,14 @@ class RemediationResult(TypedDict):
 ## 4. 검증 결과 요약
 
 - `test_build_slack_payload_with_remediation_result_success`: L4/L7 차단 성공 마크다운 렌더링 검증 통과
-- `test_build_slack_payload_with_partial_remediation_failure`: 미적용/실패 상태 렌더링 검증 통과
+- `test_build_slack_payload_with_partial_remediation_failure`: 요청 조치 실패 시 '실패/미완료(❌)' 상태 렌더링 검증 통과
+- `test_build_slack_payload_with_iam_requested_failure`: IAM 세션 취소 요청 시 실패 표시 및 타 조치 미대상 검증 통과
+- `test_build_slack_payload_with_non_target_and_waf_only`: WAF 단독 차단 요청 시 정상 및 타 조치 미대상 검증 통과
 - `test_send_slack_alert_default_timeout_is_three_seconds`: 3.0초 타임아웃 인자 전달 검증 통과
+- `test_send_slack_alert_direct_timeout_immediate_exit`: 직접 TimeoutError 발생 시 재시도 없이 1회 호출 즉시 종료 검증 통과
+- `test_send_slack_alert_url_error_wrapped_timeout_immediate_exit`: URLError(TimeoutError) 발생 시 1회 호출 즉시 종료 검증 통과
+- `test_send_slack_alert_delayed_5xx_cumulative_time_budget`: 지연된 5xx 시 누적 시간 예산(3초) 초과 차단 검증 통과
+- `test_send_slack_alert_time_budget_shared_across_retries`: 재시도 간 잔여 예산 동적 전달 검증 통과
 - `test_send_slack_alert_transient_5xx_retry_and_recovery`: 503 오류 시 1회 재시도 후 200 성공 검증 통과
 - `test_send_slack_alert_5xx_retry_exhausted_isolation`: 500 오류 시 재시도 소진 후 예외 없이 `False` 반환 검증 통과
 - `test_send_slack_alert_client_4xx_no_retry`: 400 Bad Request 시 재시도 없이 1회 만에 즉시 `False` 반환 검증 통과
