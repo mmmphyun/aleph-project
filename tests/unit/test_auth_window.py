@@ -445,13 +445,13 @@ def test_boundary_split_detection_accuracy(
     mocked_dynamodb_table: Any,
 ) -> None:
     """300초 윈도우 경계면(298초 2건, 302초 3건) 분할 인입 시
-    가중치에 의해 SSH_BRUTE_FORCE 탐지 성공 검증.
+    타임스탬프 슬라이딩 윈도우에 의해 SSH_BRUTE_FORCE 탐지 성공 검증.
 
     Why:
         고정 텀블링 윈도우(대안 B)는 300초 경계면에서 2건과 3건으로 분할될 때
         각 버킷이 임계치(5회)에 미달하여 탐지에 100% 실패하는 Split-Brain 문제가 발생함.
-        가중 2-버킷 모델은 직전 버킷 시간 감쇠 가중치(3 + 2 * 0.993 = 4.986 -> 5)를 통해
-        경계면 분할 시에도 10초 관통 위협을 100% 탐지함을 수학적으로 검증함.
+        2-버킷 타임스탬프 슬라이딩 윈도우는 개별 이벤트 발생 시각을 보존하여
+        경계면 분할 시에도 최근 300초 유효 구간 내 5회를 누락 없이 정확하게 탐지함을 검증함.
     """
     auth_window = AuthFailureWindow(
         table_name="CloudShield-AuthFailure-Window",
@@ -469,7 +469,7 @@ def test_boundary_split_detection_accuracy(
         source_ip=source_ip, username=username, timestamp_epoch=302.0, count=3
     )
 
-    # 302초 시점 위협 판정 -> 가중치에 의해 SSH_BRUTE_FORCE 정상 탐지 확인
+    # 302초 시점 위협 판정 -> 유효 구간(t >= 2) 내 총 5건으로 SSH_BRUTE_FORCE 정상 탐지 확인
     is_threat, rule_name, target_key = auth_window.check_threat(
         source_ip=source_ip, username=username, timestamp_epoch=302.0
     )
@@ -485,8 +485,8 @@ def test_boundary_split_password_spraying_accuracy(
     SSH_PASSWORD_SPRAYING 탐지 성공 검증.
 
     Why:
-        경계면 전후로 서로 다른 고유 계정이 인입되더라도 차집합 가중치를 통해
-        총 2개 고유 계정 임계치를 정확히 충족하여 패스워드 스프레잉을 탐지함을 검증함.
+        경계면 전후로 서로 다른 고유 계정이 인입되더라도 타임스탬프 필터링을 통해
+        300초 구간 내 고유 계정 임계치(2개)를 충족하여 스프레잉을 탐지함을 검증함.
     """
     auth_window = AuthFailureWindow(
         table_name="CloudShield-AuthFailure-Window",
@@ -503,10 +503,67 @@ def test_boundary_split_password_spraying_accuracy(
         source_ip=source_ip, username="spray_user2", timestamp_epoch=301.0, count=1
     )
 
-    # 301초 시점 위협 판정 -> 가중치(1 + 1 * 0.996 = 1.996 -> 2) 충족 탐지 확인
+    # 301초 시점 위협 판정 -> 유효 구간(t >= 1) 내 user1, user2 고유 계정 2개 충족 탐지 확인
     is_threat, rule_name, target_key = auth_window.check_threat(
         source_ip=source_ip, username="spray_user2", timestamp_epoch=301.0
     )
     assert is_threat is True
     assert rule_name == "SSH_PASSWORD_SPRAYING"
     assert target_key == auth_window._get_spray_key(source_ip, timestamp_epoch=301.0)
+
+
+def test_sliding_window_reviewer_edge_cases_fixed(
+    mocked_dynamodb_table: Any,
+) -> None:
+    """PR #78 코드 리뷰(RockCandy444) 지적 4대 엣지 케이스 회귀 검증.
+
+    Why:
+        단순 정수 카운터 기반 시간 감쇠 방식은 비균등 버스트 트래픽에서 탐지 누락 2건,
+        유효 시간 만료 트래픽에서 오탐 2건이 발생하는 중대한 결함이 존재했음.
+        타임스탬프 슬라이딩 윈도우 전환을 통해 해당 4가지 사례가 모두 결함 없이
+        정확하게 탐지(또는 차단 억제)됨을 검증함.
+    """
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    # Case 1: [누락 방지] t=299에 4회, t=450에 1회 (151초 내 5회 집중 공격) -> 탐지
+    ip_case1 = "198.51.100.1"
+    auth_window.record_failure(source_ip=ip_case1, username="user1", timestamp_epoch=299.0, count=4)
+    auth_window.record_failure(source_ip=ip_case1, username="user1", timestamp_epoch=450.0, count=1)
+    is_threat1, rule1, _ = auth_window.check_threat(
+        source_ip=ip_case1, username="user1", timestamp_epoch=450.0
+    )
+    assert is_threat1 is True
+    assert rule1 == "SSH_BRUTE_FORCE"
+
+    # Case 2: [누락 방지] t=299에 userA, t=451에 userB (152초 내 2계정 스프레잉) -> 탐지
+    ip_case2 = "198.51.100.2"
+    auth_window.record_failure(source_ip=ip_case2, username="userA", timestamp_epoch=299.0, count=1)
+    auth_window.record_failure(source_ip=ip_case2, username="userB", timestamp_epoch=451.0, count=1)
+    is_threat2, rule2, _ = auth_window.check_threat(
+        source_ip=ip_case2, username="userB", timestamp_epoch=451.0
+    )
+    assert is_threat2 is True
+    assert rule2 == "SSH_PASSWORD_SPRAYING"
+
+    # Case 3: [오탐 방지] t=1에 4회, t=302에 1회 (301초 간격, 최근 300초엔 1회뿐) -> 미탐지
+    ip_case3 = "198.51.100.3"
+    auth_window.record_failure(source_ip=ip_case3, username="user1", timestamp_epoch=1.0, count=4)
+    auth_window.record_failure(source_ip=ip_case3, username="user1", timestamp_epoch=302.0, count=1)
+    is_threat3, rule3, _ = auth_window.check_threat(
+        source_ip=ip_case3, username="user1", timestamp_epoch=302.0
+    )
+    assert is_threat3 is False
+    assert rule3 is None
+
+    # Case 4: [오탐 방지] t=1에 userA, t=302에 userB (301초 간격, 최근 300초엔 1개뿐) -> 미탐지
+    ip_case4 = "198.51.100.4"
+    auth_window.record_failure(source_ip=ip_case4, username="userA", timestamp_epoch=1.0, count=1)
+    auth_window.record_failure(source_ip=ip_case4, username="userB", timestamp_epoch=302.0, count=1)
+    is_threat4, rule4, _ = auth_window.check_threat(
+        source_ip=ip_case4, username="userB", timestamp_epoch=302.0
+    )
+    assert is_threat4 is False
+    assert rule4 is None

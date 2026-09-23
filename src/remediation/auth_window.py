@@ -1,20 +1,20 @@
 # CloudShield 상태 저장소: 배치 간 인증 실패 누적 윈도우
 # 소유자: 클라우드 A 담당
-"""DynamoDB 가중 2-버킷 슬라이딩 윈도우(Weighted Two-Bucket Sliding Window) 관리 모듈.
+"""DynamoDB 2-버킷 기반 타임스탬프 슬라이딩 윈도우(Sliding Log over Two-Buckets) 관리 모듈.
 
 Why:
     CloudWatch Logs Subscription Filter는 로그 볼륨 및 전송 버퍼 정책에 따라
     짧은 간격 내 발생한 인증 실패 이벤트를 여러 Lambda 호출 배치로 분할 전달함.
     무상태(Stateless)인 Lambda 메모리만으로는 분할 배치 간 인증 실패를 누적할 수 없으므로,
-    DynamoDB 원자적 카운터와 5분 TTL 윈도우를 활용해 분할 수신된 이벤트를 영속 집계함.
+    DynamoDB 원자적 저장소와 5분 TTL 윈도우를 활용해 분할 수신된 이벤트를 영속 집계함.
 
-    [가중 2-버킷 모델(Cloudflare Rate Limiter 모델) 채택 근거]:
-    단일 키 기반 조건부 갱신(OCC)은 다중 Lambda 동시 인입 시 Lost Update와 Livelock을 유발함.
-    고정 텀블링 윈도우(대안 B)는 300초 경계면에 걸친 공격에 대해
-    100% 탐지 누락(False Negative)을 유발함.
-    이에 따라 시간 버킷(epoch // 300) 파티셔닝을 도입하여 쓰기 조건식(ConditionExpression)을
-    완전 제거(쓰기 충돌률 0%, 항상 1 RTT 2~5ms)하고, 조회 시 현재 버킷과 직전 버킷의
-    시간 가중합을 계산하여 경계면 분할 오차를 1% 미만으로 억제함.
+    [2-버킷 슬라이딩 로그 하이브리드 모델 채택 근거]:
+    단일 키 기반 조건부 갱신(OCC)은 동시 인입 시 Lost Update와 재시도 지연을 유발하며,
+    단순 고정 텀블링 윈도우는 300초 경계면에 걸친 공격에 대해 분할 탐지 누락을 유발함.
+    또한 단순 정수 카운터 기반 시간 감쇠 모델은 비균등 버스트 트래픽에서 탐지 누락과 오탐이 발생함.
+    이에 따라 시간 버킷(epoch // 300) 파티셔닝으로 조건식 없는 원자적 쓰기를 보장하고,
+    버킷 내에 이벤트 발생 타임스탬프를 보존하여 조회 시 300초 유효 구간을 정확하게 필터링함으로써
+    동시성 충돌 0%와 탐지 정밀도를 동시에 달성함.
 
 Constraints:
     - DynamoDB 테이블은 파티션 키 target_key(문자열)를 필수로 보유해야 함.
@@ -47,12 +47,12 @@ DEFAULT_WINDOW_SECONDS = 300
 
 
 class AuthFailureWindow:
-    """DynamoDB 기반 가중 2-버킷 슬라이딩 윈도우 집계 엔진.
+    """DynamoDB 기반 2-버킷 타임스탬프 슬라이딩 윈도우 집계 엔진.
 
     Why:
-        복수의 Lambda 인스턴스가 병렬 실행되더라도 조건식 없는 원자적 연산(Atomic ADD)을 통해
-        동시성 경쟁(Race Condition)을 원천 차단(0%)하며,
-        10초 관통 SLA에 최적인 2~5ms 단일 RTT를 보장함.
+        복수의 Lambda 인스턴스가 병렬 실행되더라도 조건식 없는 원자적 연산
+        (Atomic ADD/list_append)을 통해 동시성 경쟁(Race Condition)을 차단하며,
+        개별 타임스탬프 보존을 통해 300초 윈도우 경계면 오탐 및 누락을 원천 배제함.
     """
 
     def __init__(
@@ -134,8 +134,9 @@ class AuthFailureWindow:
 
         Why:
             버킷화된 파티션 키를 사용하므로 이전 윈도우 만료 여부를 판별하는 조건부 갱신이 불필요함.
-            DynamoDB 네이티브 ADD는 키 부재 시 자동 생성(Upsert)하므로 조건식 없는 단 1회 호출로
-            충돌률 0%, 재시도 0회의 초고속 원자적 갱신을 달성함.
+            카운터/셋과 함께 발생 타임스탬프(Unix Epoch 초) 리스트를 원자적으로 append하여
+            후속 조회 시 300초 슬라이딩 유효 구간을 정확하게 필터링할 수 있도록 지원함.
+            조건식 없는 단 1회 호출로 충돌률 0%의 원자적 갱신을 달성함.
 
         Constraints:
             - source_ip: IPv4 주소 문자열.
@@ -159,13 +160,20 @@ class AuthFailureWindow:
             "spray_quarantined": False,
         }
 
-        # 1. 단일 계정 Brute Force 원자적 카운터 누적 (조건식 없는 1 RTT Upsert)
+        # 1. 단일 계정 Brute Force 원자적 카운터 및 타임스탬프 누적 (조건식 없는 1 RTT Upsert)
+        new_timestamps = [now] * count
         try:
             res_bf = self._table.update_item(
                 Key={"target_key": bf_key},
-                UpdateExpression="ADD failure_count :inc SET expire_at = :exp, last_seen = :now",
+                UpdateExpression=(
+                    "ADD failure_count :inc "
+                    "SET timestamps = list_append(if_not_exists(timestamps, :empty), :new_ts), "
+                    "expire_at = :exp, last_seen = :now"
+                ),
                 ExpressionAttributeValues={
                     ":inc": count,
+                    ":new_ts": new_timestamps,
+                    ":empty": [],
                     ":exp": expire_at,
                     ":now": now,
                 },
@@ -177,13 +185,20 @@ class AuthFailureWindow:
         except ClientError as e:
             logger.error("DynamoDB Brute Force 카운터 갱신 실패 (key=%s): %s", bf_key, e)
 
-        # 2. 다중 계정 Password Spraying 고유 계정 집합 누적 (조건식 없는 1 RTT Upsert)
+        # 2. 다중 계정 Password Spraying 고유 계정 집합 및 시도 기록 누적 (조건식 없는 1 RTT Upsert)
+        new_attempts = [{"user": username, "ts": now}] * count
         try:
             res_spray = self._table.update_item(
                 Key={"target_key": spray_key},
-                UpdateExpression="ADD usernames :user_set SET expire_at = :exp, last_seen = :now",
+                UpdateExpression=(
+                    "ADD usernames :user_set "
+                    "SET attempts = list_append(if_not_exists(attempts, :empty), :new_attempts), "
+                    "expire_at = :exp, last_seen = :now"
+                ),
                 ExpressionAttributeValues={
                     ":user_set": {username},
+                    ":new_attempts": new_attempts,
+                    ":empty": [],
                     ":exp": expire_at,
                     ":now": now,
                 },
@@ -207,12 +222,14 @@ class AuthFailureWindow:
         username: str,
         timestamp_epoch: float | None = None,
     ) -> tuple[bool, str | None, str]:
-        """현재 버킷과 직전 버킷의 시간 가중합을 기반으로 위협 임계치 도달 여부 판정.
+        """현재 버킷과 직전 버킷의 타임스탬프 슬라이딩 윈도우를 기반으로 위협 임계치 도달 여부 판정.
 
         Why:
-            고정 텀블링 윈도우의 경계면 분할(Boundary Split) 탐지 누락을 방지하기 위해,
-            현재 버킷($B_c$)과 직전 버킷($B_p$) 카운트에 시간 감쇠 가중치를 적용하여
-            슬라이딩 윈도우 카운트를 정밀 추정함 ($1 - t_{\text{elapsed}}/300$).
+            단순 정수 카운터 기반 시간 감쇠는 버스트 공격의 탐지 누락 및
+            만료 이벤트의 오탐을 유발함.
+            따라서 현재 버킷과 직전 버킷에 보존된 개별 이벤트 타임스탬프를 조회하여
+            실제 유효 윈도우(now - window_seconds <= t <= now) 내에 인입된 실패 횟수 및
+            고유 계정 수를 정밀 필터링하여 임계치 도달 여부를 정확하게 판정함.
             ConsistentRead=True를 통해 리더 노드로부터 최신 데이터를 강하게 일관되게 조회함.
 
         Returns:
@@ -226,9 +243,7 @@ class AuthFailureWindow:
             now = int(timestamp_epoch)
         curr_bucket = now // self.window_seconds
         prev_bucket = curr_bucket - 1
-
-        t_elapsed = now % self.window_seconds
-        time_weight = max(0.0, 1.0 - (t_elapsed / float(self.window_seconds)))
+        cutoff = now - self.window_seconds
 
         bf_curr_key = self._get_bf_key(source_ip, username, bucket_id=curr_bucket)
         bf_prev_key = self._get_bf_key(source_ip, username, bucket_id=prev_bucket)
@@ -250,11 +265,18 @@ class AuthFailureWindow:
             )
 
             if not is_quarantined:
-                curr_count = int(item_curr.get("failure_count", 0))
-                prev_count = int(item_prev.get("failure_count", 0))
-                estimated_count = curr_count + (prev_count * time_weight)
+                # 타임스탬프 리스트가 있으면 정밀 유효 구간(t >= cutoff) 필터링,
+                # 없으면 failure_count 폴백
+                ts_curr = item_curr.get("timestamps")
+                ts_prev = item_prev.get("timestamps")
 
-                if round(estimated_count) >= BRUTE_FORCE_THRESHOLD:
+                if ts_curr is not None or ts_prev is not None:
+                    all_ts = (ts_curr or []) + (ts_prev or [])
+                    valid_count = sum(1 for t in all_ts if int(t) >= cutoff)
+                else:
+                    valid_count = int(item_curr.get("failure_count", 0))
+
+                if valid_count >= BRUTE_FORCE_THRESHOLD:
                     return True, "SSH_BRUTE_FORCE", bf_curr_key
         except ClientError as e:
             logger.error("DynamoDB Brute Force 상태 조회 실패: %s", e)
@@ -276,14 +298,20 @@ class AuthFailureWindow:
             )
 
             if not is_quarantined_spray:
-                curr_users = set(item_s_curr.get("usernames", set()))
-                prev_users = set(item_s_prev.get("usernames", set()))
+                # attempts 리스트가 있으면 정밀 유효 구간 고유 계정 필터링, 없으면 usernames 폴백
+                attempts_curr = item_s_curr.get("attempts")
+                attempts_prev = item_s_prev.get("attempts")
 
-                # 현재 버킷에 없는 직전 버킷 고유 계정에만 시간 감쇠 가중치 적용
-                diff_users = prev_users - curr_users
-                estimated_users_count = len(curr_users) + (len(diff_users) * time_weight)
+                if attempts_curr is not None or attempts_prev is not None:
+                    all_attempts = (attempts_curr or []) + (attempts_prev or [])
+                    valid_users = {
+                        str(att["user"]) for att in all_attempts if int(att.get("ts", 0)) >= cutoff
+                    }
+                    users_count = len(valid_users)
+                else:
+                    users_count = len(set(item_s_curr.get("usernames", set())))
 
-                if round(estimated_users_count) >= PASSWORD_SPRAYING_THRESHOLD:
+                if users_count >= PASSWORD_SPRAYING_THRESHOLD:
                     return True, "SSH_PASSWORD_SPRAYING", spray_curr_key
         except ClientError as e:
             logger.error("DynamoDB Password Spraying 상태 조회 실패: %s", e)
