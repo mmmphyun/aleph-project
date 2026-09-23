@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import time
 from typing import Any
 
@@ -33,7 +34,7 @@ DEFAULT_AUTH_FAILURE_TABLE_NAME = "CloudShield-AuthFailure-Window"
 BRUTE_FORCE_THRESHOLD = 5
 PASSWORD_SPRAYING_THRESHOLD = 2
 DEFAULT_WINDOW_SECONDS = 300
-MAX_OCC_RETRIES = 3
+MAX_OCC_RETRIES = 8
 
 
 class AuthFailureWindow:
@@ -166,6 +167,7 @@ class AuthFailureWindow:
                 if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                     # 다른 동시 Lambda가 먼저 윈도우를 개설한 경우 다음 루프에서 ADD로 재시도
                     if attempt < MAX_OCC_RETRIES - 1:
+                        time.sleep(random.uniform(0.01, 0.05))
                         continue
                 logger.error("DynamoDB Brute Force 카운터 갱신 실패 (key=%s): %s", bf_key, e)
                 break
@@ -221,6 +223,7 @@ class AuthFailureWindow:
                 if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                     # 다른 동시 Lambda가 먼저 윈도우를 개설한 경우 다음 루프에서 ADD로 재시도
                     if attempt < MAX_OCC_RETRIES - 1:
+                        time.sleep(random.uniform(0.01, 0.05))
                         continue
                 logger.error(
                     "DynamoDB Password Spraying 계정 집합 갱신 실패 (key=%s): %s",
