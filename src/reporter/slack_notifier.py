@@ -16,12 +16,24 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
 
 from contracts.incident import IncidentReport
+
+try:
+    from remediation.remediation import RemediationResult
+except ImportError:
+    from typing import TypedDict
+
+    class RemediationResult(TypedDict, total=False):  # type: ignore[no-redef]
+        waf_blocked: bool
+        quarantine_applied: bool
+        iam_revoked: bool
+
 
 logger = logging.getLogger(__name__)
 
@@ -53,21 +65,28 @@ def truncate_text(text: str, max_length: int = MAX_FIELD_LENGTH) -> str:
     return f"{text[: max_length - 3]}..."
 
 
-def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
-    """IncidentReport 데이터를 기반으로 Slack Block Kit 카드 페이로드 딕셔너리 생성.
+def build_slack_payload(
+    report: IncidentReport,
+    remediation_result: RemediationResult | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """IncidentReport 및 RemediationResult 데이터를 기반으로 Slack Block Kit 카드 페이로드 생성.
 
     Why:
         보안 관제 센터(SecOps) 담당자가 사고 발생 즉시 핵심 4대 지표(사고 ID, 공격 유형,
-        출발지 IP, 차단 조치)를 시각적으로 직관 파악할 수 있도록 표준화된 레이아웃을 생성함.
+        출발지 IP, 차단 조치) 및 인프라 원자적 차단 집행 결과(L4 SG / L7 WAF / Identity IAM)를
+        시각적으로 직관 파악할 수 있도록 표준화된 레이아웃을 생성함.
 
     Constraints:
         - report: Pydantic으로 검증된 IncidentReport 인스턴스.
+        - remediation_result: 차단 엔진이 반환한 다중 계층 차단 결과 딕셔너리 (옵션).
         - 4대 필수 키 누락 방지: incident_id, rule_name, source_ip, remediation_action
         - 라벨/마크다운 포함 모든 최종 표시 문자열은 500자(헤더 150자) 안전 잘라내기 적용.
 
     Side-effects / Edge-cases:
         - target_accounts 또는 recommendations가 빈 튜플인 경우 대체 기본 안내 문구 렌더링.
         - risk_level(HIGH, MEDIUM, LOW)에 따른 시각적 경보 이모지 차등 매핑.
+        - remediation_result가 None인 경우 기존 4대 지표 기본 블록만 렌더링하여
+          하위 호환성 100% 보장.
     """
     risk_emojis = {
         "HIGH": "🚨",
@@ -176,31 +195,63 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
                 "text": accounts_block_text,
             },
         },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": recommendations_block_text,
-            },
-        },
-        {"type": "divider"},
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": context_text,
-                }
-            ],
-        },
     ]
+
+    # 다중 계층 원자적 차단 집행 결과(RemediationResult) 연계 섹션 렌더링
+    if remediation_result is not None:
+        quarantine_applied = bool(remediation_result.get("quarantine_applied", False))
+        waf_blocked = bool(remediation_result.get("waf_blocked", False))
+        iam_revoked = bool(remediation_result.get("iam_revoked", False))
+
+        l4_status = "✅ 격리 성공 (SG 전면 차단)" if quarantine_applied else "❌ 격리 미적용 / 실패"
+        l7_status = "✅ IPSet 차단 완료 (/32)" if waf_blocked else "ℹ️ 차단 미적용 (WAF 정상)"
+        iam_status = "✅ 세션 만료 완료" if iam_revoked else "ℹ️ 미적용 (SSH 시나리오 제외)"
+
+        remediation_status_text = truncate_text(
+            f"*인프라 원자적 차단 집행 현황:*\n"
+            f"• L4 EC2 네트워크 격리: {l4_status}\n"
+            f"• L7 WAFv2 IP 차단: {l7_status}\n"
+            f"• Identity IAM 세션 무효화: {iam_status}",
+            MAX_FIELD_LENGTH,
+        )
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": remediation_status_text,
+                },
+            }
+        )
+
+    blocks.extend(
+        [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": recommendations_block_text,
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": context_text,
+                    }
+                ],
+            },
+        ]
+    )
 
     fallback_text = truncate_text(
         f"[{report.risk_level}] CloudShield 보안 경보 - {report.incident_id}: {report.attack_type}",
         MAX_FIELD_LENGTH,
     )
 
-    return {
+    result_payload: dict[str, Any] = {
         "text": fallback_text,
         "blocks": blocks,
         # 4대 필수 키 누락 방지 구조화 데이터
@@ -210,67 +261,111 @@ def build_slack_payload(report: IncidentReport) -> dict[str, Any]:
         "remediation_action": report.action_required,
     }
 
+    if remediation_result is not None:
+        result_payload["remediation_result"] = {
+            "waf_blocked": bool(remediation_result.get("waf_blocked", False)),
+            "quarantine_applied": bool(remediation_result.get("quarantine_applied", False)),
+            "iam_revoked": bool(remediation_result.get("iam_revoked", False)),
+        }
+
+    return result_payload
+
 
 def send_slack_alert(
     report: IncidentReport,
     webhook_url: str,
-    timeout: float = 5.0,
+    timeout: float = 3.0,
+    remediation_result: RemediationResult | dict[str, Any] | None = None,
+    max_retries: int = 1,
+    retry_delay: float = 0.5,
 ) -> bool:
     """침해사고 분석 보고서를 Slack Block Kit 페이로드로 변환하여 Webhook 발송.
 
     Why:
-        사고 식별자, 위험도, 출발지 IP, 대상 계정, 조치 내역, AI 요약 및 권고안을
-        가독성 높은 카드 형태로 렌더링하여 실시간 상황 공유.
+        사고 식별자, 위험도, 출발지 IP, 대상 계정, 조치 내역, AI 요약 및 인프라 원자적
+        차단 집행 결과(L4/L7/IAM)를 가독성 높은 카드 형태로 렌더링하여 실시간 상황 전파.
+        Slack API 장애(네트워크 단절, 5xx, 타임아웃) 발생 시에도 Lambda 오케스트레이터의
+        차단 트랜잭션과 메인 파이프라인이 중단되지 않도록 완전한 예외 격리(Fault Isolation) 보장.
 
     Constraints:
         - report: 유효성이 검증된 IncidentReport 객체.
         - webhook_url: Slack Incoming Webhook HTTPS 엔드포인트 URL 문자열.
-        - timeout: 네트워크 요청 제한 시간 (초, 기본값 5.0).
+        - timeout: 네트워크 요청 제한 시간 (초, 기본값 3.0). CloudShield 10초 관통 SLA 보장.
+        - remediation_result: 다중 계층 차단 실행 결과 모델 (선택적).
+        - max_retries: 일시 장애(5xx, 일시 연결 끊김) 시 재시도 상한 (기본값 1회).
+        - retry_delay: 재시도 대기 간격 (초, 기본값 0.5초).
         - 반환값: 발송 성공 여부 (HTTP 200 수신 시 True, 실패 시 False).
 
     Side-effects / Edge-cases:
         - 잘못된 URL 형식(IPv6 대괄호 비정상 포함 등 ValueError) 및 비HTTPS 스킴 예외 격리.
-        - Webhook 엔드포인트 네트워크 지연 또는 타임아웃(기본 5초) 방어.
-        - Slack API 호출 제한(Rate Limit 429) 및 잘못된 Webhook URL(HTTP 404/403) 예외 격리.
-        - report.recommendations 또는 target_accounts가 빈 튜플인 경우에도 레이아웃 무결성 유지.
+        - Webhook 엔드포인트 네트워크 지연 또는 타임아웃(기본 3초) 방어.
+        - HTTP 4xx(400 Bad Request, 403, 404, 429)는 클라이언트 오류로 판단하여
+          재시도 없이 즉시 False 반환.
+        - HTTP 5xx(서버 오류) 및 일시 네트워크 단절 시 최대 max_retries회 재시도 후 예외 격리 반환.
     """
     try:
         parsed = urllib.parse.urlparse(webhook_url)
         if not (parsed.scheme == "https" and parsed.netloc):
             logger.warning("유효하지 않은 Slack Webhook HTTPS URL입니다: %s", webhook_url)
             return False
-
-        payload = build_slack_payload(report)
-        encoded_data = json.dumps(payload).encode("utf-8")
-
-        req = urllib.request.Request(
-            url=webhook_url,
-            data=encoded_data,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            status_code = getattr(response, "status", None) or response.getcode()
-            if status_code == 200:
-                logger.info("Slack 알림 전송 성공: %s", report.incident_id)
-                return True
-            logger.warning("Slack Webhook 비정상 응답 코드: %s", status_code)
-            return False
-    except ValueError as exc:
+    except Exception as exc:
         logger.warning(
             "유효하지 않은 Slack Webhook URL 또는 요청 형식입니다: %s (%s)", webhook_url, exc
         )
         return False
-    except urllib.error.HTTPError as exc:
-        logger.error("Slack Webhook HTTP 오류 (%s): %s", exc.code, exc.reason)
-        return False
-    except urllib.error.URLError as exc:
-        logger.error("Slack Webhook 네트워크 연결 실패: %s", exc.reason)
-        return False
-    except TimeoutError:
-        logger.error("Slack Webhook 요청 시간 초과 (timeout=%s초)", timeout)
-        return False
+
+    try:
+        payload = build_slack_payload(report, remediation_result=remediation_result)
+        encoded_data = json.dumps(payload).encode("utf-8")
     except Exception as exc:
-        logger.error("Slack Webhook 전송 중 예기치 않은 오류 발생: %s", exc)
+        logger.error("Slack Block Kit 페이로드 직렬화 실패: %s", exc)
         return False
+
+    for attempt in range(max_retries + 1):
+        try:
+            req = urllib.request.Request(
+                url=webhook_url,
+                data=encoded_data,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                status_code = getattr(response, "status", None) or response.getcode()
+                if status_code == 200:
+                    logger.info(
+                        "Slack 알림 전송 성공: %s (시도: %d)", report.incident_id, attempt + 1
+                    )
+                    return True
+                logger.warning(
+                    "Slack Webhook 비정상 응답 코드: %s (시도: %d)", status_code, attempt + 1
+                )
+                # 4xx 클라이언트 에러는 재시도 없이 즉시 실패
+                if status_code < 500:
+                    return False
+        except urllib.error.HTTPError as exc:
+            logger.error(
+                "Slack Webhook HTTP 오류 (%s): %s (시도: %d)", exc.code, exc.reason, attempt + 1
+            )
+            # 4xx 오류(클라이언트 잘못)는 재시도해도 실패하므로 즉시 종료
+            if exc.code < 500:
+                return False
+        except urllib.error.URLError as exc:
+            logger.error("Slack Webhook 네트워크 연결 실패: %s (시도: %d)", exc.reason, attempt + 1)
+        except TimeoutError:
+            logger.error(
+                "Slack Webhook 요청 시간 초과 (timeout=%s초, 시도: %d)", timeout, attempt + 1
+            )
+        except Exception as exc:
+            logger.error(
+                "Slack Webhook 전송 중 예기치 않은 오류 발생: %s (시도: %d)", exc, attempt + 1
+            )
+            return False
+
+        # 남은 재시도 횟수가 있으면 대기 후 재시도
+        if attempt < max_retries:
+            logger.info("Slack Webhook 일시 오류로 재시도 대기 (delay=%.1f초)...", retry_delay)
+            time.sleep(retry_delay)
+
+    logger.error("Slack Webhook 최대 재시도 횟수(%d회) 초과로 최종 전송 실패 격리", max_retries + 1)
+    return False
