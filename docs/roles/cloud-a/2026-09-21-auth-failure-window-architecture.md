@@ -143,12 +143,18 @@
 ## 4. 단위 테스트 및 품질 검증 결과
 
 - **테스트베드**: `moto` 기반 가상 DynamoDB 테이블(`CloudShield-AuthFailure-Window`), 가상 EC2 타깃 및 Quarantine SG, 가상 WAFv2 IPSet.
-- **검증 케이스 (`tests/unit/test_auth_window.py`)**:
+- **검증 케이스 (`tests/unit/test_auth_window.py`, 총 13종 전원 통과)**:
   1. `test_split_batches_cumulative_ssh_brute_force`: 3건 + 2건 분할 Lambda 호출 시 `SSH_BRUTE_FORCE` 누적 탐지, L4 보안 그룹 원자적 교체 및 WAF IPSet 등록 완결 검증 (이슈 #21 핵심 기준).
-  2. `test_expired_window_resets_counter`: 301초 경과 후 인입 시 윈도우가 1로 리셋되어 오탐하지 않음을 검증.
+  2. `test_auth_window_sliding_expiration_reset`: 301초 경과 후 인입 시 윈도우가 새로 시작되어 오탐하지 않음을 검증.
   3. `test_split_batches_cumulative_password_spraying`: 분할 수신된 서로 다른 2개 계정 실패 시 `SSH_PASSWORD_SPRAYING` 탐지 및 WAF 차단 검증.
   4. `test_remediation_idempotency_suppression`: 이미 격리된 타깃에 대한 후속 6번째 실패 인입 시 중복 격리 API 호출 억제 검증.
   5. `test_concurrent_record_failure_race_condition`: `ThreadPoolExecutor`를 통한 다중 스레드 동시 인입 시 Lost Update 방어 및 원자적 카운트 보존 검증 (2차 개정 추가).
   6. `test_check_threat_uses_consistent_read`: `check_threat` 내부의 `get_item`이 `ConsistentRead=True`를 강제함을 검증 (2차 개정 추가).
   7. `test_remediation_failure_allows_retry_on_next_batch`: 조치 실패 시 마킹 보류 및 차기 이벤트 재시도 보장 검증 (2차 개정 추가).
-- **통합 검증 결과**: `powershell .\scripts\check.ps1` 단일 게이트 100% 통과 (R&R 검증, Ruff Lint/Format, 238개 단위/계약 테스트 전원 통과).
+  8. `test_boundary_split_detection_accuracy`: 300초 경계면(298초 2건, 302초 3건) 분할 인입 시 SSH_BRUTE_FORCE 정상 탐지 검증.
+  9. `test_boundary_split_password_spraying_accuracy`: 300초 경계면(299초, 301초) 분할 인입 시 SSH_PASSWORD_SPRAYING 정상 탐지 검증.
+  10. `test_sliding_window_reviewer_edge_cases_fixed`: PR #78 리뷰어 지적 4대 엣지 케이스(버스트 누락 2건 방지, 만료 오탐 2건 방지) 검증.
+  11. `test_out_of_order_batches_ssh_brute_force_separate_instances`: 별도 인스턴스 간 $t=450$ 1건 선행 후 $t=299$ 4건 지연 인입 시 3-버킷 스캔을 통한 SSH_BRUTE_FORCE 탐지 검증 (3차 개정 추가).
+  12. `test_out_of_order_batches_password_spraying_separate_instances`: 별도 인스턴스 간 $t=450$ 선행 후 $t=299$ 지연 인입 시 SSH_PASSWORD_SPRAYING 탐지 검증 (3차 개정 추가).
+  13. `test_out_of_order_upper_bound_filter_prevents_false_positive`: $(t=1, 3\text{건}) \rightarrow (t=599, 1\text{건}) \rightarrow (t=301, 1\text{건})$ 인입 시 $t \le now$ 상한선에 의해 598초 분산 오탐 방지 검증 (3차 개정 추가).
+- **통합 검증 결과**: `powershell .\scripts\check.ps1` 단일 게이트 100% 통과 (R&R 검증, Ruff Lint/Format, 291개 전체 단위/계약 테스트 전원 통과).
