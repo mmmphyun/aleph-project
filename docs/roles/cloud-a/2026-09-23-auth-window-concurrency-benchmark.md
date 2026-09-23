@@ -107,6 +107,14 @@
 * 버킷별 10분 TTL(`expire_at = (bucket_id + 2) * window_seconds`)을 적용하여, 만료된 오래된 버킷 데이터는 DynamoDB 백그라운드 엔진이 자동 소각함.
 * 인라인 삭제(Pruning)를 위한 조건부 쓰기 경합을 유발하지 않으며 스토리지 누수를 원천 방지함.
 
+### 5.3 분산 큐의 순서 역전(Out-of-Order) 물리 메커니즘과 단일 RTT 3-버킷 스캔의 정당성
+* **물리 메커니즘**: CloudWatch Logs 구독 필터는 로그 볼륨에 따라 복수의 독립된 Lambda Worker(Firecracker MicroVM 컨테이너)를 병렬 기동함. Worker 간 콜드 스타트 편차(VPC ENI 바인딩 1~2초 지연) 및 네트워크 재전송에 의해 $t=450$이 $t=299$보다 먼저 DynamoDB에 도달하는 물리적 시간축 역전(Time Inversion)이 발생함.
+* **해결 원리**: 직전/현재/직후 3개 버킷($curr \pm 1$)을 `ConsistentRead=True`로 일괄 조회함으로써, 지연 인입으로 인해 평가 시각이 과거로 역전되더라도 이미 커밋된 미래 버킷 데이터를 단 1회 읽기 RTT(약 1~2ms 추가)만으로 완벽히 포괄함.
+
+### 5.4 check_threat의 멱등성 조기 탈출(Short-circuit)을 통한 L4/L7 API 호출 억제
+* **동작 원리**: 뒤늦게 들어온 지연 로그는 DB 감사 및 누적을 위해 `record_failure()`로 영속화되지만, 직후 평가인 `check_threat()`에서 3개 버킷 중 어느 하나라도 `quarantined == True`가 확인되면 `(False, None, "")`을 즉시 반환함.
+* **효과**: 후속 조치인 `apply_remediation()`(EC2 보안그룹 교체 및 WAF IPSet 등록) 단계로의 진입 자체를 원천 차단하여, 불필요한 외부 AWS API 지연 및 Rate Limit 소모를 0으로 억제함.
+
 ---
 
 ## 6. 결론

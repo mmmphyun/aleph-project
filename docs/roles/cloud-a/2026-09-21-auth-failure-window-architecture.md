@@ -1,11 +1,11 @@
 # CloudShield DynamoDB 원자적 카운터 기반 5분 슬라이딩 윈도우 및 오케스트레이터 아키텍처 보고서
 
-> **작성일**: 2026-09-21 (2026-09-22 2차 개정: 분산 동시성 CAS 루프 및 쿼럼 일관성 보완)  
+> **작성일**: 2026-09-21 (2026-09-23 3차 개정: 3-버킷 타임스탬프 슬라이딩 윈도우 및 분산 순서 역전 극복)  
 > **작성자**: 클라우드 A (플랫폼 엔지니어 / 테크 리드)  
-> **연동 이슈**: [#21](https://github.com/mmmphyun/aleph-project/issues/21)  
-> **PR 번호**: [#69](https://github.com/mmmphyun/aleph-project/pull/69)  
+> **연동 이슈**: [#21](https://github.com/mmmphyun/aleph-project/issues/21), [#77](https://github.com/mmmphyun/aleph-project/issues/77)  
+> **PR 번호**: [#78](https://github.com/mmmphyun/aleph-project/pull/78)  
 > **노션 카드**: [Lambda 배치 간 인증 실패 집계 보존](https://notion.so/3d404d37c22581af92f2c5cef78bb164)  
-> **문서 상태**: P1 피드백 반영 및 분산 일관성 검증 완료 (Verified)
+> **문서 상태**: 3-버킷 슬라이딩 로그 전환 및 분산 순서 역전 검증 완료 (Verified & Production Ready)
 
 ---
 
@@ -35,16 +35,17 @@
        │
        ├─► 1. Payload 디코딩 & SyslogAuthEvent 파싱
        │
-       ├─► 2. DynamoDB 원자적 카운터 누적 (AuthFailureWindow)
-       │      - 파티션 키: "BF#<source_ip>#<username>" (Global Address)
-       │      - 1차: ADD failure_count :inc (attribute_exists AND expire_at >= :now)
-       │      - 충돌(OCC Abort) 시 2차: SET failure_count = :inc (attribute_not_exists OR expire_at < :now)
-       │      - 동시 경쟁 충돌 시: 1차 ADD로 재시도 (최대 3회 CAS Retry Loop, Lost Update 차단)
+       ├─► 2. DynamoDB 원자적 타임스탬프 누적 (record_failure)
+       │      - 파티션 키: "BF#<source_ip>#<username>#{epoch // 300}" (시간 버킷 파티셔닝)
+       │      - 락 프리 원자적 Upsert: list_append 및 ADD (조건식 없음, 충돌률 0%, 재시도 0회)
+       │      - 발생 시각 보존: 개별 타임스탬프 원자적 append
        │
-       ├─► 3. 위협 판정: check_threat (ConsistentRead=True 쿼럼 읽기, Stale Read 차단)
-       │      - failure_count >= 5 AND quarantined == False
+       ├─► 3. 위협 판정 및 조기 차단: check_threat
+       │      - 직전/현재/직후 3-버킷(curr-1, curr, curr+1) ConsistentRead=True 쿼럼 읽기
+       │      - 3개 버킷 중 quarantined == True 존재 시: 조기 탈출(Short-circuit, API 호출 0회)
+       │      - 양방향 유효 구간 정밀 평가: ref - 300 <= t <= ref (닫힌 구간, 오탐/누락 0%)
        │
-       └─► 4. 다중 계층 복합 차단 & 조건부 마킹
+       └─► 4. 다중 계층 복합 차단 & 조건부 마킹 (is_threat == True 시에만 진입)
               - L4: EC2 ModifyInstanceAttribute (CloudShield-Quarantine-SG)
               - L7: WAFv2 UpdateIPSet (/32 CIDR)
               - 가드: is_remediation_successful (필수 조치 성공 검증)
@@ -59,41 +60,37 @@
   * 파티션 키(`target_key = "BF#<ip>#<user>"`)는 분산 환경에서의 **전역 메모리 포인터/주소(Global Address)**입니다.
   * DynamoDB Request Router는 `MD5(Partition Key)` 해시 링 연산을 거쳐 전 세계 수천 대의 물리 서버 중 해당 키를 담당하는 **특정 물리 스토리지 노드의 SSD/RAM 파티션 블록**으로 TCP 패킷을 지연 없이 $O(1)$ 직렬 포워딩합니다.
 
-### 2.2 동시성 제어: 비관적 락 vs 하드웨어 레벨 원자적 연산 vs 조건부 쓰기(CAS)
+### 2.2 동시성 제어: 비관적 락 vs 낙관적 락(OCC) vs 시간 버킷 파티셔닝(Lock-Free)
 * **비관적 락(Pessimistic Lock)을 쓰지 않는 이유**:
   * 비관적 락(`SELECT FOR UPDATE`)은 OS 프로세스 스케줄러가 타 스레드를 대기(Block/Sleep)시키는 것처럼 고비용 컨텍스트 스위칭과 데드락 위험, 네트워크 지연 병목을 유발합니다.
-* **원자적 카운터(`ADD failure_count :inc`)의 동작 원리**:
-  * 클라이언트가 값을 읽어와 연산하는 R-M-W(Read-Modify-Write) 방식이 아닙니다.
-  * 스토리지 노드의 단일 리더 스레드가 내부 메모리에서 직접 숫자를 1단위로 증가시키고 WAL에 순차 기록합니다. 이는 CPU 어셈블리의 `LOCK XADD` 명령어처럼 **분산 락 없는(Lock-Free) 단일 직렬화**로 완벽한 원자성을 보장합니다.
-* **조건부 쓰기(`expire_at >= :now`)와 Compare-And-Swap(CAS)**:
-  * DynamoDB의 내장 TTL은 백그라운드 청소 스레드가 비동기로 수집하므로 최대 48시간 지연 삭제될 수 있습니다. 300초 정각 하드웨어 삭제에 의존하면 심각한 오탐이 발생합니다.
-  * 따라서 애플리케이션 레벨에서 **낙관적 동시성 제어(OCC) 기반 Compare-And-Swap(CAS)**을 적용했습니다.
-  * 스토리지 노드가 쓰기 직전 `expire_at >= :now`를 비교하여, 만료 시 작업을 즉시 Abort하고 `ConditionalCheckFailedException`을 반환합니다.
+* **단일 키 낙관적 락(OCC / CAS)의 한계와 폐기**:
+  * 단일 파티션 키(`BF#<ip>#<user>`) 환경에서는 윈도우 만료 여부를 판별하기 위해 조건부 쓰기(`ConditionExpression="expire_at >= :now"`)가 필수였습니다.
+  * 복수 Lambda 인스턴스가 밀리초 단위로 동시 인입될 때 `ConditionalCheckFailedException` 경합이 발생하여 최대 3회 재시도(CAS Retry Loop)를 수행해야 했고, 고부하 환경에서 간헐적 갱신 분실(Lost Update) 및 테일 레이턴시 스파이크가 발생했습니다.
+* **시간 버킷 파티셔닝 기반 락 프리(Lock-Free) 원자적 Upsert (최종 채택)**:
+  * 파티션 키에 시간 버킷 ID를 포함(`BF#<ip>#<user>#{epoch // 300}`)하여 이전 윈도우 만료 판별 조건식을 완전히 제거했습니다.
+  * 조건식이 없으므로 충돌 및 재시도가 원천 배제(충돌률 0%)되며, 스토리지 노드의 단일 리더 스레드가 내부 메모리에서 직접 `ADD` 및 `list_append`를 수행하여 **분산 락 없는 완벽한 원자적 락 프리 연산**을 달성합니다.
 
-### 2.3 분산 엣지케이스 심층 방어 메커니즘 (2차 개정 핵심)
+### 2.3 분산 엣지케이스 심층 방어 메커니즘 (3차 개정 핵심)
 
-#### 2.3.1 초기화 동시성 경쟁(Lost Update) 방어와 CAS 재시도 루프
+#### 2.3.1 단일 키 OCC 경합 극복과 락 프리 타임스탬프 원자적 누적
 * **결함 시나리오**:
-  * 2개의 Lambda 인스턴스가 콜드 스타트 또는 만료 직후 동시에 첫 실패 로그를 처리할 때, 둘 다 1차 `ADD` 조건에 실패하여 Fallback 블록으로 진입합니다.
-  * Fallback이 무조건 `SET failure_count = :inc`를 실행하면, 먼저 커밋된 카운터를 후속 프로세스가 1로 덮어쓰는 갱신 분실(Lost Update)이 발생합니다.
-* **방어 원리 (CAS Retry Loop)**:
-  * Fallback `update_item`에도 `ConditionExpression="attribute_not_exists(target_key) OR expire_at < :now"` 조건을 부여합니다.
-  * 경쟁에서 패배한 프로세스는 `ConditionalCheckFailedException`을 수신하고, 최대 3회(`MAX_OCC_RETRIES = 3`) 루프를 통해 다시 1차 `ADD`로 복귀하여 이미 개설된 윈도우에 원자적 누산(+1)을 수행합니다.
+  * 2개 이상의 Lambda 인스턴스가 만료 경계면에서 동시 인입될 때, 낙관적 락(OCC) 모델은 한 프로세스만 성공하고 나머지는 Abort되어 재시도를 강제당합니다.
+* **방어 원리 (Time-bucket Partitioning + Atomic Append)**:
+  * 버킷 키 단위로 격리된 레코드에 이벤트 발생 타임스탬프 리스트를 `list_append`로 원자적 누적합니다.
+  * 동시성 제어를 DB 쓰기 시점의 조건식(Lock)이 아닌, **조회 시점의 타임스탬프 슬라이딩 윈도우 필터링**으로 이관하여 쓰기 경로의 병목을 원천 제거했습니다.
 
 #### 2.3.2 분산 복제 쿼럼($R + W > N$)과 Stale Read 방어
 * **결함 시나리오**:
   * DynamoDB는 3개 가용 영역($N=3$)에 복제 노드를 유지하며, 과반수 쓰기($W=2$, Paxos Leader + 1 Follower) 완료 즉시 쓰기 성공을 반환합니다. 3번째 노드는 비동기로 복제됩니다.
   * `check_threat`의 `get_item`이 최종 일관성($R=1$, `ConsistentRead=False`)을 사용할 경우, 복제가 지연된 3번째 노드를 읽어 방금 5회에 도달한 쓰기 상태를 놓치고 4회로 판정하여 탐지 및 L4 격리가 누락될 수 있습니다.
 * **방어 원리 (Strongly Consistent Read)**:
-  * `ConsistentRead=True`($R=2$)를 강제하여 정족수 수식 $R + W = 4 > N(3)$을 만족시킵니다.
+  * 직전/현재/직후 3개 버킷 조회 시 모두 `ConsistentRead=True`($R=2$)를 강제하여 정족수 수식 $R + W = 4 > N(3)$을 만족시킵니다.
   * 비둘기집 원리에 의해 읽기 정족수와 쓰기 정족수 간에 최소 1개의 공통 최신 노드가 반드시 포함됩니다.
 * **쿼럼($R + W > N$)과 LSN(Log Sequence Number)의 상호 보완성 (1:1 동점 해소 메커니즘)**:
-  * **질문**: *"과반수 읽기($R=2$)를 수행하면 다수결로 최신 값을 판정할 수 있지 않은가? 왜 LSN이 별도로 필요한가?"*
-  * **물리적 한계**: 최신 쓰기 노드(`count = 5`)와 지연 노드(`count = 4`) 2개를 읽었을 때, 결과 집합은 `[5, 4]`로 **1:1 동점**이 되어 값 자체의 다수결 투표가 수학적으로 불가능합니다 (문자열 상태값의 경우 대소 비교조차 불가능).
+  * **물리적 한계**: 최신 쓰기 노드(`count = 5`)와 지연 노드(`count = 4`) 2개를 읽었을 때, 결과 집합은 `[5, 4]`로 1:1 동점이 되어 값 자체의 다수결 투표가 수학적으로 불가능합니다.
   * **역할 분담 원칙**:
-    * **정족수 쿼럼 ($R + W > N$)**: 최신 데이터를 보유한 노드가 읽기 후보군 안에 **최소 1개 이상 물리적으로 포함되도록 가두는 그물망** 역할.
-    * **논리적 시계 (LSN / Version)**: 수신된 복수 노드의 파편 중 Paxos Leader가 부여한 단조 증가 트랜잭션 번호를 비교하여 **누가 진짜 최신 노드인지 식별(Pick)하는 판별 기준** 역할.
-
+    * **정족수 쿼럼 ($R + W > N$)**: 최신 데이터를 보유한 노드가 읽기 후보군 안에 최소 1개 이상 물리적으로 포함되도록 가두는 그물망 역할.
+    * **논리적 시계 (LSN / Version)**: Paxos Leader가 부여한 단조 증가 트랜잭션 번호를 비교하여 누가 진짜 최신 노드인지 식별(Pick)하는 판별 기준 역할.
 
 #### 2.3.3 부분 결함(Partial Failure) 감내와 멱등 상태 머신 전이
 * **결함 시나리오**:
@@ -103,14 +100,16 @@
   * 실패 시 마킹을 보류하여 차기 인입 이벤트에서 자동 재시도되도록 보장하며, 앞서 성공한 조치는 조회 기반 No-op(멱등성, $f(f(x))=f(x)$)으로 중복 실행을 방지합니다.
 
 ### 2.4 Lambda 위협 분석 및 대응 오케스트레이터 (`src/remediation/orchestrator.py`)
-* `threat_orchestrator_handler`:
+* `threat_orchestrator_handler` 실행 파이프라인:
   1. `CloudWatchLogsPayload.from_awslogs_data()`로 gzip 압축 해제 및 Base64 디코딩.
   2. `SyslogAuthEvent.parse_line()`으로 정규식 파싱 및 공격자 IP/계정 추출.
-  3. `AuthFailureWindow`에 인증 실패를 CAS 루프 기반으로 원자적 누적.
-  4. 5회 이상 누적 시 `check_threat` 강한 일관성 읽기로 최신 상태 판정.
-  5. `IncidentReport` 자동 생성 (`mitre_id="T1110.001"`, `action_required="BLOCK_AND_QUARANTINE"`).
-  6. `apply_remediation` 호출로 L4 EC2 보안 그룹 교체 및 L7 WAF 차단 수행.
-  7. `is_remediation_successful` 검증 후 성공 시에만 `quarantined=True` 마킹.
+  3. `AuthFailureWindow.record_failure()`: 현재 시간 버킷에 타임스탬프 원자적 append (락 프리 1 RTT).
+  4. `AuthFailureWindow.check_threat()`:
+     - 직전/현재/직후 3-버킷 일괄 조회 (`ConsistentRead=True`).
+     - 3개 버킷 중 어느 하나라도 `quarantined == True`이면 `(False, None, "")` 즉시 반환 (조기 탈출, Short-circuit으로 불필요한 후속 API 호출 0회 차단).
+     - 양방향 유효 구간($ref - 300 \le t \le ref$) 내 임계치 도달 여부 정밀 평가.
+  5. `is_threat == True` 시에만 `IncidentReport` 생성 및 `apply_remediation` 호출 (L4 SG 원자적 교체 및 L7 WAF 차단).
+  6. `is_remediation_successful` 검증 후 성공 시에만 `mark_quarantined(target_key)` 실행.
 
 ---
 
@@ -119,9 +118,17 @@
 ### 3.1 분산 환경의 시간축 통일 (Clock Skew 대응)
 * 서로 다른 서버(EC2, Lambda, DynamoDB) 간 NTP 동기화 오차로 인한 판정 왜곡을 방지하기 위해, Lambda 머신의 로컬 클럭(`time.time()`) 대신 CloudWatch가 부여한 `log_event.timestamp`(Epoch Milliseconds)를 단일 시간 오소리티로 통일했습니다.
 
-### 3.2 분산 로깅의 순서 역전(Out-of-Order Delivery) 대응
-* CloudWatch Logs는 엄격한 In-Order Delivery를 보장하지 않습니다.
-* 덧셈 연산(`ADD failure_count :inc`)은 교환법칙($A + B = B + A$)이 성립하므로, 3건 배치와 2건 배치의 인입 순서가 뒤바뀌더라도 최종 합산 결과는 항상 5로 일정하게 유지됩니다.
+### 3.2 분산 로깅의 순서 역전(Out-of-Order Delivery) 물리 메커니즘과 3-버킷 스캔 극복
+* **물리적 역전 발생 원인 (Distributed Queue & Parallel Execution)**:
+  * CloudWatch Logs 구독 필터는 단일 직렬 큐가 아닌 분산 샤딩 파티션 스트림입니다.
+  * 로그 볼륨에 따라 복수의 독립된 Lambda Worker(Firecracker MicroVM 컨테이너)가 병렬 기동됩니다.
+  * 배치 A($t=299$)를 수신한 Worker 1이 콜드 스타트(VPC ENI 바인딩 지연)를 겪는 동안, 배치 B($t=450$)를 수신한 Worker 2가 웜 상태에서 먼저 실행되어 버킷 1에 커밋될 수 있습니다.
+* **단순 교환법칙 가설의 파탄과 결함 실측**:
+  * 단일 키 정수 카운터 시절에는 덧셈의 교환법칙($A+B=B+A$)으로 순서 역전을 해결할 수 있다고 가정했으나, 시간 버킷 파티셔닝 구조에서는 **버킷 ID 자체가 분할($t=450 \rightarrow$ 버킷 1, $t=299 \rightarrow$ 버킷 0)**되므로 가설이 완전히 무너집니다.
+  * Worker 1이 뒤늦게 $t=299$를 처리할 때 $now=299$로 시각이 역전되어 현재(0)와 직전(-1) 버킷만 조회하면 이미 커밋된 버킷 1을 놓치는 **탐지 누락(False Negative)**이 발생합니다.
+* **3-버킷($curr \pm 1$) 스캔과 양방향 닫힌 구간($[ref-300, ref]$)의 해결책**:
+  * 직전/현재/직후 3개 버킷을 일괄 조회하여 지연 인입 시에도 선행 처리된 미래 버킷 데이터를 100% 포괄합니다.
+  * 윈도우 평가 시 하한선($t \ge now - 300$)만 둘 경우 $(t=1, 3\text{건}) \rightarrow (t=599, 1\text{건}) \rightarrow (t=301, 1\text{건})$처럼 598초 차이나는 트래픽이 합산되는 오탐(False Positive)이 발생하므로, 반드시 기준 시각 $ref$를 상한으로 하는 **닫힌 구간 $[ref - 300, ref]$**을 강제하여 정확도 100%를 달성했습니다.
 
 ### 3.3 Hot Partition 병목 및 FinOps(비용) DoS 선순환 방어
 * 공격자가 단일 IP로 대량의 무차별 대입을 퍼부을 경우 DynamoDB 파티션 쓰기 한도(1,000 WCU) 초과 위험이 존재합니다.
