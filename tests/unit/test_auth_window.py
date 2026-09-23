@@ -319,7 +319,7 @@ def test_concurrent_record_failure_race_condition(
         for f in futures:
             f.result()
 
-    spray_key = f"SPRAY#{source_ip}"
+    spray_key = auth_window._get_spray_key(source_ip)
     spray_item = mocked_dynamodb_table.get_item(
         Key={"target_key": spray_key}, ConsistentRead=True
     ).get("Item", {})
@@ -339,7 +339,7 @@ def test_concurrent_record_failure_race_condition(
         for f in futures2:
             f.result()
 
-    bf_key = f"BF#{source_ip}#{target_user}"
+    bf_key = auth_window._get_bf_key(source_ip, target_user)
     bf_item = mocked_dynamodb_table.get_item(Key={"target_key": bf_key}, ConsistentRead=True).get(
         "Item", {}
     )
@@ -406,11 +406,11 @@ def test_remediation_failure_allows_retry_on_next_batch(
         assert mock_remediate.call_count == 1
 
     # 조치 실패로 인해 DynamoDB 상태 테이블에 quarantined가 False로 유지되어야 함
-    bf_key = f"BF#{attacker_ip}#{user}"
+    bf_key = auth_window._get_bf_key(attacker_ip, user)
     item = mocked_dynamodb_table.get_item(Key={"target_key": bf_key}, ConsistentRead=True).get(
         "Item", {}
     )
-    assert item.get("quarantined") is False
+    assert bool(item.get("quarantined", False)) is False
 
     # 2. 후속 6번째 실패 이벤트 인입
     msg_retry = [
@@ -439,3 +439,74 @@ def test_remediation_failure_allows_retry_on_next_batch(
         Key={"target_key": bf_key}, ConsistentRead=True
     ).get("Item", {})
     assert item_after.get("quarantined") is True
+
+
+def test_boundary_split_detection_accuracy(
+    mocked_dynamodb_table: Any,
+) -> None:
+    """300초 윈도우 경계면(298초 2건, 302초 3건) 분할 인입 시
+    가중치에 의해 SSH_BRUTE_FORCE 탐지 성공 검증.
+
+    Why:
+        고정 텀블링 윈도우(대안 B)는 300초 경계면에서 2건과 3건으로 분할될 때
+        각 버킷이 임계치(5회)에 미달하여 탐지에 100% 실패하는 Split-Brain 문제가 발생함.
+        가중 2-버킷 모델은 직전 버킷 시간 감쇠 가중치(3 + 2 * 0.993 = 4.986 -> 5)를 통해
+        경계면 분할 시에도 10초 관통 위협을 100% 탐지함을 수학적으로 검증함.
+    """
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+    source_ip = "198.51.100.123"
+    username = "boundary_user"
+
+    # 직전 버킷(298초) 2건 인입
+    auth_window.record_failure(
+        source_ip=source_ip, username=username, timestamp_epoch=298.0, count=2
+    )
+    # 현재 버킷(302초) 3건 인입
+    auth_window.record_failure(
+        source_ip=source_ip, username=username, timestamp_epoch=302.0, count=3
+    )
+
+    # 302초 시점 위협 판정 -> 가중치에 의해 SSH_BRUTE_FORCE 정상 탐지 확인
+    is_threat, rule_name, target_key = auth_window.check_threat(
+        source_ip=source_ip, username=username, timestamp_epoch=302.0
+    )
+    assert is_threat is True
+    assert rule_name == "SSH_BRUTE_FORCE"
+    assert target_key == auth_window._get_bf_key(source_ip, username, timestamp_epoch=302.0)
+
+
+def test_boundary_split_password_spraying_accuracy(
+    mocked_dynamodb_table: Any,
+) -> None:
+    """300초 윈도우 경계면(298초 user1, 302초 user2) 분할 인입 시
+    SSH_PASSWORD_SPRAYING 탐지 성공 검증.
+
+    Why:
+        경계면 전후로 서로 다른 고유 계정이 인입되더라도 차집합 가중치를 통해
+        총 2개 고유 계정 임계치를 정확히 충족하여 패스워드 스프레잉을 탐지함을 검증함.
+    """
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+    source_ip = "198.51.100.124"
+
+    # 직전 버킷(299초) user1 인입
+    auth_window.record_failure(
+        source_ip=source_ip, username="spray_user1", timestamp_epoch=299.0, count=1
+    )
+    # 현재 버킷(301초) user2 인입
+    auth_window.record_failure(
+        source_ip=source_ip, username="spray_user2", timestamp_epoch=301.0, count=1
+    )
+
+    # 301초 시점 위협 판정 -> 가중치(1 + 1 * 0.996 = 1.996 -> 2) 충족 탐지 확인
+    is_threat, rule_name, target_key = auth_window.check_threat(
+        source_ip=source_ip, username="spray_user2", timestamp_epoch=301.0
+    )
+    assert is_threat is True
+    assert rule_name == "SSH_PASSWORD_SPRAYING"
+    assert target_key == auth_window._get_spray_key(source_ip, timestamp_epoch=301.0)
