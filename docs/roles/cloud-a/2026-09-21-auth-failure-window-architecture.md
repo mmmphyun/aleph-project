@@ -42,7 +42,7 @@
        │
        ├─► 3. 위협 판정 및 조기 차단: check_threat
        │      - 직전/현재/직후 3-버킷(curr-1, curr, curr+1) ConsistentRead=True 쿼럼 읽기
-       │      - 3개 버킷 중 quarantined == True 존재 시: 조기 탈출(Short-circuit, API 호출 0회)
+       │      - 3개 버킷 중 quarantined == True 존재 시: 차단 API 호출 조기 차단(Short-circuit)
        │      - 양방향 유효 구간 정밀 평가: ref - 300 <= t <= ref (닫힌 구간, 오탐/누락 0%)
        │
        └─► 4. 다중 계층 복합 차단 & 조건부 마킹 (is_threat == True 시에만 진입)
@@ -105,8 +105,8 @@
   2. `SyslogAuthEvent.parse_line()`으로 정규식 파싱 및 공격자 IP/계정 추출.
   3. `AuthFailureWindow.record_failure()`: 현재 시간 버킷에 타임스탬프 원자적 append (락 프리 1 RTT).
   4. `AuthFailureWindow.check_threat()`:
-     - 직전/현재/직후 3-버킷 일괄 조회 (`ConsistentRead=True`).
-     - 3개 버킷 중 어느 하나라도 `quarantined == True`이면 `(False, None, "")` 즉시 반환 (조기 탈출, Short-circuit으로 불필요한 후속 API 호출 0회 차단).
+     - 직전/현재/직후 3-버킷 일괄 조회 (`ConsistentRead=True`, BF 3회 및 필요 시 Spray 3회 순차 GetItem).
+     - 3개 버킷 중 어느 하나라도 `quarantined == True`이면 `(False, None, "")` 즉시 반환 (조기 탈출로 불필요한 L4/L7 Boto3 차단 API 중복 호출 원천 차단. 단, 상태 조회를 위한 DB GetItem은 발생함).
      - 양방향 유효 구간($ref - 300 \le t \le ref$) 내 임계치 도달 여부 정밀 평가.
   5. `is_threat == True` 시에만 `IncidentReport` 생성 및 `apply_remediation` 호출 (L4 SG 원자적 교체 및 L7 WAF 차단).
   6. `is_remediation_successful` 검증 후 성공 시에만 `mark_quarantined(target_key)` 실행.
@@ -129,6 +129,9 @@
 * **3-버킷($curr \pm 1$) 스캔과 양방향 닫힌 구간($[ref-300, ref]$)의 해결책**:
   * 직전/현재/직후 3개 버킷을 일괄 조회하여 지연 인입 시에도 선행 처리된 미래 버킷 데이터를 100% 포괄합니다.
   * 윈도우 평가 시 하한선($t \ge now - 300$)만 둘 경우 $(t=1, 3\text{건}) \rightarrow (t=599, 1\text{건}) \rightarrow (t=301, 1\text{건})$처럼 598초 차이나는 트래픽이 합산되는 오탐(False Positive)이 발생하므로, 반드시 기준 시각 $ref$를 상한으로 하는 **닫힌 구간 $[ref - 300, ref]$**을 강제하여 정확도 100%를 달성했습니다.
+* **지연 로그 지원 범위 및 운영 한계**:
+  * **지원 보장**: 기준 시각 대비 인접 버킷($\pm 300$초) 내의 역순/지연 배치는 100% 완벽 탐지합니다.
+  * **운영 제약**: 단일 배치 내 타임스탬프 스팬이 600초를 초과하는 장기 지연 혼합 배치(예: $t=299$와 $t=901$이 한 배치로 수신)는 마지막 시각 901을 기준으로 스캔하므로 299초 이벤트가 제외됩니다. 정상 플러시 환경(수 초 단위)에서는 발생하지 않으나, 대규모 버퍼 플러시 지원 시 배치 내 고유 시간대별 개별 윈도우 평가로의 확장이 필요합니다.
 
 ### 3.3 Hot Partition 병목 및 FinOps(비용) DoS 선순환 방어
 * 공격자가 단일 IP로 대량의 무차별 대입을 퍼부을 경우 DynamoDB 파티션 쓰기 한도(1,000 WCU) 초과 위험이 존재합니다.
