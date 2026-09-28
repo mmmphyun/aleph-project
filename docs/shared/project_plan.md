@@ -60,26 +60,38 @@
 
 ### 2.2 공통 인터페이스 계약 (Contract-First Design)
 * **설계 원칙**: 직무 간 데이터 결합도를 낮추고 런타임 타입 오류를 원천 차단하기 위해 Pydantic 기반의 엄격한 불변 데이터 모델 채택.
-* **핵심 계약 모델 (`src/contracts/`)**:
-  * `IncidentReport`: 탐지 엔진이 생성하는 단일 표준 침해사고 보고서 규격.
+* **핵심 계약 모델 (`src/contracts/incident.py`)**:
+  * `IncidentReport`: 보안 분석 엔진이 생성하고 차단 및 Slack 리포터 모듈이 소비하는 단일 표준 침해사고 보고서 규격.
     ```python
-    # src/contracts/incident_report.py 핵심 필드
+    # src/contracts/incident.py 핵심 필드 (실제 코드와 1:1 일치)
     class IncidentReport(BaseModel):
         incident_id: str
-        timestamp: datetime
-        source_ip: IPvAnyAddress
-        rule_name: str
-        severity: SeverityLevel  # LOW, MEDIUM, HIGH, CRITICAL
-        mitre_attack_id: str  # 예: T1110 (Brute Force)
-        remediation_target: RemediationTarget  # L4_SG, L7_WAF, IAM_SESSION
-        raw_log_sample: str
+        attack_type: str  # 예: "SSH Brute Force", "SSH Password Spraying"
+        mitre_id: str  # 예: "T1110.001", "T1110.003"
+        risk_level: Literal["HIGH", "MEDIUM", "LOW"]
+        source_ip: str  # IPv4 주소
+        target_identifier: str  # EC2 Instance ID (i-...)
+        target_accounts: tuple[str, ...]
+        summary_ko: str
+        action_required: Literal[
+            "BLOCK_WAF",
+            "QUARANTINE_EC2",
+            "BLOCK_AND_QUARANTINE",
+            "BLOCK_IP_ONLY",
+            "ALERT_ONLY",
+            "NONE",
+        ]
+        recommendations: tuple[str, ...]
     ```
   * `IncidentReport`는 테크 리드의 승인 없이 변경할 수 없는 보호 계약(Protected Contract)으로 관리됨.
 
 ### 2.3 다중 계층 원자적 차단 및 복구 엔진 (Multi-layer Remediation & Rollback)
 * **탐지 vs 차단 단계별 판정 기준 (Separation of Detection & Action)**:
-  * **1단계 위협 탐지**: 5분(300초) 윈도우 내 단일 계정 실패 $\ge 5$회(Brute Force) 또는 고유 계정 $\ge 2$개(Spraying) 시 시그니처 매칭 $\rightarrow$ `IncidentReport` 생성 및 심각도(HIGH) 부여.
-  * **2단계 원자적 차단**: 탐지 보고서의 `severity`가 `HIGH` 이상이며 `remediation_target`이 명시된 경우에만 Lambda 오케스트레이터가 실제 차단 API를 호출함 (경고 수준의 단순 노이즈는 차단 없이 Slack 모니터링 알림만 전파).
+  * **1단계 위협 탐지**: 5분(300초) 슬라이딩 윈도우 내 단일 계정 실패 $\ge 5$회(Brute Force) 또는 고유 계정 $\ge 2$개(Spraying) 도달 시 시그니처 매칭 $\rightarrow$ `IncidentReport` 생성 및 `risk_level = "HIGH"` 부여.
+  * **2단계 원자적 차단 집행**: Lambda 오케스트레이터가 보고서의 **`action_required`** 값에 따라 대상별 Boto3 차단 API를 분기 실행함:
+    * `action_required == "BLOCK_AND_QUARANTINE"`: SSH 무차별 대입 탐지 시 L4 EC2 격리와 L7 WAF IPSet 차단을 동시 실행.
+    * `action_required == "BLOCK_WAF"`: 패스워드 스프레잉 및 Web 스캔 탐지 시 L7 WAF IPSet 차단 실행.
+    * `action_required == "ALERT_ONLY"` 또는 `"NONE"`: 인프라 차단 API를 호출하지 않고 Slack 상황 전파만 수행.
 * **계층별 차단 실행 동작**:
   * **L4 격리 (Security Group)**:
     * 인스턴스에 적용된 기존 SG를 제거하고 인바운드가 완전히 차단된 `sg-quarantine`으로 교체.
