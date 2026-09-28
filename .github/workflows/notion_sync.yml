@@ -129,6 +129,7 @@ jobs:
                 if (data) options.headers["Content-Length"] = Buffer.byteLength(data);
 
                 const req = https.request(options, (res) => {
+                  res.setEncoding("utf-8");
                   let resBody = "";
                   res.on("data", (chunk) => resBody += chunk);
                   res.on("end", () => {
@@ -140,7 +141,7 @@ jobs:
                   });
                 });
                 req.on("error", (e) => reject(e));
-                if (data) req.write(data);
+                if (data) req.write(data, "utf-8");
                 req.end();
               });
             }
@@ -155,22 +156,16 @@ jobs:
                   // 기존 노션 카드가 지정된 경우: [시작 전] -> [진행 중] 전이
                   console.log(`기존 노션 카드(${pageId})를 [진행 중]으로 전이합니다.`);
                   let existingAssignees = [];
-                  let existingTitle = "";
                   try {
                     const getRes = await sendNotionRequest(`/v1/pages/${pageId}`, "GET");
                     existingAssignees = getRes.body?.properties?.["담당자"]?.people || [];
-                    const titleArr = getRes.body?.properties?.["내용"]?.title || [];
-                    existingTitle = titleArr.map(t => t.plain_text).join("").trim();
                   } catch (e) {
                     console.log(`기존 카드 조회 생략: ${e.message}`);
                   }
 
-                  // 기존 카드 제목이 이미 [직무] 태그를 가지고 있으면 그대로 보존, 없으면 formattedTitle 적용
-                  const finalTitle = (existingTitle && existingTitle.startsWith("[")) ? existingTitle : formattedTitle;
-
+                  // 기존 카드의 제목("내용")은 덮어쓰지 않고 온전히 보존함
                   const patchProps = {
                     "상태": { status: { name: "진행 중" } },
-                    "내용": { title: [{ type: "text", text: { content: finalTitle } }] },
                     "기간": { date: { start: today } }
                   };
                   // 이미 담당자가 지정되어 있으면 보존, 비어있을 때만 스코프 기반 자동 할당
@@ -235,13 +230,10 @@ jobs:
             // 기존 카드 메타데이터 조회
             let existingStart = null;
             let existingAssignees = [];
-            let existingTitle = "";
             try {
               const getRes = await sendNotionRequest(`/v1/pages/${pageId}`, "GET");
               existingStart = getRes.body?.properties?.["기간"]?.date?.start || null;
               existingAssignees = getRes.body?.properties?.["담당자"]?.people || [];
-              const titleArr = getRes.body?.properties?.["내용"]?.title || [];
-              existingTitle = titleArr.map(t => t.plain_text).join("").trim();
             } catch (err) {
               console.log(`기존 카드 조회 생략: ${err.message}`);
             }
@@ -249,12 +241,9 @@ jobs:
             const prCreatedAt = (item.created_at || "").split("T")[0] || today;
             const startDate = existingStart || prCreatedAt;
 
-            // 기존 카드 제목이 이미 [직무] 태그를 가지고 있으면 그대로 보존, 없으면 formattedTitle 적용
-            const finalTitle = (existingTitle && existingTitle.startsWith("[")) ? existingTitle : formattedTitle;
-
+            // 기존 카드의 제목("내용")은 덮어쓰지 않고 온전히 보존함
             const extendedProps = {
               "상태": { status: { name: targetStatus } },
-              "내용": { title: [{ type: "text", text: { content: finalTitle } }] },
               "PR": { url: item.html_url }
             };
 
@@ -275,7 +264,7 @@ jobs:
             // 노션 페이지 속성 갱신
             try {
               await sendNotionRequest(`/v1/pages/${pageId}`, "PATCH", { properties: extendedProps });
-              console.log("노션 카드 메타데이터(상태, 내용, PR, Commit, 기간, 담당자) 갱신 완료");
+              console.log("노션 카드 메타데이터(상태, PR, Commit, 기간, 담당자) 갱신 완료");
             } catch (err) {
               console.log(`확장 속성 갱신 실패, 상태 단독 시도: ${err.message}`);
               await sendNotionRequest(`/v1/pages/${pageId}`, "PATCH", {
