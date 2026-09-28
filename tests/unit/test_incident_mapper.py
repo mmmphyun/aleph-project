@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from contracts.incident import IncidentReport
-from detection.incident_mapper import analyze_incident
+from detection.incident_mapper import analyze_incident, map_threat_to_incident
 
 
 def test_analyze_incident_interface(sample_auth_log_lines: list[str]) -> None:
@@ -60,3 +62,58 @@ def test_analyze_incident_rejects_non_attack_logs() -> None:
         assert "탐지 가능한 SSH 인증 실패 공격 패턴" in str(exc)
     else:
         raise AssertionError("정상 로그는 IncidentReport로 변환되면 안 된다.")
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "expected_mitre_id", "expected_risk", "expected_action"),
+    [
+        ("SSH_BRUTE_FORCE", "T1110.001", "HIGH", "BLOCK_AND_QUARANTINE"),
+        ("SSH_PASSWORD_SPRAYING", "T1110.003", "MEDIUM", "BLOCK_IP_ONLY"),
+    ],
+)
+def test_map_threat_to_incident_unifies_window_rule_metadata(
+    rule_name: str,
+    expected_mitre_id: str,
+    expected_risk: str,
+    expected_action: str,
+) -> None:
+    """누적 윈도우 판정도 원문 로그 경로와 동일한 MITRE 메타데이터를 사용한다."""
+    report = map_threat_to_incident(
+        is_threat=True,
+        rule_name=rule_name,
+        source_ip="198.51.100.52",
+        target_accounts=("root", "root", "admin"),
+        target_identifier="i-0123456789abcdef0",
+        incident_id="INC-WINDOW-SSH-001",
+    )
+
+    assert isinstance(report, IncidentReport)
+    assert report.incident_id == "INC-WINDOW-SSH-001"
+    assert report.mitre_id == expected_mitre_id
+    assert report.risk_level == expected_risk
+    assert report.action_required == expected_action
+    assert report.target_accounts == ("root", "admin")
+
+
+@pytest.mark.parametrize(
+    ("is_threat", "rule_name", "target_accounts", "message"),
+    [
+        (False, None, ("root",), "탐지 가능한"),
+        (True, "UNKNOWN_RULE", ("root",), "지원하지 않는 탐지 룰"),
+        (True, "SSH_BRUTE_FORCE", (), "최소 한 개의 대상 계정"),
+    ],
+)
+def test_map_threat_to_incident_rejects_invalid_decisions(
+    is_threat: bool,
+    rule_name: str | None,
+    target_accounts: tuple[str, ...],
+    message: str,
+) -> None:
+    """비위협·미지 룰·대상 누락은 불완전한 IncidentReport로 승격하지 않는다."""
+    with pytest.raises(ValueError, match=message):
+        map_threat_to_incident(
+            is_threat=is_threat,
+            rule_name=rule_name,
+            source_ip="198.51.100.52",
+            target_accounts=target_accounts,
+        )
