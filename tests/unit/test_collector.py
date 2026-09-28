@@ -13,11 +13,15 @@ from typing import Any
 import pytest
 
 from collector.cw_processor import (
+    NGINX_SUBSCRIPTION_FILTER_SPEC,
     SUBSCRIPTION_FILTER_SPEC,
+    SUBSCRIPTION_FILTER_SPECS,
     decode_cw_logs,
+    deduplicate_log_events,
     matches_subscription_filter,
+    route_cw_logs,
 )
-from contracts.events import CloudWatchLogsPayload, SyslogAuthEvent
+from contracts.events import CloudWatchLogEvent, CloudWatchLogsPayload, SyslogAuthEvent
 
 
 def test_decode_cw_logs_success(sample_cw_event: dict[str, Any]) -> None:
@@ -537,3 +541,249 @@ def test_cloudwatch_agent_timestamp_z_directive_regex() -> None:
     assert cw_agent_tz_regex.search(legacy_ts) is None, (
         f"[회귀 경고] 구 RSYSLOG_FileFormat 타임존이 Agent %z 정규식에 매칭됨: {legacy_ts!r}"
     )
+
+
+def test_cw_agent_config_nginx_and_buffering_tuning() -> None:
+    """CloudWatch Agent JSON 설정의 Nginx 수집 경로, 포맷 및 버퍼링 튜닝(3초 SLA) 검증.
+
+    Why:
+        10초 관통 파이프라인의 수집 단계 3초 이내 SLA 준수를 위해
+        force_flush_interval이 3초 이하로 튜닝되었는지 확인하고,
+        /var/log/nginx/access.log가 중앙 로그 그룹으로 수집되도록 설정되었는지 검증함.
+    """
+    config_paths = [
+        Path("amazon-cloudwatch-agent.json"),
+        Path("src/collector/amazon-cloudwatch-agent.json"),
+    ]
+
+    for cfg_path in config_paths:
+        assert cfg_path.exists(), f"{cfg_path} 파일이 존재해야 합니다."
+        with cfg_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        logs_section = data.get("logs", {})
+        # 1. 버퍼링 튜닝 검증 (수집 지연 3초 이내 SLA)
+        force_flush = logs_section.get("force_flush_interval")
+        assert force_flush is not None, "logs.force_flush_interval 설정이 누락되었습니다."
+        assert force_flush <= 3, f"force_flush_interval은 3초 이내여야 합니다: {force_flush}"
+
+        # 2. 수집 파일 리스트 검증
+        collect_list = (
+            logs_section.get("logs_collected", {}).get("files", {}).get("collect_list", [])
+        )
+        assert len(collect_list) >= 2, "collect_list에 최소 2개(auth, nginx) 설정이 필요합니다."
+
+        # auth.log 검증
+        auth_entry = next((e for e in collect_list if "auth.log" in e.get("file_path", "")), None)
+        assert auth_entry is not None, "auth.log 수집 항목이 누락되었습니다."
+        assert auth_entry["log_group_name"] == "/cloudshield/target/auth-log"
+
+        # nginx access.log 검증
+        nginx_entry = next(
+            (e for e in collect_list if "access.log" in e.get("file_path", "")), None
+        )
+        assert nginx_entry is not None, "nginx access.log 수집 항목이 누락되었습니다."
+        assert nginx_entry["file_path"] == "/var/log/nginx/access.log"
+        assert nginx_entry["log_group_name"] == "/cloudshield/target/nginx-access-log"
+        assert nginx_entry["log_stream_name"] == "{instance_id}"
+        assert nginx_entry["timestamp_format"] == "%d/%b/%Y:%H:%M:%S %z"
+
+    # 루트와 src/collector/ 간 동기화 일치 단언
+    root_content = Path("amazon-cloudwatch-agent.json").read_text(encoding="utf-8")
+    src_content = Path("src/collector/amazon-cloudwatch-agent.json").read_text(encoding="utf-8")
+    assert json.loads(root_content) == json.loads(src_content), (
+        "루트와 src/collector/의 amazon-cloudwatch-agent.json 내용이 불일치합니다."
+    )
+
+
+def test_nginx_access_log_timestamp_format_parsing() -> None:
+    """Nginx $time_local 포맷과 CW Agent %d/%b/%Y:%H:%M:%S %z 파싱 정합성 검증."""
+    test_cases = [
+        ("04/Sep/2026:15:00:01 +0000", datetime(2026, 9, 4, 15, 0, 1, tzinfo=UTC)),
+        (
+            "28/Sep/2026:20:45:10 +0900",
+            datetime(2026, 9, 28, 20, 45, 10, tzinfo=timezone(timedelta(hours=9))),
+        ),
+        (
+            "01/Jan/2026:00:00:00 -0500",
+            datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone(timedelta(hours=-5))),
+        ),
+    ]
+
+    for ts_str, expected_dt in test_cases:
+        parsed = datetime.strptime(ts_str, "%d/%b/%Y:%H:%M:%S %z")
+        assert parsed == expected_dt
+        assert parsed.utcoffset() == expected_dt.utcoffset()
+
+
+def test_route_cw_logs_multi_stream() -> None:
+    """CloudWatch Logs logGroup 경로에 따른 멀티 스트림 라우팅 분기 검증."""
+    # 1. SSH auth-log 스트림 라우팅
+    auth_msg = (
+        "Sep 03 14:20:01 target-ec2 sshd[12341]: "
+        "Failed password for invalid user admin from 198.51.100.50 port 49152 ssh2"
+    )
+    auth_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/auth-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-SSH-FailedPassword-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(
+                id="ev-auth-1",
+                timestamp=1788500000000,
+                message=auth_msg,
+            )
+        ],
+    )
+    auth_event = {"awslogs": {"data": auth_payload.to_awslogs_data()}}
+    auth_routed = route_cw_logs(auth_event)
+    assert auth_routed["stream_type"] == "auth"
+    assert auth_routed["log_group"] == "/cloudshield/target/auth-log"
+    assert len(auth_routed["messages"]) == 1
+    assert "Failed password" in auth_routed["messages"][0]
+    assert auth_routed["dropped_duplicates"] == 0
+
+    # 2. Nginx access-log 스트림 라우팅
+    nginx_msg = (
+        "198.51.100.77 - - [28/Sep/2026:11:52:38 +0000] "
+        '"GET /admin HTTP/1.1" 401 150 "-" "curl/7.81.0" 0.002 "-"'
+    )
+    nginx_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(
+                id="ev-nginx-1",
+                timestamp=1788500001000,
+                message=nginx_msg,
+            )
+        ],
+    )
+    nginx_event = {"awslogs": {"data": nginx_payload.to_awslogs_data()}}
+    nginx_routed = route_cw_logs(nginx_event)
+    assert nginx_routed["stream_type"] == "nginx"
+    assert nginx_routed["log_group"] == "/cloudshield/target/nginx-access-log"
+    assert len(nginx_routed["messages"]) == 1
+    assert "GET /admin" in nginx_routed["messages"][0]
+    assert nginx_routed["dropped_duplicates"] == 0
+
+    # 3. 미등록 알 수 없는 logGroup 인입 시 격리
+    unknown_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/unknown/other-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=[],
+        logEvents=[
+            CloudWatchLogEvent(
+                id="ev-unk-1",
+                timestamp=1788500002000,
+                message="unknown system message",
+            )
+        ],
+    )
+    unknown_event = {"awslogs": {"data": unknown_payload.to_awslogs_data()}}
+    unknown_routed = route_cw_logs(unknown_event)
+    assert unknown_routed["stream_type"] == "unknown"
+
+
+def test_deduplicate_log_events_direct() -> None:
+    """deduplicate_log_events 함수 단독 호출 멱등성 검증."""
+    seen_ids = {"ev-existing"}
+    events = [
+        CloudWatchLogEvent(id="ev-existing", timestamp=1000, message="m1"),
+        CloudWatchLogEvent(id="ev-new-1", timestamp=2000, message="m2"),
+        CloudWatchLogEvent(id="ev-new-2", timestamp=3000, message="m3"),
+    ]
+    unique = deduplicate_log_events(events, seen_ids)
+    assert len(unique) == 2
+    assert [e.id for e in unique] == ["ev-new-1", "ev-new-2"]
+    assert seen_ids == {"ev-existing", "ev-new-1", "ev-new-2"}
+
+
+def test_route_cw_logs_at_least_once_idempotency() -> None:
+    """At-least-once 재전송 시 중복 event.id 필터링 및 멱등성 보장 검증."""
+    seen_ids: set[str] = set()
+
+    # 1회차: 이벤트 3건 인입 (ev-1, ev-2, ev-3)
+    batch_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(
+                id="ev-1",
+                timestamp=1788500001000,
+                message='198.51.100.77 - - [28/Sep/2026:11:52:38 +0000] "GET /admin" 401',
+            ),
+            CloudWatchLogEvent(
+                id="ev-2",
+                timestamp=1788500002000,
+                message='198.51.100.77 - - [28/Sep/2026:11:52:39 +0000] "GET /login" 401',
+            ),
+            CloudWatchLogEvent(
+                id="ev-3",
+                timestamp=1788500003000,
+                message='198.51.100.77 - - [28/Sep/2026:11:52:40 +0000] "GET /shell" 404',
+            ),
+        ],
+    )
+    event1 = {"awslogs": {"data": batch_payload.to_awslogs_data()}}
+    routed1 = route_cw_logs(event1, seen_event_ids=seen_ids)
+    assert len(routed1["messages"]) == 3
+    assert routed1["dropped_duplicates"] == 0
+    assert seen_ids == {"ev-1", "ev-2", "ev-3"}
+
+    # 2회차: 네트워크 재시도로 중복 이벤트 인입 (ev-2, ev-3 재인입 + 신규 ev-4)
+    retry_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(
+                id="ev-2",
+                timestamp=1788500002000,
+                message='198.51.100.77 - - [28/Sep/2026:11:52:39 +0000] "GET /login" 401',
+            ),
+            CloudWatchLogEvent(
+                id="ev-3",
+                timestamp=1788500003000,
+                message='198.51.100.77 - - [28/Sep/2026:11:52:40 +0000] "GET /shell" 404',
+            ),
+            CloudWatchLogEvent(
+                id="ev-4",
+                timestamp=1788500004000,
+                message='198.51.100.77 - - [28/Sep/2026:11:52:41 +0000] "GET /api" 401',
+            ),
+        ],
+    )
+    event2 = {"awslogs": {"data": retry_payload.to_awslogs_data()}}
+    routed2 = route_cw_logs(event2, seen_event_ids=seen_ids)
+    assert len(routed2["messages"]) == 1
+    assert routed2["dropped_duplicates"] == 2
+    assert routed2["event_ids"] == ["ev-4"]
+    assert "GET /api" in routed2["messages"][0]
+    assert seen_ids == {"ev-1", "ev-2", "ev-3", "ev-4"}
+
+
+def test_nginx_subscription_filter_spec() -> None:
+    """Nginx 구독 필터 파라미터 명세 및 사전 딕셔너리 구조 검증."""
+    assert NGINX_SUBSCRIPTION_FILTER_SPEC["filter_name"] == "CloudShield-Nginx-Access-Filter"
+    assert (
+        NGINX_SUBSCRIPTION_FILTER_SPEC["log_group_name"] == "/cloudshield/target/nginx-access-log"
+    )
+    assert "401" in NGINX_SUBSCRIPTION_FILTER_SPEC["filter_pattern"]
+    assert "403" in NGINX_SUBSCRIPTION_FILTER_SPEC["filter_pattern"]
+    assert NGINX_SUBSCRIPTION_FILTER_SPEC["destination_type"] == "lambda"
+
+    assert "auth" in SUBSCRIPTION_FILTER_SPECS
+    assert "nginx" in SUBSCRIPTION_FILTER_SPECS

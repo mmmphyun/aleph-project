@@ -24,6 +24,7 @@ from reporter.slack_notifier import (
     MAX_FIELD_LENGTH,
     MAX_HEADER_LENGTH,
     build_slack_payload,
+    build_waf_slack_payload,
     send_slack_alert,
     truncate_text,
 )
@@ -899,3 +900,185 @@ def test_send_slack_alert_orchestrator_integration_mock(
     )
     assert "✅ 격리 성공 (SG 전면 차단)" in remediation_section["text"]["text"]
     assert "✅ IPSet 차단 완료 (/32)" in remediation_section["text"]["text"]
+
+
+def test_build_waf_slack_payload_required_keys() -> None:
+    """WAF 전용 Block Kit 페이로드의 4대 필수 키 및 레이아웃 무결성 검증.
+
+    Why:
+        L7 Web 침해 대응 시 생성되는 Slack 카드가 헌법 5.1-3 필수 키
+        (incident_id, rule_name, source_ip, remediation_action)를 완비하고
+        WAF 방어 계층 특화 블록을 정상 렌더링하는지 확인.
+    """
+    waf_report = IncidentReport(
+        incident_id="INC-20260904-003",
+        attack_type="Web L7 Brute Force",
+        mitre_id="T1110.001",
+        risk_level="MEDIUM",
+        source_ip="198.51.100.77",
+        target_identifier="i-0123456789abcdef0",
+        target_accounts=["webadmin"],
+        summary_ko=(
+            "출발지 IP 198.51.100.77로부터 웹 엔드포인트에 비정상적인 "
+            "반복 인증 실패가 발생하여 WAF 차단을 요청합니다."
+        ),
+        action_required="BLOCK_WAF",
+        recommendations=[
+            "AWS WAF IPSet에 198.51.100.77/32 등록 및 인바운드 차단",
+            "웹 로그인 엔드포인트에 Rate Limiting 규칙 추가 적용",
+        ],
+    )
+
+    payload = build_waf_slack_payload(waf_report)
+
+    # 1. 4대 필수 키 검증
+    assert payload["incident_id"] == "INC-20260904-003"
+    assert payload["rule_name"] == "Web L7 Brute Force"
+    assert payload["source_ip"] == "198.51.100.77"
+    assert payload["remediation_action"] == "BLOCK_WAF"
+    assert payload.get("is_waf_card") is True
+
+    # 2. Block Kit 레이아웃 구조 검증
+    blocks = payload["blocks"]
+    assert len(blocks) >= 6
+
+    # 헤더 이모지 및 제목 확인
+    header = blocks[0]
+    assert header["type"] == "header"
+    assert "L7 WAF 웹 침해사고" in header["text"]["text"]
+
+    # WAF 방어 계층 섹션 존재 확인
+    waf_section = next(
+        b for b in blocks if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    assert "198.51.100.77/32" in waf_section["text"]["text"]
+    assert "CloudShield-Blocked-IPSet" in waf_section["text"]["text"]
+
+
+def test_build_waf_slack_payload_remediation_status() -> None:
+    """WAF 차단 집행 결과(성공/실패/대기) 및 커스텀 IPSet명 표시 검증."""
+    report = IncidentReport(
+        incident_id="INC-20260929-010",
+        attack_type="Web L7 Directory Traversal",
+        mitre_id="T1190",
+        risk_level="HIGH",
+        source_ip="203.0.113.88",
+        target_identifier="i-0abcd1234ef56789b",
+        target_accounts=[],
+        summary_ko="공격자가 디렉토리 순회 공격을 시도하였습니다.",
+        action_required="BLOCK_WAF",
+        recommendations=[],
+    )
+
+    # 1. 차단 성공 (waf_blocked=True)
+    payload_success = build_waf_slack_payload(
+        report,
+        remediation_result={
+            "waf_blocked": True,
+            "quarantine_applied": False,
+            "iam_revoked": False,
+        },
+        ipset_name="Production-WAF-Block-List",
+    )
+    waf_text_success = next(
+        b["text"]["text"]
+        for b in payload_success["blocks"]
+        if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    assert (
+        "✅ AWS WAFv2 IPSet `Production-WAF-Block-List` /32 등록 차단 집행 완료" in waf_text_success
+    )
+    assert payload_success["remediation_result"]["waf_blocked"] is True
+
+    # 2. 차단 실패 (waf_blocked=False)
+    payload_fail = build_waf_slack_payload(
+        report,
+        remediation_result={
+            "waf_blocked": False,
+            "quarantine_applied": False,
+            "iam_revoked": False,
+        },
+    )
+    waf_text_fail = next(
+        b["text"]["text"]
+        for b in payload_fail["blocks"]
+        if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    assert "❌ AWS WAFv2 IPSet `CloudShield-Blocked-IPSet` 차단 실패" in waf_text_fail
+
+    # 3. 차단 미집행/대기 (remediation_result=None)
+    payload_pending = build_waf_slack_payload(report, remediation_result=None)
+    waf_text_pending = next(
+        b["text"]["text"]
+        for b in payload_pending["blocks"]
+        if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    assert (
+        "⏳ AWS WAFv2 IPSet `CloudShield-Blocked-IPSet` 차단 집행 진행 중 / 대기"
+        in waf_text_pending
+    )
+
+
+def test_build_waf_slack_payload_truncation() -> None:
+    """초과 길이 필드가 포함된 경우에도 500자 상한으로 안전하게 잘리는지 검증."""
+    report = IncidentReport(
+        incident_id="INC-LONG-" + ("A" * 100),
+        attack_type="L7 Web Attack " + ("B" * 100),
+        mitre_id="T1110",
+        risk_level="HIGH",
+        source_ip="198.51.100.99",
+        target_identifier="i-0123456789abcdef1",
+        target_accounts=["admin_" + ("C" * 100)],
+        summary_ko="긴 요약: " + ("위협 " * 120),
+        action_required="BLOCK_WAF",
+        recommendations=["긴 권고 조치 항목입니다. " * 30],
+    )
+
+    payload = build_waf_slack_payload(report)
+
+    for block in payload["blocks"]:
+        if "text" in block and isinstance(block["text"], dict):
+            assert len(block["text"]["text"]) <= MAX_FIELD_LENGTH
+        if "fields" in block:
+            for field in block["fields"]:
+                assert len(field["text"]) <= MAX_FIELD_LENGTH
+
+
+def test_send_slack_alert_auto_waf_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """send_slack_alert 실행 시 BLOCK_WAF 조치에 대해 자동으로 WAF 카드가 선택 발송되는지 검증."""
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/VALID_WAF"
+
+    mock_response = MagicMock()
+    mock_response.getcode.return_value = 200
+    mock_response.status = 200
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = None
+
+    captured_requests: list[urllib.request.Request] = []
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> MagicMock:
+        captured_requests.append(req)
+        return mock_response
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    waf_report = IncidentReport(
+        incident_id="INC-20260904-003",
+        attack_type="Web L7 Brute Force",
+        mitre_id="T1110.001",
+        risk_level="MEDIUM",
+        source_ip="198.51.100.77",
+        target_identifier="i-0123456789abcdef0",
+        target_accounts=["webadmin"],
+        summary_ko="WAF 단독 차단 자동 발송 검증",
+        action_required="BLOCK_WAF",
+        recommendations=[],
+    )
+
+    success = send_slack_alert(waf_report, webhook_url=dummy_webhook)
+    assert success is True
+    assert len(captured_requests) == 1
+
+    sent_payload = json.loads(captured_requests[0].data.decode("utf-8"))
+    assert sent_payload.get("is_waf_card") is True
+    assert "L7 WAF 웹 침해사고" in sent_payload["blocks"][0]["text"]["text"]

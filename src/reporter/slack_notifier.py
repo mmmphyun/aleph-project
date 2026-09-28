@@ -298,6 +298,186 @@ def build_slack_payload(
     return result_payload
 
 
+def build_waf_slack_payload(
+    report: IncidentReport,
+    remediation_result: RemediationResult | dict[str, Any] | None = None,
+    ipset_name: str | None = None,
+) -> dict[str, Any]:
+    """L7 WAF 웹 침해사고 전용 Slack Block Kit 알림 카드 페이로드 생성.
+
+    Why:
+        L7 Web 공격(웹 브루트포스, 디렉토리 스캐닝, 파라미터 스프레잉) 탐지 및
+        AWS WAFv2 IPSet /32 차단 집행 결과를 SecOps 관리자 채널에 WAF 중심 레이아웃으로
+        즉각 시각화하여 웹 보안 상태를 명확히 인지하도록 지원함.
+
+    Constraints:
+        - 4대 필수 키 누락 방지: incident_id, rule_name, source_ip, remediation_action
+        - 모든 블록 텍스트는 500자(헤더 150자) 안전 잘라내기(truncate_text) 적용.
+        - WAF IPSet 명세 및 차단 결과 상태를 시각적으로 강조.
+
+    Side-effects / Edge-cases:
+        - remediation_result가 전달되지 않은 경우에도 WAF 차단 대기 상태를 안전하게 표시.
+        - target_accounts가 비어 있는 경우 '웹 엔드포인트 전역 스캔' 문구 제공.
+    """
+    risk_emojis = {
+        "HIGH": "🚨",
+        "MEDIUM": "🛡️",
+        "LOW": "ℹ️",
+    }
+    emoji = risk_emojis.get(report.risk_level, "🛡️")
+
+    header_text = truncate_text(
+        f"{emoji} [CloudShield] L7 WAF 웹 침해사고 탐지 및 차단 알림", MAX_HEADER_LENGTH
+    )
+    summary_text = truncate_text(f"*L7 웹 위협 요약:*\n{report.summary_ko}", MAX_FIELD_LENGTH)
+
+    field_incident_id = truncate_text(
+        f"*사건 ID (incident_id):*\n`{report.incident_id}`", MAX_FIELD_LENGTH
+    )
+    field_attack_type = truncate_text(
+        f"*공격 유형 (rule_name):*\n{report.attack_type}", MAX_FIELD_LENGTH
+    )
+    field_source_ip = truncate_text(
+        f"*차단 IP (source_ip):*\n`{report.source_ip}`", MAX_FIELD_LENGTH
+    )
+    field_risk_level = truncate_text(
+        f"*위험도 (risk_level):*\n*{report.risk_level}*", MAX_FIELD_LENGTH
+    )
+    field_target_id = truncate_text(
+        f"*타깃 인스턴스:*\n`{report.target_identifier}`", MAX_FIELD_LENGTH
+    )
+    field_remediation = truncate_text(
+        f"*대응 조치 (remediation_action):*\n*{report.action_required}*", MAX_FIELD_LENGTH
+    )
+
+    waf_target_name = ipset_name or "CloudShield-Blocked-IPSet"
+    if remediation_result is not None:
+        waf_blocked = bool(remediation_result.get("waf_blocked", False))
+        if waf_blocked:
+            waf_status = f"✅ AWS WAFv2 IPSet `{waf_target_name}` /32 등록 차단 집행 완료"
+        else:
+            waf_status = f"❌ AWS WAFv2 IPSet `{waf_target_name}` 차단 실패 / 미완료"
+    else:
+        waf_status = f"⏳ AWS WAFv2 IPSet `{waf_target_name}` 차단 집행 진행 중 / 대기"
+
+    waf_detail_text = truncate_text(
+        f"*L7 WAF 방어 계층 집행 현황:*\n"
+        f"• 차단 계층: AWS WAFv2 WebACL & IPSet\n"
+        f"• 차단 대상: `{report.source_ip}/32`\n"
+        f"• 상태: {waf_status}",
+        MAX_FIELD_LENGTH,
+    )
+
+    if report.target_accounts:
+        accounts_text = ", ".join(report.target_accounts)
+    else:
+        accounts_text = "지정 계정 없음 (웹 엔드포인트 URL/디렉토리 스캐닝)"
+    accounts_block_text = truncate_text(
+        f"*공격 대상 엔드포인트/계정:*\n{accounts_text}", MAX_FIELD_LENGTH
+    )
+
+    if report.recommendations:
+        rec_lines = [f"{idx + 1}. {rec}" for idx, rec in enumerate(report.recommendations)]
+        recommendations_text = "\n".join(rec_lines)
+    else:
+        recommendations_text = "별도 권고 조치 없음 (WAF 차단 완료)"
+    recommendations_block_text = truncate_text(
+        f"*SecOps 웹 방어 권고 조치:*\n{recommendations_text}", MAX_FIELD_LENGTH
+    )
+
+    context_text = truncate_text(
+        f"MITRE ATT&CK: `{report.mitre_id}` | AWS WAFv2 L7 Defense Layer | "
+        f"CloudShield 10-Second Auto-Remediation",
+        MAX_FIELD_LENGTH,
+    )
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": header_text,
+                "emoji": True,
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": summary_text,
+            },
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": field_incident_id},
+                {"type": "mrkdwn", "text": field_attack_type},
+                {"type": "mrkdwn", "text": field_source_ip},
+                {"type": "mrkdwn", "text": field_risk_level},
+                {"type": "mrkdwn", "text": field_target_id},
+                {"type": "mrkdwn", "text": field_remediation},
+            ],
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": waf_detail_text,
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": accounts_block_text,
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": recommendations_block_text,
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": context_text,
+                }
+            ],
+        },
+    ]
+
+    fallback_text = truncate_text(
+        f"[{report.risk_level}] CloudShield L7 WAF 차단 - "
+        f"{report.incident_id}: {report.attack_type}",
+        MAX_FIELD_LENGTH,
+    )
+
+    result_payload: dict[str, Any] = {
+        "text": fallback_text,
+        "blocks": blocks,
+        "incident_id": report.incident_id,
+        "rule_name": report.attack_type,
+        "source_ip": report.source_ip,
+        "remediation_action": report.action_required,
+        "is_waf_card": True,
+    }
+
+    if remediation_result is not None:
+        result_payload["remediation_result"] = {
+            "waf_blocked": bool(remediation_result.get("waf_blocked", False)),
+            "quarantine_applied": bool(remediation_result.get("quarantine_applied", False)),
+            "iam_revoked": bool(remediation_result.get("iam_revoked", False)),
+        }
+
+    return result_payload
+
+
 def send_slack_alert(
     report: IncidentReport,
     webhook_url: str,
@@ -305,6 +485,8 @@ def send_slack_alert(
     remediation_result: RemediationResult | dict[str, Any] | None = None,
     max_retries: int = 1,
     retry_delay: float = 0.5,
+    use_waf_card: bool | None = None,
+    ipset_name: str | None = None,
 ) -> bool:
     """침해사고 분석 보고서를 Slack Block Kit 페이로드로 변환하여 Webhook 발송.
 
@@ -321,6 +503,9 @@ def send_slack_alert(
         - remediation_result: 다중 계층 차단 실행 결과 모델 (선택적).
         - max_retries: 일시 장애(5xx, 일시 연결 끊김) 시 재시도 상한 (기본값 1회).
         - retry_delay: 재시도 대기 간격 (초, 기본값 0.5초).
+        - use_waf_card: WAF 전용 카드 강제 여부
+          (기본값: report.action_required == "BLOCK_WAF" 자동 감지).
+        - ipset_name: WAF 카드에 표시할 IPSet 이름 (옵션).
         - 반환값: 발송 성공 여부 (HTTP 200 수신 시 True, 실패 시 False).
 
     Side-effects / Edge-cases:
@@ -342,7 +527,15 @@ def send_slack_alert(
         return False
 
     try:
-        payload = build_slack_payload(report, remediation_result=remediation_result)
+        is_waf = (
+            use_waf_card if use_waf_card is not None else (report.action_required == "BLOCK_WAF")
+        )
+        if is_waf:
+            payload = build_waf_slack_payload(
+                report, remediation_result=remediation_result, ipset_name=ipset_name
+            )
+        else:
+            payload = build_slack_payload(report, remediation_result=remediation_result)
         encoded_data = json.dumps(payload).encode("utf-8")
     except Exception as exc:
         logger.error("Slack Block Kit 페이로드 직렬화 실패: %s", exc)
