@@ -23,7 +23,7 @@
   * 공격 발생 즉시 관제 인력의 수동 개입 없이 **10초 이내에 중앙 수집 $\rightarrow$ 위협 탐지 $\rightarrow$ L4/L7 원자적 차단 $\rightarrow$ Slack 알림 전파**를 완결하는 무인 SecOps 파이프라인 구축.
 * **정량적 핵심 성능 지표 (KPI)**:
   * **전체 파이프라인 관통 시간**: 공격 로그 생성 시점부터 차단 완료 및 알림 전파까지 $\le 10$초.
-  * **차단 멱등성 및 원자성 보장**: Boto3 API 호출 간 레이스 컨디션을 방지하고 부분 실패 시 자동 격리/롤백.
+  * **차단 멱등성 및 계층별 독립 격리 보장**: Boto3 API 호출 간 레이스 컨디션을 방지하고, L4 SG 및 L7 WAF 차단을 단계별 독립 트랜잭션으로 집행해 부분 실패 시에도 기성공 조치를 안전하게 유지.
     * **오탐 방지 임계치 윈도우**: 5분(300초) 슬라이딩 윈도우 내 실패 횟수를 기반으로 상태를 판정해 단일 오인 트래픽 차단 방지 (`DETECTION_WINDOW_SECONDS = 300`).
 
 ### 1.3 핵심 위협 시나리오
@@ -44,13 +44,13 @@
        │
        ▼ (Hydra / Nmap 모의 공격)
 [타깃 워크로드 (EC2)]
-       │ (로그 발생: /var/log/secure, /var/log/nginx/access.log)
+       │ (로그 발생: /var/log/auth.log, /var/log/nginx/access.log)
        ▼
 [CloudWatch Agent] (중앙 집중 수집 및 CW Logs 전송, Buffer Interval 최적화)
        │
        ▼ (CW Logs Subscription Filter)
 [Lambda Orchestrator] (초경량 서버리스 오케스트레이터)
-       ├─► [탐지 엔진 (Rule & Incident Mapper)] (ReDoS 방어 정규식 + LLM Few-shot 분석)
+       ├─► [탐지 엔진 (Rule & Incident Mapper)] (ReDoS 방어 정규식 + 결정론적 ATT&CK 매퍼)
        ├─► [DynamoDB 상태 윈도우] (TTL 기반 5분(300초) 슬라이딩 윈도우 / 중복 차단 방지 원자적 카운터)
        ├─► [복합 차단 엔진]
        │     ├─ L4: EC2 Security Group 격리 (인바운드 전면 차단)
@@ -76,6 +76,7 @@
         action_required: Literal[
             "BLOCK_WAF",
             "QUARANTINE_EC2",
+            "REVOKE_IAM_SESSION",
             "BLOCK_AND_QUARANTINE",
             "BLOCK_IP_ONLY",
             "ALERT_ONLY",
@@ -88,9 +89,9 @@
 ### 2.3 다중 계층 원자적 차단 및 복구 엔진
 * **탐지 vs 차단 단계별 판정 기준**:
   * **1단계 위협 탐지**: 5분(300초) 슬라이딩 윈도우 내 단일 계정 실패 $\ge 5$회 또는 고유 계정 $\ge 2$개 도달 시 시그니처 매칭 $\rightarrow$ `IncidentReport` 생성 및 `risk_level = "HIGH"` 부여.
-  * **2단계 원자적 차단 집행**: Lambda 오케스트레이터가 보고서의 **`action_required`** 값에 따라 대상별 Boto3 차단 API를 분기 실행함:
+  * **2단계 원자적 차단 집행**: Lambda 오케스트레이터가 보고서의 **`action_required`** 값에 따라 대상별 Boto3 차단 API를 독립 트랜잭션으로 분기 실행함:
     * `action_required == "BLOCK_AND_QUARANTINE"`: SSH 무차별 대입 탐지 시 L4 EC2 격리와 L7 WAF IPSet 차단을 동시 실행.
-    * `action_required == "BLOCK_WAF"`: 패스워드 스프레잉 및 Web 스캔 탐지 시 L7 WAF IPSet 차단 실행.
+    * `action_required in ("BLOCK_IP_ONLY", "BLOCK_WAF")`: 패스워드 스프레잉(`BLOCK_IP_ONLY`) 및 Web 스캔(`BLOCK_WAF`) 탐지 시 L7 WAF IPSet 차단 실행.
     * `action_required == "ALERT_ONLY"` 또는 `"NONE"`: 인프라 차단 API를 호출하지 않고 Slack 상황 전파만 수행.
 * **계층별 차단 실행 동작**:
   * **L4 격리 (Security Group)**:
@@ -113,7 +114,7 @@
 | :--- | :--- | :--- |
 | **네트워크** | • 모의 공격 시나리오 구현 (Hydra, Nmap 스크립트)<br>• 패킷 캡처 및 TCP 플래그/핸드셰이크 분석 보고서 | `network/`<br>`tests/unit/test_network.py`<br>`docs/roles/network/` |
 | **클라우드 B** | • EC2 CloudWatch Agent 중앙 수집 구성<br>• Slack Block Kit 리포터 및 Nginx 로깅 포맷 정의 | `src/collector/`<br>`src/reporter/`<br>`tests/unit/test_collector.py`<br>`tests/unit/test_reporter.py`<br>`docs/roles/cloud-b/` |
-| **보안** | • ReDoS 방어형 시그니처 탐지 정규식 룰<br>• MITRE ATT&CK 기반 Incident Mapper 및 LLM Few-shot 분석 | `src/detection/`<br>`tests/unit/test_rules.py`<br>`tests/unit/test_incident_mapper.py`<br>`docs/roles/security/` |
+| **보안** | • ReDoS 방어형 시그니처 탐지 정규식 룰<br>• MITRE ATT&CK 기반 결정론적 Incident Mapper | `src/detection/`<br>`tests/unit/test_rules.py`<br>`tests/unit/test_incident_mapper.py`<br>`docs/roles/security/` |
 | **클라우드 A (PL)** | • 공통 계약(Contracts) 및 Lambda 오케스트레이터<br>• DynamoDB 윈도우 카운터, Boto3 복합 차단 엔진<br>• Terraform IaC 및 moto 가상 AWS 테스트베드 하네스 | `src/contracts/`<br>`src/remediation/`<br>`infra/`<br>`tests/conftest.py`<br>`docs/roles/cloud-a/` |
 
 ### 3.2 협업 거버넌스 및 코드 품질 파이프라인
@@ -147,9 +148,9 @@ Phase 4   (W9   : 10.27 ~ 11.04) : 실기기 10초 관통 E2E 실측 & 데모/�
   * GitHub Actions 무인증 OIDC CI, PR 제목 린터, R&R 스코프 가드, 노션 동기화 배관 구축.
 * **Phase 2: 도메인 코어 로직 및 시나리오 1 파이프라인 결합 (09.11 ~ 09.28) [완료]**:
   * **네트워크**: SSH 단일 모의 연결, tcpdump L4 캡처, SYN-ACK 타임라인 분석, Docker 격리 Hydra 공격 시뮬레이션 완료.
-  * **보안**: SSH 무차별 대입 1차 시그니처 룰(`rules.py`), MITRE T1110.001 IncidentReport 매퍼(`incident_mapper.py`), 오탐 방어 단위 테스트 완료.
+  * **보안**: SSH 무차별 대입 1차 시그니처 룰(`rules.py`), MITRE T1110.001 결정론적 IncidentReport 매퍼(`incident_mapper.py`), 오탐 방어 단위 테스트 완료.
   * **클라우드 B**: 타깃 EC2 리눅스/Nginx 초기화, CloudWatch Agent 수집 설정(`amazon-cloudwatch-agent.json`), Slack Block Kit 전파 모듈(`slack_notifier.py`) 완료.
-  * **클라우드 A**: L4 Quarantine SG 교체 엔진, L7 WAF IPSet 차단 엔진, DynamoDB 3-버킷 타임스탬프 슬라이딩 윈도우(`auth_window.py`), 오케스트레이터-Slack 파이프라인 결합(PR #80) 완료.
+  * **클라우드 A**: L4 Quarantine SG 교체 엔진, L7 WAF IPSet 차단 엔진, DynamoDB 2-버킷 타임스탬프 슬라이딩 윈도우(`auth_window.py`), 오케스트레이터-Slack 파이프라인 결합(PR #80) 완료.
 
 #### 2) 잔여 마일스톤 (2026.09.29 ~ 2026.11.04)
 * **Phase 2.5: 시나리오 2(Web Directory Scan & Spraying) 확장 (09.29 ~ 10.12, 2주)**:
@@ -172,10 +173,10 @@ Phase 4   (W9   : 10.27 ~ 11.04) : 실기기 10초 관통 E2E 실측 & 데모/�
    * *아키텍처 결정*: 10초 실시간 Critical Path에는 CW Agent 기반의 L4 SG / L7 WAF 차단만 배치하고, IAM 세션 무효화는 비동기 사후 파이프라인(Future Work)으로 분리하여 파이프라인 정체성을 수호함.
 2. **CloudWatch Logs 전달 지연**:
    * *문제*: CloudWatch 기본 전송 주기로 인한 SLA 초과 위험.
-   * *대응*: CloudWatch Agent의 `force_flush_interval`을 1초로 최적화하고, Lambda Subscription Filter를 직접 연결하여 1~3초 내 수집 달성.
+   * *대응*: EC2 인스턴스 CloudWatch Agent 수집 경로를 최적화하고, CloudWatch Subscription Filter를 Lambda에 직접 연결하여 로그 인입 즉시 비동기 스트림 처리.
 3. **차단 API 중복 실행 및 레이스 컨디션**:
-   * *문제*: 대량 공격 트래픽 유입 시 Lambda 다중 호출로 인한 중복 차단 Boto3 API 충돌.
-   * *대응*: DynamoDB 조건부 쓰기를 적용해 최초 1회 차단만 원자적으로 실행.
+   * *문제*: 대량 공격 트래픽 유입 시 Lambda 다중 호출로 인한 중복 카운트 및 Boto3 API 경합.
+   * *대응*: DynamoDB 시간 버킷(`epoch // 300`) 기반의 조건식 없는 원자적 연산(`ADD`, `list_append`)을 적용해 동시성 충돌을 원천 배제하고, 차단 엔진은 Boto3 호출 멱등성 및 WAF LockToken 낙관적 락 재시도로 일관성을 보장.
 4. **정규식 백트래킹(ReDoS) 취약점**:
    * *문제*: 악의적인 페이로드 분석 시 정규식 엔진의 CPU 고갈 및 지연 발생.
    * *대응*: 중첩 수량자(`(a+)+`)를 원천 배제한 선형 시간 정규식만 채택하고 정적 분석 Linter로 사전 차단.
@@ -188,8 +189,8 @@ Phase 4   (W9   : 10.27 ~ 11.04) : 실기기 10초 관통 E2E 실측 & 데모/�
 
 | 공격 시나리오 | 발생 도구 및 페이로드 | 탐지 및 차단 조건 | 기대 차단 동작 | 최종 알림 검증 |
 | :--- | :--- | :--- | :--- | :--- |
-| **SSH Brute-Force** | Hydra (`-l root -P passlist.txt`) | 5분(300초) 내 인증 실패 $\ge 5$회 (심각도 HIGH) | EC2 SG $\rightarrow$ `sg-quarantine` 교체 (SSH 접속 즉시 끊김) | Slack 채널에 공격자 IP, 차단 SG ID 전송 |
-| **Port Scan / Dirb** | Nmap / Gobuster | Nginx 404/403 응답 빈도 임계치 초과 (심각도 HIGH) | AWS WAFv2 IPSet에 해당 IP 등록 (HTTP 403 차단) | Slack 채널에 차단 IP, WAF 룰 이름 전송 |
+| **SSH Brute-Force** | Hydra (`-l root -P passlist.txt`) | 5분(300초) 내 인증 실패 $\ge 5$회 (심각도 HIGH) | EC2 SG `sg-quarantine` 격리 및 L7 WAF IPSet 동시 차단 (신규 세션 차단, 기존 연결은 세션 유지 후 만료) | Slack 채널에 공격자 IP, 침해사고 요약, L4/L7 원자적 차단 집행 현황 전송 |
+| **Port Scan / Dirb** | Nmap / Gobuster | Nginx 404/403 응답 빈도 임계치 초과 (심각도 HIGH) | AWS WAFv2 IPSet에 해당 IP 등록 (HTTP 403 차단) | Slack 채널에 공격자 IP, 공격 유형(rule_name), L7 WAF 차단 성공 전송 |
 
 ### 4.2 완료 기준
 * [ ] **코드 품질 게이트**: `powershell .\scripts\check.ps1` 무경고 100% 통과 (Ruff, Pytest).
