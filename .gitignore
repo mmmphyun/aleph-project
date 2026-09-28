@@ -37,6 +37,7 @@ override.tf.json
 *.swp
 .DS_Store
 .agent-role
+HANDOVER.md
 
 # AWS and secret material
 .aws/
