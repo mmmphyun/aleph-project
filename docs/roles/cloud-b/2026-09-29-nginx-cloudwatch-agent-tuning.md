@@ -18,7 +18,7 @@ CloudShield의 프로젝트 핵심 목표는 **"단일 10초 관통 자동 대�
 1. **CloudWatch Agent 버퍼링 튜닝 (`force_flush_interval: 2`)**: 메모리 버퍼 플러시 주기를 2초로 강제하여 수집 지연 3초 이내 SLA 엄격 보장.
 2. **Nginx access.log 다중 스트림 격리 수집**: 기존 SSH 인증 로그(`/var/log/auth.log`)와 더불어 L7 웹 공격 로그(`/var/log/nginx/access.log`)를 독립 수집 파이프라인으로 분리.
 3. **타임스탬프 파싱 정합성**: Nginx `$time_local` 포맷과 CloudWatch Agent `%d/%b/%Y:%H:%M:%S %z` 디렉티브를 정합화하여 로그 순서 역전(Out-of-order) 방지.
-4. **멀티 스트림 라우터 및 At-least-once 멱등성 보장**: Lambda 수신 페이로드를 logGroup에 따라 자동 분기하고, 재시도로 인한 중복 이벤트 인입을 차단.
+4. **멀티 스트림 라우터 및 단일 배치 1차 중복 제거**: Lambda 수신 페이로드를 logGroup에 따라 자동 분기하고, 단일 배치 내 중복 이벤트를 선제 필터링 (분산 영속 멱등성은 클라우드 A DynamoDB 연계 계약으로 이관).
 5. **L7 WAF 차단 전용 Slack Block Kit 카드 구현**: L7 Web 공격 탐지 및 WAF IPSet 차단 집행 결과를 관제 센터에 즉각 시각화.
 
 ---
@@ -70,7 +70,7 @@ CloudShield의 프로젝트 핵심 목표는 **"단일 10초 관통 자동 대�
 
 ---
 
-## 3. 멀티 스트림 라우터 및 At-least-once 멱등성 보장 (`cw_processor.py`)
+## 3. 멀티 스트림 라우터 및 단일 배치 중복 필터링 (`cw_processor.py`)
 
 ### 3.1 다중 스트림 분기 라우팅 (`route_cw_logs`)
 Lambda 위협 분석 오케스트레이터가 단일 진입점으로 CloudWatch Logs 구독 필터 이벤트를 수신할 때, `logGroup` 메타데이터를 기반으로 수신 스트림의 종류를 판별합니다:
@@ -90,12 +90,20 @@ logGroup: /auth-log   logGroup: /nginx-access-log
 [SyslogAuthEvent]     [Nginx L7 / WAF 규칙 엔진]
 ```
 
-### 3.2 At-least-once 전달 환경 대비 멱등성(Idempotency) 보장
-CloudWatch Logs Subscription Filter는 분산 네트워크 환경에서 최소 1회(At-least-once) 전달을 보장하므로, 네트워크 재전송 또는 Lambda 타임아웃 재시도 시 동일한 로그 이벤트 배치가 재인입될 수 있습니다.
+### 3.2 Nginx 구독 필터 공백 구분 패턴 정합화
+`nginx.conf`의 `cloudshield_combined` 포맷(`$remote_addr - $remote_user [$time_local] "$request" $status ...`)은 일반 텍스트 로그이므로, JSON 필드 기반 필터(`$.status`)로는 구독 대상을 추출할 수 없습니다.
+이에 따라 CloudWatch Logs 공백 구분 필터 사양(Space-delimited filter)을 적용하여 401, 403, 404 상태 코드를 구독하도록 명세를 확정했습니다:
+```text
+[ip, ident, user, timestamp, request, status_code = 401 || status_code = 403 || status_code = 404, ...]
+```
+CloudWatch Logs의 토큰화 규칙(대괄호 `[...]` 및 큰따옴표 `""`는 단일 컬럼으로 취급)을 로컬 테스트베드(`matches_subscription_filter`)에 동일하게 구현하여 모의 검증 정합성을 확보했습니다.
 
-- **이벤트 ID 기반 중복 제거 (`deduplicate_log_events`)**:
-  각 CloudWatchLogEvent에 부여된 고유 식별자(`id`)를 세션 또는 메모리 세트(`seen_event_ids`)에 기록하고, 중복 인입된 이벤트는 분석 윈도우 진입 전에 선제적으로 드롭(`dropped_duplicates`)합니다.
-- 이를 통해 DynamoDB 인증 실패 윈도우 카운터의 비정상 중복 합산 및 오탐에 의한 과잉 차단을 원천 방지합니다.
+### 3.3 단일 배치 1차 중복 제거 및 분산 영속 멱등성(미구현 사항) 명세
+- **단일 배치 내 이벤트 ID 기반 1차 중복 제거 (`deduplicate_log_events`)**:
+  단일 호출 컨텍스트 또는 전달된 메모리 세트(`seen_event_ids`) 내에서 각 CloudWatchLogEvent의 고유 식별자(`id`)를 확인하여 중복 인입된 이벤트를 1차 드롭(`dropped_duplicates`)합니다.
+- **인메모리 방식의 한계 및 분산 멱등성 미구현 사항 (클라우드 A 협업 인터페이스)**:
+  - 서버리스 AWS Lambda 환경은 무상태(Stateless)이므로, 새로운 실행 환경(Cold Start / 컨테이너 분기) 기동 또는 재실행 시 메모리 세트가 소실되어 동일한 이벤트가 재인입될 수 있습니다.
+  - 따라서 진정한 "At-least-once 전달 환경 대비 분산 영속 멱등성 보장"은 본 PR 범위 밖의 **미구현 사항**이며, 향후 **클라우드 A 담당의 DynamoDB 상태 테이블 및 오케스트레이터 원자적 조건부 쓰기(Conditional Put) 계약**과 연계하여 보장할 예정입니다.
 
 ---
 
@@ -114,7 +122,7 @@ L7 Web 공격 탐지 및 AWS WAFv2 IPSet /32 차단 집행 결과를 관제 센�
    - `risk_level`: 위험도 (`HIGH`, `MEDIUM`, `LOW`)
    - `target_identifier`: 타깃 EC2 인스턴스 ID
 4. **WAF 방어 계층 상세 섹션**:
-   - WAF IPSet 명세 및 `/32` 차단 집행 결과(성공: ✅, 실패: ❌, 대기: ⏳) 가시화.
+   - WAF IPSet 명세(기본값: 차단 엔진 계약과 일치하는 `CloudShield-Block-IPSet`) 및 `/32` 차단 집행 결과(성공: ✅, 실패: ❌, 대기: ⏳) 가시화.
 5. **공격 대상 엔드포인트 및 권고 조치**: 타깃 URL/엔드포인트 및 웹 보안 강화 권고사항 안내.
 6. **컨텍스트 푸터**: MITRE ATT&CK 기법 번호 및 CloudShield 10초 관통 파이프라인 식별자.
 

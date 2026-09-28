@@ -776,14 +776,147 @@ def test_route_cw_logs_at_least_once_idempotency() -> None:
 
 
 def test_nginx_subscription_filter_spec() -> None:
-    """Nginx 구독 필터 파라미터 명세 및 사전 딕셔너리 구조 검증."""
+    """Nginx 구독 필터 파라미터 명세 및 공백 구분 필터 패턴 구조 검증.
+
+    Why:
+        nginx.conf의 cloudshield_combined 일반 텍스트 포맷에 맞춰
+        CloudWatch Logs 공백 구분 필터 패턴(Space-delimited filter)으로
+        401, 403, 404 상태 코드를 선별 구독하도록 정의되어 있는지 검증함.
+    """
     assert NGINX_SUBSCRIPTION_FILTER_SPEC["filter_name"] == "CloudShield-Nginx-Access-Filter"
     assert (
         NGINX_SUBSCRIPTION_FILTER_SPEC["log_group_name"] == "/cloudshield/target/nginx-access-log"
     )
-    assert "401" in NGINX_SUBSCRIPTION_FILTER_SPEC["filter_pattern"]
-    assert "403" in NGINX_SUBSCRIPTION_FILTER_SPEC["filter_pattern"]
+    pattern = NGINX_SUBSCRIPTION_FILTER_SPEC["filter_pattern"]
+    assert pattern.startswith("[") and pattern.endswith("]")
+    assert "status_code = 401" in pattern
+    assert "status_code = 403" in pattern
+    assert "status_code = 404" in pattern
     assert NGINX_SUBSCRIPTION_FILTER_SPEC["destination_type"] == "lambda"
 
     assert "auth" in SUBSCRIPTION_FILTER_SPECS
     assert "nginx" in SUBSCRIPTION_FILTER_SPECS
+
+
+def test_nginx_subscription_filter_matches_access_log() -> None:
+    """실제 Nginx access.log 대표 라인에 대한 공백 구분 구독 필터 매칭/비매칭 검증.
+
+    Why:
+        리뷰어 지적사항: nginx.conf의 cloudshield_combined 일반 텍스트 형식
+        ('$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent ...')
+        으로 기록된 로그에서 401, 403, 404 침해 의심 로그만 선별하고 정상(200, 301, 500) 로그는
+        제외되는지 로컬에서 철저히 검증함.
+    """
+    pattern = NGINX_SUBSCRIPTION_FILTER_SPEC["filter_pattern"]
+
+    # 1. 401 Unauthorized (모의 L7 스프레잉/무차별 대입 타깃 로그 -> 매칭 성공)
+    log_401 = (
+        "198.51.100.77 - - [28/Sep/2026:14:00:00 +0000] "
+        '"GET /admin HTTP/1.1" 401 150 "-" "curl/7.81.0" 0.002 "-"'
+    )
+    assert matches_subscription_filter(log_401, pattern=pattern) is True
+
+    # 2. 403 Forbidden (디렉토리 인덱싱 차단 또는 WAF 차단 타깃 로그 -> 매칭 성공)
+    log_403 = (
+        "198.51.100.77 - - [28/Sep/2026:14:00:01 +0000] "
+        '"GET /.env HTTP/1.1" 403 200 "-" "curl/7.81.0" 0.001 "-"'
+    )
+    assert matches_subscription_filter(log_403, pattern=pattern) is True
+
+    # 3. 404 Not Found (디렉토리 스캐닝 타깃 로그 -> 매칭 성공)
+    log_404 = (
+        "198.51.100.77 - - [28/Sep/2026:14:00:02 +0000] "
+        '"GET /wp-login.php HTTP/1.1" 404 125 "-" "curl/7.81.0" 0.001 "-"'
+    )
+    assert matches_subscription_filter(log_404, pattern=pattern) is True
+
+    # 4. 200 OK (정상 웹 요청 -> 매칭 제외)
+    log_200 = (
+        "192.0.2.10 - - [28/Sep/2026:14:00:03 +0000] "
+        '"GET /health HTTP/1.1" 200 45 "-" "kube-probe/1.28" 0.000 "-"'
+    )
+    assert matches_subscription_filter(log_200, pattern=pattern) is False
+
+    # 5. 301 Moved Permanently (정상 리다이렉트 -> 매칭 제외)
+    log_301 = (
+        "192.0.2.10 - - [28/Sep/2026:14:00:04 +0000] "
+        '"GET /login HTTP/1.1" 301 0 "-" "Mozilla/5.0" 0.001 "-"'
+    )
+    assert matches_subscription_filter(log_301, pattern=pattern) is False
+
+    # 6. 500 Internal Server Error (서버 내부 오류 -> 4xx 필터 매칭 제외)
+    log_500 = (
+        "192.0.2.20 - - [28/Sep/2026:14:00:05 +0000] "
+        '"POST /api/v1/checkout HTTP/1.1" 500 512 "-" "Mozilla/5.0" 0.120 "-"'
+    )
+    assert matches_subscription_filter(log_500, pattern=pattern) is False
+
+
+def test_nginx_subscription_filter_regression_against_json_pattern() -> None:
+    """구 JSON 패턴 사용 시 일반 텍스트 Nginx access.log 미매칭 결함 회귀 검증.
+
+    Why:
+        구형 필터 패턴 '{ ($.status = 401) || ($.status = 403) || ($.status = 404) }'은
+        JSON 필드를 조회하므로 cloudshield_combined 일반 텍스트 로그를 매칭하지 못함을
+        단언하여 공백 구분 필터 패턴의 도입 당위성을 입증함.
+    """
+    flawed_json_pattern = "{ ($.status = 401) || ($.status = 403) || ($.status = 404) }"
+    log_401 = (
+        "198.51.100.77 - - [28/Sep/2026:14:00:00 +0000] "
+        '"GET /admin HTTP/1.1" 401 150 "-" "curl/7.81.0" 0.002 "-"'
+    )
+    assert matches_subscription_filter(log_401, pattern=flawed_json_pattern) is False, (
+        "일반 텍스트 Nginx access.log는 JSON 패턴에 매칭되지 않아야 합니다."
+    )
+
+
+def test_route_cw_logs_new_execution_environment_reingestion_limitation() -> None:
+    """새 실행 환경(Cold Start) 또는 세트 미제공 시 동일 event.id 재인입 한계 검증.
+
+    Why:
+        리뷰어 지적사항: route_cw_logs의 seen_event_ids는 프로세스 메모리에만 존재하므로,
+        새로운 Lambda 실행 환경 기동 또는 seen_event_ids가 None인 경우 동일한 event.id가
+        재인입되었을 때 필터링되지 않고 재처리되는 인메모리 방식의 경계 조건을 명시적으로 검증함.
+        (향후 클라우드 A의 DynamoDB 원자적 상태 테이블 연계 필요성 증빙)
+    """
+    test_event_msg = '198.51.100.77 - - [28/Sep/2026:11:52:38 +0000] "GET /admin" 401'
+    batch_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(
+                id="ev-reingest-1",
+                timestamp=1788500001000,
+                message=test_event_msg,
+            ),
+        ],
+    )
+    raw_event = {"awslogs": {"data": batch_payload.to_awslogs_data()}}
+
+    # 1. 1차 실행 컨테이너(Worker 1): 인메모리 세트로 정상 수신
+    worker1_seen_ids: set[str] = set()
+    res1 = route_cw_logs(raw_event, seen_event_ids=worker1_seen_ids)
+    assert len(res1["messages"]) == 1
+    assert res1["dropped_duplicates"] == 0
+    assert "ev-reingest-1" in worker1_seen_ids
+
+    # 2. 동일 컨테이너 재시도: 세트가 공유되므로 정상적으로 중복 필터링
+    res1_retry = route_cw_logs(raw_event, seen_event_ids=worker1_seen_ids)
+    assert len(res1_retry["messages"]) == 0
+    assert res1_retry["dropped_duplicates"] == 1
+
+    # 3. 새 실행 환경(Worker 2 / Cold Start): 메모리 세트 소실로 동일 ID 재인입 (한계 검증)
+    worker2_fresh_seen_ids: set[str] = set()
+    res2 = route_cw_logs(raw_event, seen_event_ids=worker2_fresh_seen_ids)
+    assert len(res2["messages"]) == 1, (
+        "새 실행 환경에서는 인메모리 세트가 소실되므로 동일 이벤트가 재처리됩니다."
+    )
+    assert res2["dropped_duplicates"] == 0
+
+    # 4. seen_event_ids가 미제공(None)된 경우에도 중복 필터링 없이 그대로 통과
+    res_none = route_cw_logs(raw_event, seen_event_ids=None)
+    assert len(res_none["messages"]) == 1
+    assert res_none["dropped_duplicates"] == 0

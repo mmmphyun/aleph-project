@@ -6,19 +6,28 @@ Why:
     CloudWatch Logs 구독 필터가 Lambda 함수를 호출할 때 전달하는
     Base64 인코딩 및 Gzip 압축된 이진 페이로드를 안전하게 해제하여
     SSH 인증 로그와 Nginx 접근 로그를 스트림별로 분기 라우팅하고,
-    At-least-once 전송 환경에서 이벤트 중복 처리를 방지하여 멱등성을 보장함.
+    단일 배치(Batch) 내 및 인메모리 세트 기반 1차 중복 이벤트 필터링을 수행함.
 
 Constraints:
     - 입력 payload 딕셔너리는 {"awslogs": {"data": "<base64_gzip_str>"}} 구조를 만족해야 함.
     - 표준 라이브러리 base64, gzip, json 또는 contracts.events.CloudWatchLogsPayload 활용.
     - CloudShield 단일 10초 관통 대응 SLA 준수를 위해 수집 지연 3초 이내 전처리 보장.
+    - 분산 영속 멱등성 한계: 본 모듈의 deduplicate_log_events는 단일 배치 및 인메모리 세트 내 1차
+      중복 제거만 수행하며, 분산 Lambda 재시도/Cold Start 간 영속적 멱등성 보장은 향후 클라우드 A
+      (DynamoDB 상태 저장소 및 오케스트레이터 계약) 연계로 이관 예정 (현재 PR 범위 밖 미구현).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from contracts.events import CloudWatchLogEvent, CloudWatchLogsPayload
+
+# CloudWatch Logs 공백 구분 필터 토큰화 정규식
+# Why: CloudWatch Logs는 공백을 구분자로 사용하되, 대괄호([...]) 및 큰따옴표("...")로
+#      둘러싸인 문자열은 내부에 공백이 포함되어 있어도 단일 컬럼(Single column)으로 인식함.
+_CW_LOG_TOKEN_PATTERN = re.compile(r'\[[^\]]*\]|"[^"]*"|\S+')
 
 # SSH 인증 실패 전용 구독 필터 파라미터 명세 (하위 호환성 유지)
 SUBSCRIPTION_FILTER_SPEC: dict[str, Any] = {
@@ -30,10 +39,16 @@ SUBSCRIPTION_FILTER_SPEC: dict[str, Any] = {
 }
 
 # Nginx L7 웹 접근 로그 전용 구독 필터 파라미터 명세 (시나리오 2 Web L7 대응)
+# Why: nginx.conf의 cloudshield_combined 일반 텍스트 포맷
+#      ('$remote_addr - $remote_user [$time_local] "$request" $status ...')에 맞춰
+#      CloudWatch Logs 공백 구분 필터(Space-delimited)로 401/403/404 상태 코드를 선별 구독함.
 NGINX_SUBSCRIPTION_FILTER_SPEC: dict[str, Any] = {
     "filter_name": "CloudShield-Nginx-Access-Filter",
     "log_group_name": "/cloudshield/target/nginx-access-log",
-    "filter_pattern": "{ ($.status = 401) || ($.status = 403) || ($.status = 404) }",
+    "filter_pattern": (
+        "[ip, ident, user, timestamp, request, "
+        "status_code = 401 || status_code = 403 || status_code = 404, ...]"
+    ),
     "destination_type": "lambda",
     "destination_arn": "${aws_lambda_function.threat_orchestrator.arn}",
 }
@@ -51,6 +66,38 @@ LOG_GROUP_STREAM_MAPPING: dict[str, str] = {
 }
 
 
+def _evaluate_field_condition(token: str, condition: str) -> bool:
+    """공백 구분 필터 내 단일 조건식(예: status_code = 401, msg = *Failed*) 평가."""
+    condition = condition.strip()
+    if not condition:
+        return True
+
+    if "!=" in condition:
+        _, expected = [x.strip() for x in condition.split("!=", 1)]
+        expected = expected.strip("\"'")
+        if expected.startswith("*") and expected.endswith("*"):
+            return expected[1:-1] not in token
+        if expected.endswith("*"):
+            return not token.startswith(expected[:-1])
+        if expected.startswith("*"):
+            return not token.endswith(expected[1:])
+        return token != expected
+
+    if "=" in condition:
+        _, expected = [x.strip() for x in condition.split("=", 1)]
+        expected = expected.strip("\"'")
+        if expected.startswith("*") and expected.endswith("*"):
+            return expected[1:-1] in token
+        if expected.endswith("*"):
+            return token.startswith(expected[:-1])
+        if expected.startswith("*"):
+            return token.endswith(expected[1:])
+        return token == expected
+
+    # 조건 연산자가 없는 경우(필드명 선언만 있는 경우: ip, user 등) 해당 위치에 토큰이 존재하면 True
+    return True
+
+
 def matches_subscription_filter(
     log_line: str,
     pattern: str | None = None,
@@ -59,18 +106,19 @@ def matches_subscription_filter(
 
     Why:
         클라우드 B 수집 파이프라인에서 실제 AWS CloudWatch Logs 구독 필터가
-        대량의 정상 로그 중 의심 키워드('Failed password')가 포함된 라인만 선별하여
-        Lambda로 포워딩하는 동작을 로컬 테스트베드에서 완벽히 시뮬레이션하기 위함.
+        대량의 정상 로그 중 의심 키워드('Failed password')나 HTTP 401/403/404 코드가
+        포함된 라인만 선별하여 Lambda로 포워딩하는 동작을 로컬에서 완벽히 시뮬레이션하기 위함.
         CloudWatch Logs 비정형 텍스트 필터("...") 및 공백 구분 필터([...])를 모의 평가함.
 
     Constraints:
-        - log_line: 원시 Syslog 한 줄 문자열.
+        - log_line: 원시 Syslog 또는 Nginx 한 줄 문자열.
         - pattern: CloudWatch Logs 필터 패턴 (기본값: SUBSCRIPTION_FILTER_SPEC["filter_pattern"]).
 
     Side-effects / Edge-cases:
         - log_line이 비어 있거나 문자열이 아닌 경우 False 반환.
         - 따옴표 구문("Failed password"): 전체 로그에서 대소문자 구분 exact phrase 매칭.
-        - 공백 구분 패턴([...]): 공백 토큰 인덱스별 조건식 평가 (단일 토큰 불일치 시 False).
+        - 공백 구분 패턴([...]): 대괄호/따옴표를 단일 컬럼으로 인식하고, OR(||) 복합 조건식을 평가.
+        - JSON 패턴({ $.status = 401 }): 일반 텍스트 로그 라인에는 매칭되지 않고 False 반환.
     """
     if not log_line or not isinstance(log_line, str):
         return False
@@ -87,30 +135,31 @@ def matches_subscription_filter(
         return phrase in log_line
 
     # 2. 공백 구분 필드 매칭: [...] (Space-delimited filter)
-    # Why: CloudWatch Logs의 공백 분리 필터 구문을 모의하여 단일 토큰 비교 동작을 시뮬레이션함.
+    # Why: CloudWatch Logs의 공백 분리 필터 구문을 모의하여
+    #      대괄호/따옴표로 둘러싸인 단일 컬럼 및 OR(||) 복합 조건을 정밀 시뮬레이션함.
     if active_pattern.startswith("[") and active_pattern.endswith("]"):
         field_specs = [f.strip() for f in active_pattern[1:-1].split(",") if f.strip()]
-        tokens = log_line.split()
+        tokens = _CW_LOG_TOKEN_PATTERN.findall(log_line)
 
         for idx, field_spec in enumerate(field_specs):
             if field_spec == "...":
-                break
-            if "=" in field_spec:
-                _field_name, expected_val = [x.strip() for x in field_spec.split("=", 1)]
-                expected_val = expected_val.strip("\"'")
-                if idx >= len(tokens):
-                    return False
-                token_val = tokens[idx]
-                if expected_val.startswith("*") and expected_val.endswith("*"):
-                    clean_val = expected_val[1:-1]
-                    if clean_val not in token_val:
-                        return False
-                elif expected_val != token_val:
-                    return False
+                return True
+            if idx >= len(tokens):
+                return False
+
+            token_val = tokens[idx]
+            # '||'로 연결된 OR 복합 조건식 분리 평가 (예: status_code = 401 || status_code = 403)
+            sub_conditions = [c.strip() for c in field_spec.split("||") if c.strip()]
+            if not any(_evaluate_field_condition(token_val, cond) for cond in sub_conditions):
+                return False
 
         return True
 
-    # 3. 일반 키워드 검색 (Fallback)
+    # 3. JSON 필터 패턴({ ... }): 일반 텍스트 로그에는 미매칭 처리
+    if active_pattern.startswith("{") and active_pattern.endswith("}"):
+        return False
+
+    # 4. 일반 키워드 검색 (Fallback)
     return active_pattern in log_line
 
 
@@ -162,7 +211,7 @@ def deduplicate_log_events(
     events: list[CloudWatchLogEvent],
     seen_event_ids: set[str],
 ) -> list[CloudWatchLogEvent]:
-    """CloudWatch 로그 이벤트 목록에서 중복 ID를 필터링하여 At-least-once 전달 대비 멱등성 보장.
+    """CloudWatch 로그 이벤트 목록에서 중복 ID를 필터링하여 단일 배치 1차 중복 제거 수행.
 
     Why:
         AWS CloudWatch Logs Subscription Filter는 최소 1회(At-least-once) 전달을 보장하므로
@@ -176,6 +225,10 @@ def deduplicate_log_events(
 
     Side-effects / Edge-cases:
         - seen_event_ids 세트가 직접 변경(in-place update)됨.
+        - 한계 및 미구현 사항: 본 중복 제거는 전달된 인메모리 세트(seen_event_ids) 및 단일 배치
+          내에서만 동작하며, 서버리스 Lambda의 새 실행 환경(Cold Start) 또는 독립 컨테이너 분기 시
+          상태가 유지되지 않음. 재실행 간 완전한 분산 멱등성 보장은 향후 클라우드 A의
+          DynamoDB 상태 저장소 및 원자적 마킹 계약과 연계 필요 (현재 PR 범위 밖 미구현 사항).
     """
     unique_events: list[CloudWatchLogEvent] = []
     for event in events:
@@ -196,8 +249,7 @@ def route_cw_logs(
         SSH 인증 실패 로그(/var/log/auth.log)와 Nginx L7 웹 접근 로그(/var/log/nginx/access.log)가
         동일한 Lambda 오케스트레이터로 인입될 때, logGroup 경로를 기준으로 스트림 유형을 식별하고
         후속 분석 엔진(SyslogAuthEvent 파서 vs Nginx 파서/WAF 탐지 룰)으로 안전하게 분기함.
-        또한, AWS CloudWatch Logs -> Lambda 구독 필터의 At-least-once 재전송 메커니즘으로 인한
-        중복 이벤트 인입을 차단하여 멱등성(Idempotency)을 보장함.
+        호출자가 seen_event_ids를 제공한 경우 단일 배치 기반 1차 중복 제거를 수행함.
 
     Constraints:
         - payload: {"awslogs": {"data": "<base64_gzip_str>"}} 구조의 딕셔너리.
@@ -220,6 +272,9 @@ def route_cw_logs(
           안전하게 격리 분류.
         - seen_event_ids 세트가 제공된 경우 이미 존재하는 event_id는 필터링되고
           세트에 신규 event_id 추가.
+        - 한계: seen_event_ids가 None이거나 Lambda 새 실행 환경(Cold start)에서는
+          메모리가 초기화되어 이전 event_id가 재수신될 수 있음. 재실행 간 영속적 분산
+          멱등성 보장은 클라우드 A의 DynamoDB 연계 계약을 통해 보장되어야 함 (현재 PR 범위 밖).
     """
     if not isinstance(payload, dict):
         raise TypeError(f"payload는 dict 타입이어야 합니다. (입력 타입: {type(payload).__name__})")

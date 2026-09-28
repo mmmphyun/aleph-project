@@ -952,7 +952,7 @@ def test_build_waf_slack_payload_required_keys() -> None:
         b for b in blocks if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
     )
     assert "198.51.100.77/32" in waf_section["text"]["text"]
-    assert "CloudShield-Blocked-IPSet" in waf_section["text"]["text"]
+    assert "CloudShield-Block-IPSet" in waf_section["text"]["text"]
 
 
 def test_build_waf_slack_payload_remediation_status() -> None:
@@ -1004,7 +1004,7 @@ def test_build_waf_slack_payload_remediation_status() -> None:
         for b in payload_fail["blocks"]
         if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
     )
-    assert "❌ AWS WAFv2 IPSet `CloudShield-Blocked-IPSet` 차단 실패" in waf_text_fail
+    assert "❌ AWS WAFv2 IPSet `CloudShield-Block-IPSet` 차단 실패" in waf_text_fail
 
     # 3. 차단 미집행/대기 (remediation_result=None)
     payload_pending = build_waf_slack_payload(report, remediation_result=None)
@@ -1014,8 +1014,7 @@ def test_build_waf_slack_payload_remediation_status() -> None:
         if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
     )
     assert (
-        "⏳ AWS WAFv2 IPSet `CloudShield-Blocked-IPSet` 차단 집행 진행 중 / 대기"
-        in waf_text_pending
+        "⏳ AWS WAFv2 IPSet `CloudShield-Block-IPSet` 차단 집행 진행 중 / 대기" in waf_text_pending
     )
 
 

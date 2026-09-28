@@ -25,8 +25,9 @@ from typing import Any
 from contracts.incident import IncidentReport
 
 try:
-    from remediation.remediation import RemediationResult
+    from remediation.remediation import DEFAULT_WAF_IPSET_NAME, RemediationResult
 except ImportError:
+    DEFAULT_WAF_IPSET_NAME = "CloudShield-Block-IPSet"
     from typing import TypedDict
 
     class RemediationResult(TypedDict, total=False):  # type: ignore[no-redef]
@@ -350,7 +351,7 @@ def build_waf_slack_payload(
         f"*대응 조치 (remediation_action):*\n*{report.action_required}*", MAX_FIELD_LENGTH
     )
 
-    waf_target_name = ipset_name or "CloudShield-Blocked-IPSet"
+    waf_target_name = ipset_name or DEFAULT_WAF_IPSET_NAME
     if remediation_result is not None:
         waf_blocked = bool(remediation_result.get("waf_blocked", False))
         if waf_blocked:
