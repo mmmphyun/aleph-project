@@ -5,6 +5,7 @@
 from contracts.events import (
     CloudWatchLogEvent,
     CloudWatchLogsPayload,
+    NginxAccessLogEvent,
     SyslogAuthEvent,
 )
 from contracts.incident import IncidentReport
@@ -13,5 +14,6 @@ __all__ = [
     "IncidentReport",
     "CloudWatchLogsPayload",
     "CloudWatchLogEvent",
+    "NginxAccessLogEvent",
     "SyslogAuthEvent",
 ]
