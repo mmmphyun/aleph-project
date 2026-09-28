@@ -25,6 +25,7 @@ from contracts.events import CloudWatchLogsPayload, SyslogAuthEvent
 from contracts.incident import IncidentReport
 from remediation.auth_window import AuthFailureWindow
 from remediation.remediation import RemediationResult, apply_remediation
+from reporter.slack_notifier import send_slack_alert
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +64,15 @@ def threat_orchestrator_handler(
     auth_window: AuthFailureWindow | None = None,
     ec2_client: Any = None,
     waf_client: Any = None,
+    slack_webhook_url: str | None = None,
 ) -> dict[str, Any]:
-    """CloudWatch Logs 이벤트를 수신하여 위협 집계 및 다중 계층 차단을 수행하는 Lambda 진입점.
+    """CloudWatch Logs 이벤트를 수신하여 위협 집계, 다중 계층 차단, Slack 전파를 수행하는 진입점.
 
     Why:
         복수의 Lambda 배치 호출로 나뉘어 들어온 동일 공격자의 분할 실패 이벤트를
-        DynamoDB 원자적 상태 저장소와 연동하여 100% 탐지하고, 즉시 L4 격리 엔진을 호출함.
+        DynamoDB 원자적 상태 저장소와 연동하여 100% 탐지하고, 즉시 L4 격리 및 L7 WAF 차단을 집행함.
+        차단 집행 직후 SecOps 관제 채널에 Slack Block Kit 알림을 실시간 전파하며,
+        Webhook 전송 실패/지연 시에도 인프라 차단 트랜잭션이 영향받지 않도록 완전 격리함.
 
     Returns:
         처리 결과 딕셔너리:
@@ -77,17 +81,21 @@ def threat_orchestrator_handler(
             "threats_detected": list[str],
             "incidents": list[dict[str, Any]],
             "remediation_results": list[dict[str, Any]],
+            "slack_notified": bool,
         }
 
     Side-effects / Edge-cases:
         - 비정상/손상된 페이로드 인입 시 ValueError 처리 후 빈 결과 반환.
         - SSH 실패 로그가 아닌 정상 로그는 파싱 단계에서 안전하게 필터링됨.
+        - Slack Webhook 호출 실패(HTTPError, Timeout, 미설정) 시에도 L4/L7 차단 및
+          DynamoDB 격리 마킹 상태는 롤백되지 않고 유지되며 slack_notified=False를 반환함.
     """
     response: dict[str, Any] = {
         "processed_events": 0,
         "threats_detected": [],
         "incidents": [],
         "remediation_results": [],
+        "slack_notified": False,
     }
 
     awslogs_data = event.get("awslogs", {}).get("data")
@@ -131,6 +139,8 @@ def threat_orchestrator_handler(
             count=1,
         )
         inspected_targets.add((parsed_event.source_ip, parsed_event.username))
+
+    slack_notification_results: list[bool] = []
 
     # 3. 누적 윈도우 기반 위협 판정 및 복합 차단 트리거
     for source_ip, username in inspected_targets:
@@ -201,5 +211,29 @@ def threat_orchestrator_handler(
                 source_ip,
                 remediation_result,
             )
+
+        # 7. Slack 알림 전파 (차단 결과 결합 및 완전 결함 격리)
+        target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+        slack_success = False
+        if target_webhook:
+            try:
+                slack_success = send_slack_alert(
+                    report=report,
+                    webhook_url=target_webhook,
+                    remediation_result=remediation_result,
+                )
+            except Exception as exc:
+                # Slack Webhook 네트워크 오류, 타임아웃, 런타임 예외 발생 시에도
+                # 앞서 완료된 L4/L7 차단 및 마킹 상태를 절대 롤백하지 않고 완전 격리함
+                logger.error("Slack 알림 전파 중 예외 발생 격리 (차단 유지): %s", exc)
+                slack_success = False
+        else:
+            logger.warning("SLACK_WEBHOOK_URL이 설정되지 않아 알림 발송을 생략합니다.")
+        slack_notification_results.append(slack_success)
+
+    if slack_notification_results:
+        response["slack_notified"] = all(slack_notification_results)
+    else:
+        response["slack_notified"] = False
 
     return response

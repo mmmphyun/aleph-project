@@ -4,11 +4,17 @@
 
 from __future__ import annotations
 
+from typing import Any
+from unittest.mock import patch
+
 import boto3
 import pytest
 
 from conftest import MockEc2Target, MockWafTarget
+from contracts.events import CloudWatchLogEvent, CloudWatchLogsPayload
 from contracts.incident import IncidentReport
+from remediation.auth_window import AuthFailureWindow
+from remediation.orchestrator import threat_orchestrator_handler
 from remediation.remediation import (
     apply_remediation,
     block_ip_wafv2,
@@ -540,8 +546,6 @@ def test_find_waf_ip_set_pagination(
         WAF IPSet 리소스 수가 많아 결과가 페이지네이션될 때, 첫 페이지에 대상이 없더라도
         NextMarker를 따라 후속 페이지까지 완전 순회하여 정상 리소스를 누락 없이 식별해야 함.
     """
-    from typing import Any
-
     waf_client = boto3.client("wafv2", region_name="us-east-1")
     scope = "REGIONAL"
     target_ipset_name = "Page2-Target-IPSet"
@@ -613,3 +617,312 @@ def test_find_waf_ip_set_pagination(
         Id=real_summary["Id"],
     )
     assert f"{test_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+# ==============================================================================
+# 3. 오케스트레이터 - Slack 알림 연동 및 통합 차단 파이프라인 결합 테스트
+# ==============================================================================
+
+
+def _make_cw_auth_event(
+    log_messages: list[str],
+    instance_id: str,
+    base_timestamp_ms: int = 1725433265000,
+) -> dict[str, Any]:
+    """오케스트레이터 파이프라인 검증용 CloudWatch Logs 구독 필터 페이로드 생성 헬퍼.
+
+    Why:
+        CloudWatch Logs Subscription Filter에서 인입되는 Base64 Gzip 인코딩 구조를
+        표준 규격대로 가상화하여 Lambda 핸들러의 디코딩 및 파싱 단계를 검증함.
+    """
+    events = [
+        CloudWatchLogEvent(
+            id=f"evt-{idx}",
+            timestamp=base_timestamp_ms + (idx * 1000),
+            message=msg,
+        )
+        for idx, msg in enumerate(log_messages)
+    ]
+    payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/auth-log",
+        logStream=instance_id,
+        subscriptionFilters=["CloudShield-FailedPassword-Filter"],
+        logEvents=events,
+    )
+    return {"awslogs": {"data": payload.to_awslogs_data()}}
+
+
+def test_threat_orchestrator_slack_integration_success(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """위협 탐지 및 인프라 차단 완료 후 Slack Block Kit 알림이 성공적으로 전파되는지 검증.
+
+    Why:
+        10초 관통 파이프라인의 종단 단계로서, L4 SG 격리 및 L7 WAF 차단 성공 결과가
+        SecOps 관리자 채널에 실시간 Slack 카드로 전파되고 slack_notified=True가 반환됨을 보장함.
+
+    Constraints:
+        - 5회 이상 실패 로그 인입으로 SSH_BRUTE_FORCE 위협 발생.
+        - send_slack_alert 호출 시 IncidentReport 및 RemediationResult가 함께 전달되어야 함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    attacker_ip = "198.51.100.99"
+    target_user = "admin"
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/TEST_SUCCESS"
+
+    messages = [
+        (
+            f"Sep 04 15:01:0{i} target-ec2 sshd[2110{i}]: Failed password for "
+            f"{target_user} from {attacker_ip} port 4120{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True) as mock_send_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url=dummy_webhook,
+        )
+
+        assert res["processed_events"] == 5
+        assert res["threats_detected"] == ["SSH_BRUTE_FORCE"]
+        assert len(res["remediation_results"]) == 1
+        assert res["remediation_results"][0]["quarantine_applied"] is True
+        assert res["remediation_results"][0]["waf_blocked"] is True
+        assert res["slack_notified"] is True
+
+        mock_send_slack.assert_called_once()
+        call_kwargs = mock_send_slack.call_args.kwargs
+        assert call_kwargs["webhook_url"] == dummy_webhook
+        assert call_kwargs["report"].incident_id.startswith("INC-")
+        assert call_kwargs["report"].attack_type == "SSH Brute Force"
+        assert call_kwargs["report"].source_ip == attacker_ip
+        assert call_kwargs["remediation_result"]["quarantine_applied"] is True
+        assert call_kwargs["remediation_result"]["waf_blocked"] is True
+
+
+def test_threat_orchestrator_slack_failure_fault_isolation(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """Slack Webhook 호출 실패/예외 발생 시에도 L4/L7 차단 및 마킹이 롤백되지 않고 유지되는지 검증.
+
+    Why:
+        Slack API 서비스 장애, 네트워크 타임아웃(3초 초과) 또는 5xx 오류가 발생하더라도
+        사전에 집행된 원자적 인프라 격리(SG 전면 차단 / WAF IPSet 등록) 상태는 무조건
+        유지되어야 하며, 파이프라인 전체가 Crash되거나 차단이 취소되는 보안 사고를 원천 차단함.
+
+    Side-effects / Edge-cases:
+        - send_slack_alert에서 런타임 예외(RuntimeError) 발생 모의.
+        - slack_notified=False가 안전하게 반환되고, 인스턴스는 여전히 격리 SG 상태를 유지해야 함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    attacker_ip = "198.51.100.101"
+    target_user = "root"
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/TEST_FAIL"
+
+    messages = [
+        (
+            f"Sep 04 15:02:0{i} target-ec2 sshd[2210{i}]: Failed password for "
+            f"{target_user} from {attacker_ip} port 4220{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    # Slack 알림 호출 시 예외가 발생하는 상황 시뮬레이션
+    with patch(
+        "remediation.orchestrator.send_slack_alert",
+        side_effect=RuntimeError("Slack Webhook timeout (3.0s limit exceeded)"),
+    ):
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url=dummy_webhook,
+        )
+
+        # 1. 알림 전파 결과는 실패(False)로 격리 반환
+        assert res["slack_notified"] is False
+        assert res["threats_detected"] == ["SSH_BRUTE_FORCE"]
+        assert len(res["remediation_results"]) == 1
+
+        # 2. L4 격리 및 L7 WAF 차단 결과는 정상 집행 상태(True) 유지 확인
+        assert res["remediation_results"][0]["quarantine_applied"] is True
+        assert res["remediation_results"][0]["waf_blocked"] is True
+
+        # 3. 실제 EC2 보안 그룹이 격리 SG로 교체된 상태 유지 확인 (롤백 없음)
+        desc = ec2_client.describe_instances(InstanceIds=[mocked_ec2_target.instance_id])
+        current_sgs = [
+            sg["GroupId"] for sg in desc["Reservations"][0]["Instances"][0]["SecurityGroups"]
+        ]
+        assert current_sgs == [mocked_ec2_target.quarantine_sg_id]
+
+        # 4. 실제 WAF IPSet에 차단 주소 등록 상태 유지 확인 (롤백 없음)
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+        # 5. DynamoDB 격리 완료 마킹 상태 유지 확인 (차기 이벤트 재시도 억제)
+        is_threat_again, _, _ = auth_window.check_threat(attacker_ip, target_user)
+        assert is_threat_again is False
+
+
+def test_threat_orchestrator_slack_no_webhook_url(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SLACK_WEBHOOK_URL이 설정되지 않은 환경에서도 차단 파이프라인이 정상 완료되는지 검증.
+
+    Why:
+        Webhook URL 환경 변수가 미설정된 스테이징/개발 환경에서도 차단 엔진이
+        중단 없이 실행되고, slack_notified=False로 안전하게 종료됨을 보장함.
+    """
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    attacker_ip = "198.51.100.102"
+    target_user = "admin"
+
+    messages = [
+        (
+            f"Sep 04 15:03:0{i} target-ec2 sshd[2310{i}]: Failed password for "
+            f"{target_user} from {attacker_ip} port 4320{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert") as mock_send_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url=None,
+        )
+
+        assert res["threats_detected"] == ["SSH_BRUTE_FORCE"]
+        assert res["remediation_results"][0]["quarantine_applied"] is True
+        assert res["remediation_results"][0]["waf_blocked"] is True
+        assert res["slack_notified"] is False
+        mock_send_slack.assert_not_called()
+
+
+def test_threat_orchestrator_slack_no_threat_defaults_to_false(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """위협이 탐지되지 않는 정상/소량 실패 이벤트 인입 시 slack_notified=False 유지 검증.
+
+    Why:
+        임계치에 도달하지 않은 일상 로그 배치에서는 불필요한 알림 발송을 억제하고
+        기본 slack_notified 상태가 False로 일관되게 반환되어야 함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    messages = [
+        (
+            "Sep 04 15:04:01 target-ec2 sshd[24101]: Failed password for "
+            "user from 198.51.100.103 port 1111 ssh2"
+        ),
+        (
+            "Sep 04 15:04:02 target-ec2 sshd[24102]: Failed password for "
+            "user from 198.51.100.103 port 1112 ssh2"
+        ),
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert") as mock_send_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/T000/B000/TEST",
+        )
+
+        assert res["processed_events"] == 2
+        assert res["threats_detected"] == []
+        assert res["remediation_results"] == []
+        assert res["slack_notified"] is False
+        mock_send_slack.assert_not_called()
+
+
+def test_threat_orchestrator_slack_env_var_fallback(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """함수 파라미터가 None일 때 환경 변수 SLACK_WEBHOOK_URL을 정상 참조하여 발송하는지 검증."""
+    env_webhook = "https://hooks.slack.com/services/ENV/FALLBACK/URL"
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", env_webhook)
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    messages = [
+        (
+            f"Sep 04 15:05:0{i} target-ec2 sshd[2510{i}]: Failed password for "
+            f"testuser from 198.51.100.104 port 4520{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True) as mock_send_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url=None,  # 명시적 None 전달
+        )
+
+        assert res["slack_notified"] is True
+        mock_send_slack.assert_called_once()
+        assert mock_send_slack.call_args.kwargs["webhook_url"] == env_webhook
