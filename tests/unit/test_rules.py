@@ -20,6 +20,7 @@ from detection.rules import (
     evaluate_rules,
     extract_auth_failure_identity,
 )
+from detection.url_normalizer import MAX_URL_VALUE_LENGTH, normalize_url_value
 
 # ---------------------------------------------------------------------------
 # 공통 헬퍼
@@ -427,6 +428,41 @@ def test_invalid_syslog_date_is_excluded() -> None:
         assert event is not None
         events.append(event)
     assert evaluate_rules(events) == (False, None)
+
+
+@pytest.mark.parametrize(
+    ("encoded", "expected"),
+    [
+        ("/admin%2Fconfig", "/admin/config"),
+        ("/%252e%252e%252fetc%252fpasswd", "/../etc/passwd"),
+        ("/%ED%95%9C%EA%B8%80", "/한글"),
+        ("/search?q=a+b", "/search?q=a+b"),
+        ("/literal%ZZvalue", "/literal%ZZvalue"),
+        ("/trailing%2", "/trailing%2"),
+    ],
+)
+def test_normalize_url_value_decodes_safe_bounded_representations(
+    encoded: str, expected: str
+) -> None:
+    """단일·이중 인코딩은 풀고 경로의 더하기와 비정상 이스케이프는 보존한다."""
+    assert normalize_url_value(encoded) == expected
+
+
+def test_normalize_url_value_stops_after_double_decoding() -> None:
+    """삼중 인코딩은 두 단계까지만 풀어 고정된 처리 비용과 책임 범위를 지킨다."""
+    assert normalize_url_value("%25252e%25252e%25252f") == "%2e%2e%2f"
+
+
+def test_normalize_url_value_rejects_oversized_input() -> None:
+    """비정상적으로 긴 값은 탐지 전처리 비용을 제한하기 위해 거부한다."""
+    with pytest.raises(ValueError, match="4096"):
+        normalize_url_value("a" * (MAX_URL_VALUE_LENGTH + 1))
+
+
+def test_normalize_url_value_requires_string() -> None:
+    """바이트열의 암묵적 디코딩을 막아 호출부가 문자 인코딩을 명시하게 한다."""
+    with pytest.raises(TypeError, match="문자열"):
+        normalize_url_value(b"%2e%2e%2f")  # type: ignore[arg-type]
 
 
 def test_brute_force_has_priority_over_spraying() -> None:
