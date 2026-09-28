@@ -11,7 +11,7 @@ Why:
 Constraints:
     - 입력 payload 딕셔너리는 {"awslogs": {"data": "<base64_gzip_str>"}} 구조를 만족해야 함.
     - 표준 라이브러리 base64, gzip, json 또는 contracts.events.CloudWatchLogsPayload 활용.
-    - CloudShield 단일 10초 관통 대응 SLA 준수를 위해 수집 지연 3초 이내 전처리 보장.
+    - 수집 단계 목표 시간 예산(3초 이내) 준수를 위해 저지연 디코딩/라우팅 전처리 수행.
     - 분산 영속 멱등성 한계: 본 모듈의 deduplicate_log_events는 단일 배치 및 인메모리 세트 내 1차
       중복 제거만 수행하며, 분산 Lambda 재시도/Cold Start 간 영속적 멱등성 보장은 향후 클라우드 A
       (DynamoDB 상태 저장소 및 오케스트레이터 계약) 연계로 이관 예정 (현재 PR 범위 밖 미구현).

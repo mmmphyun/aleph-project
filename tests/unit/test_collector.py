@@ -544,11 +544,11 @@ def test_cloudwatch_agent_timestamp_z_directive_regex() -> None:
 
 
 def test_cw_agent_config_nginx_and_buffering_tuning() -> None:
-    """CloudWatch Agent JSON 설정의 Nginx 수집 경로, 포맷 및 버퍼링 튜닝(3초 SLA) 검증.
+    """CloudWatch Agent JSON 설정의 Nginx 수집 경로, 포맷 및 버퍼링 튜닝 검증.
 
     Why:
-        10초 관통 파이프라인의 수집 단계 3초 이내 SLA 준수를 위해
-        force_flush_interval이 3초 이하로 튜닝되었는지 확인하고,
+        10초 관통 파이프라인의 수집 단계 목표 시간 예산(3초 이내) 충족을 위해
+        Agent 메모리 버퍼 체류 상한(force_flush_interval)이 3초 이하로 튜닝되었는지 확인하고,
         /var/log/nginx/access.log가 중앙 로그 그룹으로 수집되도록 설정되었는지 검증함.
     """
     config_paths = [
@@ -562,7 +562,7 @@ def test_cw_agent_config_nginx_and_buffering_tuning() -> None:
             data = json.load(f)
 
         logs_section = data.get("logs", {})
-        # 1. 버퍼링 튜닝 검증 (수집 지연 3초 이내 SLA)
+        # 1. 버퍼링 튜닝 검증 (수집 단계 목표 시간 예산 3초 이내 기준 체류 상한 튜닝)
         force_flush = logs_section.get("force_flush_interval")
         assert force_flush is not None, "logs.force_flush_interval 설정이 누락되었습니다."
         assert force_flush <= 3, f"force_flush_interval은 3초 이내여야 합니다: {force_flush}"
