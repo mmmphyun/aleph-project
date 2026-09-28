@@ -95,12 +95,20 @@ jobs:
             }
 
             // 2. Notion URL / Page ID 추출
-            const regex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?![0-9a-f])|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|[?&]p=([0-9a-f]{32})(?![0-9a-f])/i;
-            const match = body.match(regex);
+            // Why: 노션 웹 브라우저에서 복사한 링크(.../p/<view_id>?p=<card_id>)의 경우
+            //      쿼리스트링(?p=, &p=)의 32자리 UUID가 실제 데이터베이스 카드 ID이므로 이를 최우선 매칭함.
+            // Constraints: 쿼리 파라미터 우선 평가 후, 없을 때만 URL 경로상의 32자리/UUID 포맷 폴백.
             let pageId = null;
-            if (match) {
-              const rawId = match[1] || match[2] || match[3];
-              pageId = rawId.replace(/-/g, "");
+            const queryMatch = body.match(/[?&]p=([0-9a-f]{32})(?![0-9a-f])/i);
+            if (queryMatch) {
+              pageId = queryMatch[1].replace(/-/g, "");
+            } else {
+              const regex = /(?:notion\.(?:so|site|com)|app\.notion\.com)\/(?:.*?[/-])?([0-9a-f]{32})(?![0-9a-f])|\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+              const match = body.match(regex);
+              if (match) {
+                const rawId = match[1] || match[2];
+                pageId = rawId.replace(/-/g, "");
+              }
             }
 
             // 3. Notion REST API 비동기 헬퍼
