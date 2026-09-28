@@ -5,7 +5,7 @@
 > **개발 기간**: 2026.09.04 ~ 2026.11.04 (총 9주)  
 > **현재 시점**: 2026.09.28 (4주차 완료 / 잔여 5주)  
 > **상태**: Phase 2 시나리오 1(SSH) 파이프라인 결합 완료 $\rightarrow$ 시나리오 2(Web) 착수 단계  
-> **핵심 가치**: "10초 관통 무인 이벤트 구동 다중 계층 원자적 차단 파이프라인"
+> **핵심 가치**: "10초 관통 이벤트 구동 다중 계층 복합 차단 파이프라인"
 
 ---
 
@@ -20,10 +20,10 @@
 
 ### 1.2 핵심 솔루션 및 목표
 * **단일 10초 관통 데모 파이프라인**:
-  * 공격 발생 즉시 관제 인력의 수동 개입 없이 **10초 이내에 중앙 수집 $\rightarrow$ 위협 탐지 $\rightarrow$ L4/L7 원자적 차단 $\rightarrow$ Slack 알림 전파**를 완결하는 무인 SecOps 파이프라인 구축.
+  * 공격 발생 즉시 관제 인력의 수동 개입 없이 **10초 이내에 중앙 수집 $\rightarrow$ 위협 탐지 $\rightarrow$ L4/L7 복합 차단 $\rightarrow$ Slack 알림 전파**를 완결하는 자동화된 SecOps 파이프라인 구축.
 * **정량적 핵심 성능 지표 (KPI)**:
   * **전체 파이프라인 관통 시간**: 공격 로그 생성 시점부터 차단 완료 및 알림 전파까지 $\le 10$초.
-  * **차단 멱등성 및 계층별 독립 격리 보장**: Boto3 API 호출 간 레이스 컨디션을 방지하고, L4 SG 및 L7 WAF 차단을 단계별 독립 트랜잭션으로 집행해 부분 실패 시에도 기성공 조치를 안전하게 유지.
+  * **차단 멱등성 및 계층별 독립 격리 보장**: Boto3 API 호출 간 레이스 컨디션을 방지하고, L4 SG 및 L7 WAF 차단을 계층별 독립 Boto3 호출로 집행해 부분 실패 시에도 기성공 조치를 안전하게 유지.
     * **오탐 방지 임계치 윈도우**: 5분(300초) 슬라이딩 윈도우 내 실패 횟수를 기반으로 상태를 판정해 단일 오인 트래픽 차단 방지 (`DETECTION_WINDOW_SECONDS = 300`).
 
 ### 1.3 핵심 위협 시나리오
@@ -51,7 +51,7 @@
        ▼ (CW Logs Subscription Filter)
 [Lambda Orchestrator] (초경량 서버리스 오케스트레이터)
        ├─► [탐지 엔진 (Rule & Incident Mapper)] (ReDoS 방어 정규식 + 결정론적 ATT&CK 매퍼)
-       ├─► [DynamoDB 상태 윈도우] (TTL 기반 5분(300초) 슬라이딩 윈도우 / 중복 차단 방지 원자적 카운터)
+       ├─► [DynamoDB 상태 윈도우] (TTL 기반 5분(300초) 슬라이딩 윈도우 / 중복 차단 방지 원자적 상태 갱신)
        ├─► [복합 차단 엔진]
        │     ├─ L4: EC2 Security Group 격리 (인바운드 전면 차단)
        │     └─ L7: AWS WAFv2 IPSet 동적 등록 (웹 트래픽 차단)
@@ -86,10 +86,10 @@
     ```
   * `IncidentReport`는 테크 리드의 승인 없이 변경할 수 없는 보호 계약으로 관리됨.
 
-### 2.3 다중 계층 원자적 차단 및 복구 엔진
+### 2.3 다중 계층 복합 차단 및 복구 엔진
 * **탐지 vs 차단 단계별 판정 기준**:
-  * **1단계 위협 탐지**: 5분(300초) 슬라이딩 윈도우 내 단일 계정 실패 $\ge 5$회 또는 고유 계정 $\ge 2$개 도달 시 시그니처 매칭 $\rightarrow$ `IncidentReport` 생성 및 `risk_level = "HIGH"` 부여.
-  * **2단계 원자적 차단 집행**: Lambda 오케스트레이터가 보고서의 **`action_required`** 값에 따라 대상별 Boto3 차단 API를 독립 트랜잭션으로 분기 실행함:
+  * **1단계 위협 탐지**: 5분(300초) 슬라이딩 윈도우 내 단일 계정 실패 $\ge 5$회 시 `SSH Brute Force`(`risk_level = "HIGH"`, `BLOCK_AND_QUARANTINE`), 고유 계정 $\ge 2$개 도달 시 `SSH Password Spraying`(`risk_level = "MEDIUM"`, `BLOCK_IP_ONLY`)으로 판정하여 `IncidentReport` 생성.
+  * **2단계 계층별 독립 차단 집행**: Lambda 오케스트레이터가 보고서의 **`action_required`** 값에 따라 대상별 Boto3 차단 API를 계층별 독립 Boto3 호출로 분기 실행함:
     * `action_required == "BLOCK_AND_QUARANTINE"`: SSH 무차별 대입 탐지 시 L4 EC2 격리와 L7 WAF IPSet 차단을 동시 실행.
     * `action_required in ("BLOCK_IP_ONLY", "BLOCK_WAF")`: 패스워드 스프레잉(`BLOCK_IP_ONLY`) 및 Web 스캔(`BLOCK_WAF`) 탐지 시 L7 WAF IPSet 차단 실행.
     * `action_required == "ALERT_ONLY"` 또는 `"NONE"`: 인프라 차단 API를 호출하지 않고 Slack 상황 전파만 수행.
@@ -99,10 +99,10 @@
     * Boto3 `modify_instance_attribute` 호출 시 멱등성 보장.
   * **L7 웹 차단 (AWS WAFv2 IPSet)**:
     * 차단 대상 IP를 WAFv2 IPSet에 추가 (`update_ip_set`).
-    * CloudFront 및 ALB 연동 웹 트래픽 즉각 드롭.
+    * CloudFront 및 ALB 연동 웹 트래픽 드롭 (HTTP 403 차단).
 * **오탐 발생 시 긴급 복구 절차**:
-  * **L4 SG 격리 해제**: 관리자 확인 또는 오탐 판정 시, 대상 인스턴스의 Security Group을 원본 운영 SG(`sg-production`)로 즉각 원복(`modify_instance_attribute`).
-  * **L7 WAF 차단 해제**: WAFv2 IPSet의 IP 주소 목록에서 오탐 차단된 `/32` 엔트리를 제거(`update_ip_set`)하여 정상 트래픽 유입 즉각 재개.
+  * **L4 SG 격리 해제**: 관리자 확인 또는 오탐 판정 시, 대상 인스턴스의 Security Group을 원본 운영 SG(`sg-production`)로 원복(`modify_instance_attribute`).
+  * **L7 WAF 차단 해제**: WAFv2 IPSet의 IP 주소 목록에서 오탐 차단된 `/32` 엔트리를 제거(`update_ip_set`)하여 정상 트래픽 유입 재개.
 
 ---
 
@@ -189,12 +189,12 @@ Phase 4   (W9   : 10.27 ~ 11.04) : 실기기 10초 관통 E2E 실측 & 데모/�
 
 | 공격 시나리오 | 발생 도구 및 페이로드 | 탐지 및 차단 조건 | 기대 차단 동작 | 최종 알림 검증 |
 | :--- | :--- | :--- | :--- | :--- |
-| **SSH Brute-Force** | Hydra (`-l root -P passlist.txt`) | 5분(300초) 내 인증 실패 $\ge 5$회 (심각도 HIGH) | EC2 SG `sg-quarantine` 격리 및 L7 WAF IPSet 동시 차단 (신규 세션 차단, 기존 연결은 세션 유지 후 만료) | Slack 채널에 공격자 IP, 침해사고 요약, L4/L7 원자적 차단 집행 현황 전송 |
+| **SSH Brute-Force** | Hydra (`-l root -P passlist.txt`) | 5분(300초) 내 인증 실패 $\ge 5$회 (심각도 HIGH) | EC2 SG `sg-quarantine` 격리 및 L7 WAF IPSet 동시 차단 (신규 세션 차단, 기존 연결은 세션 유지 후 만료) | Slack 채널에 공격자 IP, 침해사고 요약, L4/L7 복합 차단 집행 현황 전송 |
 | **Port Scan / Dirb** | Nmap / Gobuster | Nginx 404/403 응답 빈도 임계치 초과 (심각도 HIGH) | AWS WAFv2 IPSet에 해당 IP 등록 (HTTP 403 차단) | Slack 채널에 공격자 IP, 공격 유형(rule_name), L7 WAF 차단 성공 전송 |
 
 ### 4.2 완료 기준
 * [ ] **코드 품질 게이트**: `powershell .\scripts\check.ps1` 무경고 100% 통과 (Ruff, Pytest).
 * [ ] **단위 테스트 가상화**: `moto` 기반 가상 AWS 환경에서 Boto3 차단 엔진 단위 테스트 100% 통과.
 * [ ] **10초 SLA 관통 증빙**: 모의 공격 시작 시점부터 Slack 알림 수신 및 실제 인프라 차단 완료까지의 타임스탬프 델타가 10초 미만임을 로그로 증빙.
-* [ ] **무인 자동화 검증**: 차단 과정에서 사람의 수동 콘솔 조작이 개입되지 않음을 증빙.
-* [ ] **오탐 복구 검증**: 격리된 SG 및 차단된 WAF IPSet에 대해 차단 해제 Boto3 스크립트 실행 시 정상 통신이 즉시 복구됨을 단위/통합 테스트로 검증.
+* [ ] **자동 대응 파이프라인 검증**: 차단 과정에서 사람의 수동 콘솔 조작이 개입되지 않음을 증빙.
+* [ ] **오탐 복구 검증**: 격리된 SG 및 차단된 WAF IPSet에 대해 차단 해제 Boto3 스크립트 실행 시 정상 통신이 원복되어 복구됨을 단위/통합 테스트로 검증.
