@@ -24,7 +24,7 @@
 * **정량적 핵심 성능 지표 (KPI)**:
   * **전체 파이프라인 관통 시간**: 공격 로그 생성 시점부터 차단 완료 및 알림 전파까지 $\le 10$초.
   * **차단 멱등성 및 원자성 보장**: Boto3 API 호출 간 레이스 컨디션을 방지하고 부분 실패 시 자동 격리/롤백.
-  * **오탐 방지 임계치 윈도우**: 60초 슬라이딩 윈도우 내 실패 횟수를 기반으로 상태를 판정해 단일 오인 트래픽 차단 방지.
+    * **오탐 방지 임계치 윈도우**: 5분(300초) 슬라이딩 윈도우 내 실패 횟수를 기반으로 상태를 판정해 단일 오인 트래픽 차단 방지 (`DETECTION_WINDOW_SECONDS = 300`).
 
 ### 1.3 핵심 위협 시나리오 (Threat Scenarios)
 1. **시나리오 1: SSH 무차별 대입 공격 (Hydra Brute-Force)**
@@ -51,7 +51,7 @@
        ▼ (CW Logs Subscription Filter)
 [Lambda Orchestrator] (초경량 서버리스 오케스트레이터)
        ├─► [탐지 엔진 (Rule & Incident Mapper)] (ReDoS 방어 정규식 + LLM Few-shot 분석)
-       ├─► [DynamoDB 상태 윈도우] (TTL 기반 60초 슬라이딩 윈도우 / 중복 차단 방지 원자적 카운터)
+       ├─► [DynamoDB 상태 윈도우] (TTL 기반 5분(300초) 슬라이딩 윈도우 / 중복 차단 방지 원자적 카운터)
        ├─► [복합 차단 엔진 (Multi-layer Remediation)]
        │     ├─ L4: EC2 Security Group 격리 (인바운드 전면 차단)
        │     └─ L7: AWS WAFv2 IPSet 동적 등록 (웹 트래픽 차단)
@@ -76,13 +76,20 @@
     ```
   * `IncidentReport`는 테크 리드의 승인 없이 변경할 수 없는 보호 계약(Protected Contract)으로 관리됨.
 
-### 2.3 다중 계층 원자적 차단 엔진 (Multi-layer Remediation)
-* **L4 격리 (Security Group)**:
-  * 인스턴스에 적용된 기존 SG를 제거하고 인바운드가 완전히 차단된 `sg-quarantine`으로 교체.
-  * Boto3 `modify_instance_attribute` 호출 시 멱등성 보장.
-* **L7 웹 차단 (AWS WAFv2 IPSet)**:
-  * 차단 대상 IP를 WAFv2 IPSet에 추가 (`update_ip_set`).
-  * CloudFront 및 ALB 연동 웹 트래픽 즉각 드롭.
+### 2.3 다중 계층 원자적 차단 및 복구 엔진 (Multi-layer Remediation & Rollback)
+* **탐지 vs 차단 단계별 판정 기준 (Separation of Detection & Action)**:
+  * **1단계 위협 탐지**: 5분(300초) 윈도우 내 단일 계정 실패 $\ge 5$회(Brute Force) 또는 고유 계정 $\ge 2$개(Spraying) 시 시그니처 매칭 $\rightarrow$ `IncidentReport` 생성 및 심각도(HIGH) 부여.
+  * **2단계 원자적 차단**: 탐지 보고서의 `severity`가 `HIGH` 이상이며 `remediation_target`이 명시된 경우에만 Lambda 오케스트레이터가 실제 차단 API를 호출함 (경고 수준의 단순 노이즈는 차단 없이 Slack 모니터링 알림만 전파).
+* **계층별 차단 실행 동작**:
+  * **L4 격리 (Security Group)**:
+    * 인스턴스에 적용된 기존 SG를 제거하고 인바운드가 완전히 차단된 `sg-quarantine`으로 교체.
+    * Boto3 `modify_instance_attribute` 호출 시 멱등성 보장.
+  * **L7 웹 차단 (AWS WAFv2 IPSet)**:
+    * 차단 대상 IP를 WAFv2 IPSet에 추가 (`update_ip_set`).
+    * CloudFront 및 ALB 연동 웹 트래픽 즉각 드롭.
+* **오탐(False Positive) 발생 시 긴급 복구 절차 (Rollback & Recovery)**:
+  * **L4 SG 격리 해제**: 관리자 확인 또는 오탐 판정 시, 대상 인스턴스의 Security Group을 원본 운영 SG(`sg-production`)로 즉각 원복(`modify_instance_attribute`).
+  * **L7 WAF 차단 해제**: WAFv2 IPSet의 IP 주소 목록에서 오탐 차단된 `/32` 엔트리를 제거(`update_ip_set`)하여 정상 트래픽 유입 즉각 재개.
 
 ---
 
@@ -167,13 +174,14 @@ Phase 4   (W9   : 10.27 ~ 11.04) : 실기기 10초 관통 E2E 실측 & 데모/�
 
 ### 4.1 시나리오별 검증 매트릭스
 
-| 공격 시나리오 | 발생 도구 및 페이로드 | 탐지 조건 | 기대 차단 동작 | 최종 알림 검증 |
+| 공격 시나리오 | 발생 도구 및 페이로드 | 탐지 및 차단 조건 | 기대 차단 동작 | 최종 알림 검증 |
 | :--- | :--- | :--- | :--- | :--- |
-| **SSH Brute-Force** | Hydra (`-l root -P passlist.txt`) | 60초 내 인증 실패 $\ge 5$회 | EC2 SG $\rightarrow$ `sg-quarantine` 교체 (SSH 접속 즉시 끊김) | Slack 채널에 공격자 IP, 차단 SG ID 전송 |
-| **Port Scan / Dirb** | Nmap / Gobuster | Nginx 404/403 응답 빈도 임계치 초과 | AWS WAFv2 IPSet에 해당 IP 등록 (HTTP 403 차단) | Slack 채널에 차단 IP, WAF 룰 이름 전송 |
+| **SSH Brute-Force** | Hydra (`-l root -P passlist.txt`) | 5분(300초) 내 인증 실패 $\ge 5$회 (심각도 HIGH) | EC2 SG $\rightarrow$ `sg-quarantine` 교체 (SSH 접속 즉시 끊김) | Slack 채널에 공격자 IP, 차단 SG ID 전송 |
+| **Port Scan / Dirb** | Nmap / Gobuster | Nginx 404/403 응답 빈도 임계치 초과 (심각도 HIGH) | AWS WAFv2 IPSet에 해당 IP 등록 (HTTP 403 차단) | Slack 채널에 차단 IP, WAF 룰 이름 전송 |
 
 ### 4.2 완료 기준 (Definition of Done)
 * [ ] **코드 품질 게이트**: `powershell .\scripts\check.ps1` 무경고 100% 통과 (Ruff, Pytest).
 * [ ] **단위 테스트 가상화**: `moto` 기반 가상 AWS 환경에서 Boto3 차단 엔진 단위 테스트 100% 통과.
 * [ ] **10초 SLA 관통 증빙**: 모의 공격 시작 시점부터 Slack 알림 수신 및 실제 인프라 차단 완료까지의 타임스탬프 델타가 10초 미만임을 로그로 증빙.
 * [ ] **무인 자동화 검증**: 차단 과정에서 사람의 수동 콘솔 조작이 개입되지 않음을 증빙.
+* [ ] **오탐 복구(Rollback) 검증**: 격리된 SG 및 차단된 WAF IPSet에 대해 차단 해제 Boto3 스크립트 실행 시 정상 통신이 즉시 복구됨을 단위/통합 테스트로 검증.
