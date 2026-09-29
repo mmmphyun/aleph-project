@@ -176,8 +176,11 @@ def test_main_blocks_violations(monkeypatch: pytest.MonkeyPatch) -> None:
     # cloud-b 작업자가 scripts/check.ps1를 변경한 상황 모킹
     monkeypatch.setattr(
         verify_rnr_scope,
-        "get_changed_files",
-        lambda: ["src/collector/cw_processor.py", "scripts/check.ps1"],
+        "get_git_changes",
+        lambda: (
+            ["src/collector/cw_processor.py", "scripts/check.ps1"],
+            ["src/collector/cw_processor.py", "scripts/check.ps1"],
+        ),
     )
 
     with pytest.raises(SystemExit) as exc_info:
@@ -190,14 +193,64 @@ def test_main_allows_valid_changes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(verify_rnr_scope, "resolve_role", lambda: "cloud-b")
     monkeypatch.setattr(
         verify_rnr_scope,
-        "get_changed_files",
-        lambda: [
-            "src/collector/cw_processor.py",
-            "nginx.conf",
-            "tests/unit/test_target_server.py",
-        ],
+        "get_git_changes",
+        lambda: (
+            ["src/collector/cw_processor.py", "nginx.conf", "tests/unit/test_target_server.py"],
+            ["src/collector/cw_processor.py", "nginx.conf", "tests/unit/test_target_server.py"],
+        ),
     )
 
     with pytest.raises(SystemExit) as exc_info:
         verify_rnr_scope.main()
     assert exc_info.value.code == 0
+
+
+def test_is_secret_file() -> None:
+    """시크릿 금지 패턴 식별 및 .env.example 안전 통과 검증."""
+    assert verify_rnr_scope.is_secret_file(".env")
+    assert verify_rnr_scope.is_secret_file(".env.production")
+    assert verify_rnr_scope.is_secret_file("config/server.key")
+    assert verify_rnr_scope.is_secret_file("certs/ca.pem")
+    assert verify_rnr_scope.is_secret_file("secrets/token.txt")
+    assert verify_rnr_scope.is_secret_file(".aws/credentials")
+
+    # .env.example 및 일반 소스코드는 시크릿으로 오탐하지 않음
+    assert not verify_rnr_scope.is_secret_file(".env.example")
+    assert not verify_rnr_scope.is_secret_file("src/detection/rules.py")
+    assert not verify_rnr_scope.is_secret_file("docs/roles/security/README.md")
+
+
+def test_check_forbidden_secrets_blocks_staged_secret() -> None:
+    """Staged/Committed 파일에 .env가 포함되면 sys.exit(1)로 차단 검증."""
+    with pytest.raises(SystemExit) as exc_info:
+        verify_rnr_scope.check_forbidden_secrets(["src/collector/cw_processor.py", ".env"])
+    assert exc_info.value.code == 1
+
+
+def test_check_forbidden_secrets_blocks_even_for_cloud_a(monkeypatch: pytest.MonkeyPatch) -> None:
+    """클라우드 A(플랫폼 전담)라도 .env를 커밋/스테이징하면 main()에서 차단 검증."""
+    monkeypatch.setattr(verify_rnr_scope, "resolve_role", lambda: "cloud-a")
+    monkeypatch.setattr(
+        verify_rnr_scope,
+        "get_git_changes",
+        lambda: ([".env"], [".env"]),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        verify_rnr_scope.main()
+    assert exc_info.value.code == 1
+
+
+def test_local_untracked_ignores_matching() -> None:
+    """로컬 Untracked 파일 수집 제외 패턴 매칭 검증."""
+    patterns = verify_rnr_scope.LOCAL_UNTRACKED_IGNORES
+
+    assert verify_rnr_scope.is_file_allowed(".env", patterns)
+    assert verify_rnr_scope.is_file_allowed(".env.local", patterns)
+    assert verify_rnr_scope.is_file_allowed(".agent-role", patterns)
+    assert verify_rnr_scope.is_file_allowed(".codex-build/manifest.json", patterns)
+    assert verify_rnr_scope.is_file_allowed("output/build.log", patterns)
+    assert verify_rnr_scope.is_file_allowed(".gemini/cache.dat", patterns)
+
+    # 실제 소스 파일은 Untracked 상태여도 무시 목록에 걸리지 않아야 함
+    assert not verify_rnr_scope.is_file_allowed("src/detection/new_rule.py", patterns)

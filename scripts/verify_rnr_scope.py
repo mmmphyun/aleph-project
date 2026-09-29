@@ -57,12 +57,45 @@ RNR_WHITELIST: dict[str, list[str]] = {
     ],
 }
 
-# 검증에서 제외할 로컬/임시 메타 파일
+# 검증에서 제외할 로컬/임시 메타 파일 (R&R 검증 화이트리스트 자동 통과)
 IGNORED_FILES: set[str] = {
     ".agent-role",
-    ".env",
     ".env.example",
 }
+
+# Git 커밋/스테이징/수정 시 직무 불문 절대 허용 불가한 시크릿 패턴
+FORBIDDEN_SECRET_PATTERNS: list[str] = [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.pfx",
+    "secrets/**",
+    ".aws/**",
+]
+
+# 로컬 개발 편의를 위해 Untracked(??) 수집에서 제외할 로컬 파일/디렉토리
+LOCAL_UNTRACKED_IGNORES: list[str] = [
+    ".agent-role",
+    ".env",
+    ".env.*",
+    ".codex-build",
+    ".codex-build/**",
+    "output",
+    "output/**",
+    ".gemini",
+    ".gemini/**",
+    ".claude",
+    ".claude/**",
+]
+
+
+def is_secret_file(file_path: str) -> bool:
+    """단일 파일 경로가 시크릿 금지 패턴에 해당하는지 검사 (.env.example 제외)."""
+    norm_path = file_path.replace("\\", "/").strip("/")
+    if norm_path == ".env.example":
+        return False
+    return is_file_allowed(norm_path, FORBIDDEN_SECRET_PATTERNS)
 
 
 def is_file_allowed(file_path: str, patterns: list[str]) -> bool:
@@ -168,8 +201,14 @@ def resolve_role() -> str:
     sys.exit(1)
 
 
-def get_changed_files() -> list[str]:
-    """Git diff 및 status를 분석하여 변경·추가된 모든 파일 목록을 추출."""
+def get_git_changes() -> tuple[list[str], list[str]]:
+    """Git diff 및 status를 분석하여 (추적 대상 변경 파일, 전체 변경 파일) 튜플을 반환.
+
+    Returns:
+        tuple[list[str], list[str]]:
+            - tracked_changed: 커밋, 스테이징, 작업트리 수정 파일 (시크릿 검사 대상)
+            - all_changed: tracked_changed + Untracked(??) 중 로컬 예외를 제외한 파일
+    """
     # 1. Base Commit 탐색
     base_commit = None
     for candidate in ["origin/main", "main"]:
@@ -182,7 +221,7 @@ def get_changed_files() -> list[str]:
             base_commit = res.stdout.strip()
             break
 
-    changed: set[str] = set()
+    tracked_changed: set[str] = set()
 
     # 2. Base Commit 대비 커밋된 변경 파일
     if base_commit:
@@ -194,7 +233,7 @@ def get_changed_files() -> list[str]:
         if res.returncode == 0:
             for line in res.stdout.splitlines():
                 if line.strip():
-                    changed.add(line.strip().replace("\\", "/"))
+                    tracked_changed.add(line.strip().replace("\\", "/"))
 
     # 3. Staged 변경 파일
     res = subprocess.run(
@@ -205,7 +244,7 @@ def get_changed_files() -> list[str]:
     if res.returncode == 0:
         for line in res.stdout.splitlines():
             if line.strip():
-                changed.add(line.strip().replace("\\", "/"))
+                tracked_changed.add(line.strip().replace("\\", "/"))
 
     # 4. Working Tree 수정 파일
     res = subprocess.run(
@@ -216,9 +255,10 @@ def get_changed_files() -> list[str]:
     if res.returncode == 0:
         for line in res.stdout.splitlines():
             if line.strip():
-                changed.add(line.strip().replace("\\", "/"))
+                tracked_changed.add(line.strip().replace("\\", "/"))
 
-    # 5. Untracked 신규 파일 (??)
+    # 5. Untracked 신규 파일 (??) - 로컬 개발용 파일(LOCAL_UNTRACKED_IGNORES)은 수집 제외
+    untracked_files: set[str] = set()
     res = subprocess.run(
         ["git", "status", "--porcelain"],
         capture_output=True,
@@ -229,28 +269,65 @@ def get_changed_files() -> list[str]:
             line_clean = line.strip()
             if line_clean.startswith("??"):
                 untracked_path = line_clean[2:].strip().replace("\\", "/")
-                changed.add(untracked_path)
+                # 로컬 비추적 예외 패턴에 매칭되지 않는 신규 파일만 수집
+                if not is_file_allowed(untracked_path, LOCAL_UNTRACKED_IGNORES):
+                    untracked_files.add(untracked_path)
 
-    return sorted(changed)
+    all_changed = sorted(tracked_changed | untracked_files)
+    return sorted(tracked_changed), all_changed
+
+
+def get_changed_files() -> list[str]:
+    """하위 호환성을 위한 전체 변경 파일 목록 반환 래퍼."""
+    _, all_changed = get_git_changes()
+    return all_changed
+
+
+def check_forbidden_secrets(tracked_files: list[str]) -> None:
+    """Git 추적(커밋, 스테이징, 수정) 파일 중 시크릿/환경 파일 포함 여부 검사 (Fail-Closed)."""
+    secret_violations: list[str] = [f for f in tracked_files if is_secret_file(f)]
+    if secret_violations:
+        sys.stderr.write("\n" + "=" * 80 + "\n")
+        sys.stderr.write(
+            "[보안 치명적 결함] 자격증명/시크릿 파일이 Git 커밋 또는 스테이징에 포함되었습니다!\n"
+        )
+        sys.stderr.write("=" * 80 + "\n")
+        sys.stderr.write("위반 파일 목록:\n")
+        for v in secret_violations:
+            sys.stderr.write(f"  - {v}\n")
+        sys.stderr.write("\n[조치 안내] .env, 키 파일, 자격증명은 Git에 커밋할 수 없습니다.\n")
+        sys.stderr.write(
+            "  - 스테이징 취소: git reset HEAD <file>\n"
+            "  - 캐시 삭제: git rm --cached <file>\n"
+            "  - 커밋 수정: git reset HEAD~1 후 재커밋\n"
+        )
+        sys.stderr.write("=" * 80 + "\n\n")
+        sys.exit(1)
 
 
 def main() -> None:
-    """R&R 스코프 검증 엔트리포인트."""
+    """R&R 스코프 및 시크릿 검증 엔트리포인트."""
+    tracked_files, all_changed = get_git_changes()
+
+    # 1. 시크릿 차단: 직무(플랫폼 포함) 불문 Git 추적 파일에 시크릿 포함 시 즉시 하드 차단
+    check_forbidden_secrets(tracked_files)
+
+    # 2. 직무 식별
     role = resolve_role()
     allowed_patterns = RNR_WHITELIST.get(role, [])
 
-    # 클라우드 A(플랫폼 전담)는 전 영역 허용
+    # 클라우드 A(플랫폼 전담)는 전 영역 R&R 허용
     if role == "cloud-a":
         print(f"[R&R 검증 통과] 직무: [{role}] (플랫폼 전담 - 전 영역 수정 권한 보유)")
         sys.exit(0)
 
-    changed_files = get_changed_files()
-    if not changed_files:
+    # 3. 타 직무 R&R 화이트리스트 검사
+    if not all_changed:
         print(f"[R&R 검증 통과] 직무: [{role}] (변경 파일 없음)")
         sys.exit(0)
 
     violations: list[str] = []
-    for file_path in changed_files:
+    for file_path in all_changed:
         if not is_file_allowed(file_path, allowed_patterns):
             violations.append(file_path)
 
@@ -274,7 +351,7 @@ def main() -> None:
         sys.stderr.write("=" * 80 + "\n\n")
         sys.exit(1)
 
-    print(f"[R&R 검증 통과] 직무: [{role}] ({len(changed_files)}개 파일 변경 검증 완료)")
+    print(f"[R&R 검증 통과] 직무: [{role}] ({len(all_changed)}개 파일 변경 검증 완료)")
     sys.exit(0)
 
 
