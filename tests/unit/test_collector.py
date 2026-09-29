@@ -13,15 +13,22 @@ from typing import Any
 import pytest
 
 from collector.cw_processor import (
+    LOG_GROUP_STREAM_MAPPING,
     NGINX_SUBSCRIPTION_FILTER_SPEC,
     SUBSCRIPTION_FILTER_SPEC,
     SUBSCRIPTION_FILTER_SPECS,
     decode_cw_logs,
+    decode_nginx_cw_logs,
     deduplicate_log_events,
     matches_subscription_filter,
     route_cw_logs,
 )
-from contracts.events import CloudWatchLogEvent, CloudWatchLogsPayload, SyslogAuthEvent
+from contracts.events import (
+    CloudWatchLogEvent,
+    CloudWatchLogsPayload,
+    NginxAccessLogEvent,
+    SyslogAuthEvent,
+)
 
 
 def test_decode_cw_logs_success(sample_cw_event: dict[str, Any]) -> None:
@@ -920,3 +927,234 @@ def test_route_cw_logs_new_execution_environment_reingestion_limitation() -> Non
     res_none = route_cw_logs(raw_event, seen_event_ids=None)
     assert len(res_none["messages"]) == 1
     assert res_none["dropped_duplicates"] == 0
+
+
+def test_decode_nginx_cw_logs_success() -> None:
+    """CloudWatch Logs 압축 페이로드에서 Nginx L7 웹 접근 로그 디코딩 및 정형 계약 모델 변환 검증.
+
+    Why:
+        수집 단계(CloudWatch Logs Subscription Filter -> Lambda)에서 Base64/Gzip 압축된
+        이진 페이로드를 단일 패스로 디코딩하고, Pydantic 불변 객체(NginxAccessLogEvent) 목록으로
+        역직렬화하여 후속 룰 엔진에 안전하게 전달할 수 있는지 확인함.
+    """
+    line1 = (
+        "198.51.100.77 - - [28/Sep/2026:14:00:00 +0000] "
+        '"GET /admin HTTP/1.1" 401 150 "-" "curl/7.81.0" 0.002 "-"'
+    )
+    line2 = (
+        "203.0.113.50 - - [28/Sep/2026:14:00:01 +0000] "
+        '"POST /api/v1/login HTTP/1.1" 403 200 "https://example.com" "Mozilla/5.0" 0.015 "-"'
+    )
+    payload_model = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(id="ev-nginx-1", timestamp=1788500000000, message=line1),
+            CloudWatchLogEvent(id="ev-nginx-2", timestamp=1788500001000, message=line2),
+        ],
+    )
+    mock_event = {"awslogs": {"data": payload_model.to_awslogs_data()}}
+
+    events = decode_nginx_cw_logs(mock_event)
+    assert isinstance(events, list)
+    assert len(events) == 2
+    assert all(isinstance(e, NginxAccessLogEvent) for e in events)
+
+    # 1번째 이벤트 정합성 검증
+    assert events[0].source_ip == "198.51.100.77"
+    assert events[0].method == "GET"
+    assert events[0].uri == "/admin"
+    assert events[0].status_code == 401
+    assert events[0].response_time == 0.002
+    assert events[0].user_agent == "curl/7.81.0"
+
+    # 2번째 이벤트 정합성 검증
+    assert events[1].source_ip == "203.0.113.50"
+    assert events[1].method == "POST"
+    assert events[1].uri == "/api/v1/login"
+    assert events[1].status_code == 403
+    assert events[1].response_time == 0.015
+    assert events[1].user_agent == "Mozilla/5.0"
+
+
+def test_decode_nginx_cw_logs_noisy_and_empty_events() -> None:
+    """Nginx 로그 규격과 일치하지 않는 노이즈/손상 라인 필터링 및 빈 배치 처리 검증.
+
+    Why:
+        수집 로그 스트림에 비정상 문자열, 공백 라인, 또는 SSH auth 로그가 혼입되더라도
+        NginxAccessLogEvent.parse_line()의 안전 반환(None) 처리를 통해
+        유효한 Nginx 접근 로그만 격리 추출됨을 단언함.
+    """
+    valid_nginx_line = (
+        "198.51.100.77 - - [28/Sep/2026:14:00:00 +0000] "
+        '"GET /shell.php HTTP/1.1" 404 125 "-" "curl/7.81.0" 0.001 "-"'
+    )
+    ssh_noise_line = (
+        "Sep 03 14:20:01 target-ec2 sshd[12341]: "
+        "Failed password for invalid user admin from 198.51.100.50 port 49152 ssh2"
+    )
+    corrupted_line = "THIS IS NOT AN NGINX LOG LINE"
+
+    payload_model = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(id="ev-1", timestamp=1788500000000, message=valid_nginx_line),
+            CloudWatchLogEvent(id="ev-2", timestamp=1788500001000, message="   "),
+            CloudWatchLogEvent(id="ev-3", timestamp=1788500002000, message=ssh_noise_line),
+            CloudWatchLogEvent(id="ev-4", timestamp=1788500003000, message=corrupted_line),
+        ],
+    )
+    mock_event = {"awslogs": {"data": payload_model.to_awslogs_data()}}
+
+    events = decode_nginx_cw_logs(mock_event)
+    assert len(events) == 1
+    assert events[0].source_ip == "198.51.100.77"
+    assert events[0].uri == "/shell.php"
+    assert events[0].status_code == 404
+
+    # 빈 logEvents 인입 시 빈 리스트 안전 반환 검증
+    empty_payload_model = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[],
+    )
+    empty_event = {"awslogs": {"data": empty_payload_model.to_awslogs_data()}}
+    assert decode_nginx_cw_logs(empty_event) == []
+
+
+def test_decode_nginx_cw_logs_invalid_inputs() -> None:
+    """유효하지 않은 입력 페이로드 인입 시 decode_nginx_cw_logs 예외 격리 검증."""
+    # 1. 딕셔너리 타입이 아닌 경우 TypeError
+    with pytest.raises(TypeError, match="payload는 dict 타입이어야 합니다"):
+        decode_nginx_cw_logs(["not-a-dict"])  # type: ignore[arg-type]
+
+    # 2. 'awslogs' 키 누락 시 KeyError
+    with pytest.raises(KeyError, match="'awslogs'가 누락"):
+        decode_nginx_cw_logs({"wrong_key": 123})
+
+    # 3. 'data' 키 누락 시 KeyError
+    with pytest.raises(KeyError, match="'data'가 누락"):
+        decode_nginx_cw_logs({"awslogs": {}})
+
+    # 4. 문자열이 아닌 data 필드 인입 시 ValueError
+    with pytest.raises(ValueError, match="Base64 인코딩된 문자열"):
+        decode_nginx_cw_logs({"awslogs": {"data": None}})  # type: ignore[dict-item]
+
+    # 5. 손상된 Base64 데이터 인입 시 ValueError
+    with pytest.raises(ValueError, match="CloudWatch Logs"):
+        decode_nginx_cw_logs({"awslogs": {"data": "corrupted@@@data"}})
+
+
+def test_route_cw_logs_with_parsed_events_multi_stream() -> None:
+    """route_cw_logs 호출 시 스트림 유형별 parsed_events 정형 모델 파싱 일관성 검증.
+
+    Why:
+        오케스트레이터가 메시지 문자열(messages)뿐만 아니라 이미 정형화된 Pydantic 불변 객체
+        (auth: SyslogAuthEvent, nginx: NginxAccessLogEvent)를 직접 전달받아
+        각 도메인별 룰 엔진으로 즉시 분기할 수 있도록 지원함.
+    """
+    # 1. SSH Auth 스트림 인입
+    auth_line = (
+        "Sep 03 14:20:01 target-ec2 sshd[12341]: "
+        "Failed password for invalid user admin from 198.51.100.50 port 49152 ssh2"
+    )
+    auth_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/auth-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-SSH-FailedPassword-Filter"],
+        logEvents=[CloudWatchLogEvent(id="ev-auth-1", timestamp=1788500000000, message=auth_line)],
+    )
+    auth_event = {"awslogs": {"data": auth_payload.to_awslogs_data()}}
+    auth_result = route_cw_logs(auth_event)
+
+    assert auth_result["stream_type"] == "auth"
+    assert "parsed_events" in auth_result
+    assert len(auth_result["parsed_events"]) == 1
+    assert isinstance(auth_result["parsed_events"][0], SyslogAuthEvent)
+    assert auth_result["parsed_events"][0].source_ip == "198.51.100.50"
+    assert auth_result["parsed_events"][0].username == "admin"
+
+    # 2. Nginx Web 스트림 인입
+    nginx_line = (
+        "198.51.100.77 - - [28/Sep/2026:14:00:00 +0000] "
+        '"GET /wp-login.php HTTP/1.1" 404 125 "-" "curl/7.81.0" 0.001 "-"'
+    )
+    nginx_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(id="ev-nginx-1", timestamp=1788500000000, message=nginx_line)
+        ],
+    )
+    nginx_event = {"awslogs": {"data": nginx_payload.to_awslogs_data()}}
+    nginx_result = route_cw_logs(nginx_event)
+
+    assert nginx_result["stream_type"] == "nginx"
+    assert "parsed_events" in nginx_result
+    assert len(nginx_result["parsed_events"]) == 1
+    assert isinstance(nginx_result["parsed_events"][0], NginxAccessLogEvent)
+    assert nginx_result["parsed_events"][0].source_ip == "198.51.100.77"
+    assert nginx_result["parsed_events"][0].uri == "/wp-login.php"
+    assert nginx_result["parsed_events"][0].status_code == 404
+
+    # 3. 미등록 Unknown 스트림 인입 시 격리 및 빈 parsed_events 반환
+    unknown_payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/unknown/other-log",
+        logStream="i-0abcd1234ef56789a",
+        subscriptionFilters=[],
+        logEvents=[
+            CloudWatchLogEvent(id="ev-unk-1", timestamp=1788500000000, message="unknown msg")
+        ],
+    )
+    unknown_event = {"awslogs": {"data": unknown_payload.to_awslogs_data()}}
+    unknown_result = route_cw_logs(unknown_event)
+
+    assert unknown_result["stream_type"] == "unknown"
+    assert unknown_result["parsed_events"] == []
+
+
+def test_route_cw_logs_real_cloudwatch_agent_paths() -> None:
+    """실제 EC2 배포용 CloudWatch Agent 로그 그룹 경로 매핑 정합성 검증.
+
+    Why:
+        amazon-cloudwatch-agent.json에 정의된 실제 타깃 서버 경로
+        (/aws/ec2/target-server/auth 및 /aws/ec2/target-server/nginx/access)가
+        오케스트레이터 라우터에서 'auth'와 'nginx'로 정확히 분류되는지 확인함.
+    """
+    assert LOG_GROUP_STREAM_MAPPING["/aws/ec2/target-server/auth"] == "auth"
+    assert LOG_GROUP_STREAM_MAPPING["/aws/ec2/target-server/nginx/access"] == "nginx"
+
+    # 실제 경로 기반 Nginx 이벤트 라우팅
+    nginx_line = (
+        "198.51.100.99 - - [28/Sep/2026:14:05:00 +0000] "
+        '"GET /api/v1/test HTTP/1.1" 401 100 "-" "test-agent" 0.003 "-"'
+    )
+    payload_model = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/aws/ec2/target-server/nginx/access",
+        logStream="i-real-ec2-instance",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[CloudWatchLogEvent(id="ev-real-1", timestamp=1788500000000, message=nginx_line)],
+    )
+    routed = route_cw_logs({"awslogs": {"data": payload_model.to_awslogs_data()}})
+    assert routed["stream_type"] == "nginx"
+    assert len(routed["parsed_events"]) == 1
+    assert routed["parsed_events"][0].source_ip == "198.51.100.99"
