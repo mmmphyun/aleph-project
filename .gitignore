@@ -44,3 +44,9 @@ HANDOVER.md
 *.pem
 *.key
 secrets/
+
+# AI Agent and tool artifacts
+.codex-build/
+output/
+.gemini/
+.claude/
