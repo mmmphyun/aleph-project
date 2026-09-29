@@ -2,6 +2,14 @@
 
 이 실험은 합성 경로를 짧은 시간에 요청해 HTTP 경로, 상태 코드, 요청 빈도에 남는 L7 흔적을 확인하기 위한 것이다. TCP 플래그 기반 SG 분석이나 실제 WAF 차단 실험은 포함하지 않는다.
 
+## 현재 연계 범위와 후속 티켓
+
+이 스크립트의 완료 범위는 로컬 테스트 HTTP 대상에 L7 요청 흔적을 만들고 상태 코드·요청 수 증거를 남기는 단계까지다. 대상이 Nginx라면 `access.log`에 접근 기록이 남을 수 있지만, 이 PR은 그 로그의 CloudWatch 전달, Web 탐지 룰 적용, `IncidentReport` 생성 또는 자동 차단을 검증하지 않는다. 리뷰 시점의 기존 탐지 경로는 SSH 로그 중심이므로 HTTP 요청만으로 자동 탐지·대응이 일어났다고 해석하면 안 된다.
+
+- HTTP 로그 수집 경로 명세: 클라우드 B [Nginx access.log CloudWatch Agent 수집 Issue #82](https://github.com/mmmphyun/aleph-project/issues/82)
+- HTTP 로그 라우팅·디코딩: 클라우드 B [CloudWatch 멀티 스트림 및 Nginx 페이로드 디코더 Issue #95](https://github.com/mmmphyun/aleph-project/issues/95)
+- Web 탐지 룰 연계: 보안 [Web L7 시그니처 설계 Issue #98](https://github.com/mmmphyun/aleph-project/issues/98) 및 [후속 탐지 구현 Notion 티켓](https://notion.so/3e904d37c2258110b345fd5d1999a244)
+
 ## 준비와 dry-run
 
 Git Bash에서 저장소 루트 기준으로 실행한다. 기본값은 `curl`, 후보 10개, 동시성 1, 요청당 제한 시간 3초이며 요청을 보내지 않는다.
