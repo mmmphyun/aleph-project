@@ -972,3 +972,329 @@ def test_capture_unrelated_process_survives(capture, bash):
                 check=False,
             )
         other.wait(timeout=8)
+
+
+WEB_SCRIPT = SCRIPT.with_name("web_dir_scan.sh")
+
+
+@pytest.fixture
+def web_scan(tmp_path, bash):
+    """실제 네트워크 도구가 PATH로 섞이지 않도록 모의 실행 파일만 허용한다."""
+    fake_bin = tmp_path / "web fake bin"
+    fake_bin.mkdir()
+    for utility in ("date", "mktemp", "chmod", "rm", "rmdir", "sleep"):
+        shim = fake_bin / utility
+        shim.write_text(f'#!/bin/bash\nexec /usr/bin/{utility} "$@"\n', newline="\n")
+        shim.chmod(0o755)
+    curl = fake_bin / "curl"
+    curl.write_text(
+        r"""#!/bin/bash
+printf '%s\n' "$@" >> "$MOCK_ARGS"
+n=0
+if [[ -f $MOCK_COUNT ]]; then read -r n < "$MOCK_COUNT"; fi
+((n += 1))
+printf '%s\n' "$n" > "$MOCK_COUNT"
+case $MOCK_MODE in timeout) exit 28 ;; connection) exit 7 ;; esac
+read -r -a codes <<< "$MOCK_CODES"
+printf '%s' "${codes[n-1]:-404}"
+""",
+        newline="\n",
+    )
+    curl.chmod(0o755)
+    gobuster = fake_bin / "gobuster"
+    gobuster.write_text(
+        r"""#!/bin/bash
+printf '%s\n' "$@" >> "$MOCK_ARGS"
+printf '%s\n' "$$" > "$MOCK_PID"
+case $MOCK_MODE in
+  connection) exit 1 ;;
+  interrupt) kill -TERM "$PPID"; /usr/bin/sleep 1; exit 0 ;;
+  hang) trap '' TERM; while :; do /usr/bin/sleep 0.1; done ;;
+esac
+printf '/admin (Status: 200)\n/login (Status: 301)\n/backup (Status: 302)\n/private (Status: 403)\n'
+""",
+        newline="\n",
+    )
+    gobuster.chmod(0o755)
+    args_file = tmp_path / "argv.txt"
+    count_file = tmp_path / "count.txt"
+    pid_file = tmp_path / "pid.txt"
+    evidence = tmp_path / "evidence.txt"
+
+    def bash_path(path):
+        value = path.as_posix()
+        return f"/{value[0].lower()}{value[2:]}" if value[1:3] == ":/" else value
+
+    def run(args=None, *, mode="ok", codes="200 301 302 403 404", missing=None):
+        if missing:
+            (fake_bin / missing).unlink(missing_ok=True)
+        args = args if args is not None else ["--url", "http://127.0.0.1:8080"]
+        env = os.environ.copy()
+        for name in ("BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"):
+            env.pop(name, None)
+        env.update(
+            FAKE_BIN=bash_path(fake_bin),
+            MOCK_ARGS=bash_path(args_file),
+            MOCK_COUNT=bash_path(count_file),
+            MOCK_PID=bash_path(pid_file),
+            MOCK_MODE=mode,
+            MOCK_CODES=codes,
+            MSYS_NO_PATHCONV="1",
+        )
+        return subprocess.run(
+            [
+                bash,
+                "--noprofile",
+                "--norc",
+                "-c",
+                'cd "$FAKE_BIN" || exit; export PATH="$PWD"; '
+                'exec /bin/bash --noprofile --norc "$@"',
+                "web-test",
+                bash_path(WEB_SCRIPT),
+                *args,
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+            check=False,
+        )
+
+    return run, evidence, args_file, count_file, pid_file, bash_path
+
+
+def test_web_dry_run_and_execute_gate(web_scan):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    base = ["--url", "http://127.0.0.1:8080", "--evidence", bash_path(evidence)]
+    result = run(base)
+    assert result.returncode == 0 and "dry-run" in result.stdout
+    assert not args_file.exists() and not evidence.exists()
+    result = run([*base, "--execute", "--candidates", "1"])
+    assert result.returncode == 0, result.stderr
+    assert evidence.exists() and args_file.exists()
+    assert "attempted_requests=1" in evidence.read_text()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1",
+        "https://[::1]:443/",
+    ],
+)
+def test_web_loopback_urls_allowed(web_scan, url):
+    run, _, args_file, _, _, _ = web_scan
+    result = run(["--url", url])
+    assert result.returncode == 0 and "dry-run" in result.stdout
+    assert not args_file.exists()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.org:80",
+        "http://localhost:80",
+        "http://10.0.0.1:80",
+        "ftp://127.0.0.1",
+        "http://user@127.0.0.1",
+        "http://127.0.0.1:0",
+        "http://127.0.0.1:65536",
+        "http://127.0.0.1:080",
+        "http://127.0.0.1?x=1",
+        "http://127.0.0.1#part",
+        "http://127.0.0.1/admin",
+        "http://127.0.0.1;touch INJECTED",
+        "http://127.0.0.1/$(touch INJECTED)",
+        "http://127.0.0.1\\@example.org",
+        "http://127.0.0.1%2f.example.org",
+    ],
+)
+def test_web_bad_urls_never_invoke_tools(web_scan, url):
+    run, _, args_file, _, _, _ = web_scan
+    result = run(["--url", url, "--execute"])
+    assert result.returncode == 2, result.stderr
+    assert not args_file.exists()
+    assert not (args_file.parent / "web fake bin" / "INJECTED").exists()
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--candidates", "0"),
+        ("--candidates", "21"),
+        ("--concurrency", "0"),
+        ("--concurrency", "5"),
+        ("--timeout", "0"),
+        ("--timeout", "11"),
+        ("--candidates", "01"),
+        ("--timeout", "1;id"),
+    ],
+)
+def test_web_limits_reject_before_tools(web_scan, option, value):
+    run, _, args_file, _, _, _ = web_scan
+    result = run(["--url", "http://127.0.0.1", option, value, "--execute"])
+    assert result.returncode == 2
+    assert not args_file.exists()
+
+
+def test_web_curl_statuses_and_safe_argv(web_scan):
+    run, evidence, args_file, count_file, _, bash_path = web_scan
+    result = run(
+        [
+            "--url",
+            "http://127.0.0.1:8080",
+            "--candidates",
+            "5",
+            "--evidence",
+            bash_path(evidence),
+            "--execute",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    assert count_file.read_text().strip() == "5"
+    output = evidence.read_text()
+    for code in (200, 301, 302, 403, 404):
+        assert f"http_{code}=1" in output
+    assert "state=completed" in output and "exit_code=0" in output
+    argv = args_file.read_text().splitlines()
+    assert "--max-time" in argv and "--noproxy" in argv and "--output" in argv
+    assert "http://127.0.0.1:8080/admin" in argv
+    assert "--data" not in argv and "--location" not in argv
+
+
+@pytest.mark.parametrize("missing", ["curl", "gobuster"])
+def test_web_missing_tool_records_failure(web_scan, missing):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    result = run(
+        [
+            "--url",
+            "http://127.0.0.1",
+            "--tool",
+            missing,
+            "--evidence",
+            bash_path(evidence),
+            "--execute",
+        ],
+        missing=missing,
+    )
+    assert result.returncode == 127
+    assert "state=tool_missing" in evidence.read_text()
+    assert not args_file.exists()
+
+
+@pytest.mark.parametrize(
+    "mode,state,code", [("timeout", "timeout", 124), ("connection", "connection_failure", 7)]
+)
+def test_web_curl_failure_classification(web_scan, mode, state, code):
+    run, evidence, _, _, _, bash_path = web_scan
+    result = run(
+        ["--url", "http://127.0.0.1", "--evidence", bash_path(evidence), "--execute"], mode=mode
+    )
+    assert result.returncode == code
+    assert f"state={state}" in evidence.read_text()
+
+
+def test_web_gobuster_statuses_and_owned_temp_cleanup(web_scan):
+    run, evidence, args_file, _, pid_file, bash_path = web_scan
+    result = run(
+        [
+            "--url",
+            "http://127.0.0.1:8080",
+            "--tool",
+            "gobuster",
+            "--candidates",
+            "5",
+            "--concurrency",
+            "4",
+            "--timeout",
+            "1",
+            "--evidence",
+            bash_path(evidence),
+            "--execute",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    output = evidence.read_text()
+    assert "planned_requests=5" in output and "attempted_requests=unknown" in output
+    for code in (200, 301, 302, 403):
+        assert f"http_{code}=1" in output
+    assert "http_404=0" in output
+    argv = args_file.read_text().splitlines()
+    wordlist = Path(argv[argv.index("-w") + 1])
+    assert not wordlist.exists()
+    assert "4" in argv and "1s" in argv and "--status-codes-blacklist" not in argv
+    assert argv[argv.index("-b") + 1] == ""
+    assert pid_file.exists()
+
+
+def test_web_existing_evidence_is_preserved(web_scan):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    evidence.write_text("keep original")
+    result = run(["--url", "http://127.0.0.1", "--evidence", bash_path(evidence), "--execute"])
+    assert result.returncode == 2
+    assert evidence.read_text() == "keep original"
+    assert not args_file.exists()
+
+
+def test_web_gobuster_interrupt_cleans_its_child(web_scan, bash):
+    run, evidence, args_file, _, pid_file, bash_path = web_scan
+    result = run(
+        [
+            "--url",
+            "http://127.0.0.1",
+            "--tool",
+            "gobuster",
+            "--evidence",
+            bash_path(evidence),
+            "--execute",
+        ],
+        mode="interrupt",
+    )
+    assert result.returncode == 143, result.stderr
+    assert "state=interrupted" in evidence.read_text()
+    argv = args_file.read_text().splitlines()
+    assert not Path(argv[argv.index("-w") + 1]).exists()
+    alive = subprocess.run(
+        [bash, "-c", 'kill -0 "$1" 2>/dev/null', "check", pid_file.read_text().strip()],
+        capture_output=True,
+        timeout=3,
+        check=False,
+    )
+    assert alive.returncode != 0
+
+
+def test_web_gobuster_timeout_kills_stubborn_owned_child(web_scan, bash):
+    run, evidence, args_file, _, pid_file, bash_path = web_scan
+    result = run(
+        [
+            "--url",
+            "http://127.0.0.1",
+            "--tool",
+            "gobuster",
+            "--candidates",
+            "1",
+            "--timeout",
+            "1",
+            "--evidence",
+            bash_path(evidence),
+            "--execute",
+        ],
+        mode="hang",
+    )
+    assert result.returncode == 124, result.stderr
+    assert "state=timeout" in evidence.read_text()
+    argv = args_file.read_text().splitlines()
+    assert not Path(argv[argv.index("-w") + 1]).exists()
+    alive = subprocess.run(
+        [bash, "-c", 'kill -0 "$1" 2>/dev/null', "check", pid_file.read_text().strip()],
+        capture_output=True,
+        timeout=3,
+        check=False,
+    )
+    assert alive.returncode != 0
+
+
+def test_web_bash_syntax(bash):
+    result = subprocess.run([bash, "-n", WEB_SCRIPT.as_posix()], capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
