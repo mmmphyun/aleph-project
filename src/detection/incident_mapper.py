@@ -19,6 +19,7 @@ from contracts.incident import IncidentReport
 from detection.rules import evaluate_rules
 
 _DEFAULT_TARGET_IDENTIFIER = "i-0abcd1234ef567890"
+_DEFAULT_INCIDENT_ID = "INC-SIG-SSH-AUTH-001"
 
 _RULE_METADATA = {
     "SSH_BRUTE_FORCE": {
@@ -62,23 +63,64 @@ def analyze_incident(raw_logs: str) -> IncidentReport:
     if not is_detected or rule_name is None:
         raise ValueError("탐지 가능한 SSH 인증 실패 공격 패턴이 없습니다.")
 
-    metadata = _RULE_METADATA.get(rule_name)
-    if metadata is None:
-        raise ValueError(f"지원하지 않는 탐지 룰입니다: {rule_name}")
-
     source_ip = _select_primary_source_ip(events)
     target_accounts = tuple(dict.fromkeys(event.username for event in events))
     target_identifier = _extract_target_identifier(events)
 
+    return map_threat_to_incident(
+        is_threat=is_detected,
+        rule_name=rule_name,
+        source_ip=source_ip,
+        target_accounts=target_accounts,
+        target_identifier=target_identifier,
+    )
+
+
+def map_threat_to_incident(
+    *,
+    is_threat: bool,
+    rule_name: str | None,
+    source_ip: str,
+    target_accounts: tuple[str, ...],
+    target_identifier: str = _DEFAULT_TARGET_IDENTIFIER,
+    incident_id: str = _DEFAULT_INCIDENT_ID,
+) -> IncidentReport:
+    """누적 윈도우 또는 로컬 룰의 위협 판정을 표준 IncidentReport로 변환한다.
+
+    Why:
+        ``auth_window``와 ``evaluate_rules``는 동일한 룰명을 반환하지만 각 호출부가
+        MITRE ATT&CK·위험도·대응 정책을 다시 정의하면 메타데이터가 불일치할 수 있다.
+        판정 경로와 무관하게 이 함수만 IncidentReport 생성 책임을 갖는다.
+
+    Constraints:
+        - ``rule_name``은 ``SSH_BRUTE_FORCE`` 또는 ``SSH_PASSWORD_SPRAYING``이어야 한다.
+        - ``target_accounts``는 최소 한 개의 계정을 포함해야 한다.
+        - IP와 EC2 식별자의 최종 형식 검증은 보호된 IncidentReport 계약에 위임한다.
+
+    Side-effects / Edge-cases:
+        - 외부 API를 호출하지 않으며 입력이 같으면 동일한 보고서를 반환한다.
+        - 비위협 판정과 지원하지 않는 룰은 보고서로 승격하지 않고 ValueError를 발생시킨다.
+    """
+    if not is_threat or rule_name is None:
+        raise ValueError("탐지 가능한 SSH 인증 실패 공격 패턴이 없습니다.")
+
+    metadata = _RULE_METADATA.get(rule_name)
+    if metadata is None:
+        raise ValueError(f"지원하지 않는 탐지 룰입니다: {rule_name}")
+    if not target_accounts:
+        raise ValueError("위협 보고서에는 최소 한 개의 대상 계정이 필요합니다.")
+
+    unique_target_accounts = tuple(dict.fromkeys(target_accounts))
+
     return IncidentReport(
-        incident_id="INC-SIG-SSH-AUTH-001",
+        incident_id=incident_id,
         attack_type=metadata["attack_type"],
         mitre_id=metadata["mitre_id"],
         risk_level=metadata["risk_level"],
         source_ip=source_ip,
         target_identifier=target_identifier,
-        target_accounts=target_accounts,
-        summary_ko=_build_summary(metadata["mitre_id"], source_ip, target_accounts),
+        target_accounts=unique_target_accounts,
+        summary_ko=_build_summary(metadata["mitre_id"], source_ip, unique_target_accounts),
         action_required=metadata["action_required"],
         recommendations=_build_recommendations(
             metadata["mitre_id"],
