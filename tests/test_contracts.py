@@ -10,11 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from contracts.events import (
-    CloudWatchLogsPayload,
-    NginxAccessLogEvent,
-    SyslogAuthEvent,
-)
+from contracts.events import CloudWatchLogsPayload, SyslogAuthEvent
 from contracts.incident import IncidentReport
 
 MOCK_DATA_DIR = Path(__file__).parent / "mock_data"
@@ -203,22 +199,6 @@ def test_contract_schema_immutability() -> None:
         f"{actual_cw_fields ^ expected_cw_fields}"
     )
 
-    expected_nginx_fields = {
-        "source_ip",
-        "timestamp_str",
-        "method",
-        "uri",
-        "status_code",
-        "response_time",
-        "user_agent",
-        "raw_message",
-    }
-    actual_nginx_fields = set(NginxAccessLogEvent.model_fields.keys())
-    assert actual_nginx_fields == expected_nginx_fields, (
-        f"NginxAccessLogEvent 스키마가 변조되었습니다! 누락/추가 필드: "
-        f"{actual_nginx_fields ^ expected_nginx_fields}"
-    )
-
 
 @pytest.mark.parametrize(
     ("filename", "expected_action", "expected_risk"),
@@ -276,109 +256,3 @@ def test_noisy_auth_log_parsing() -> None:
     # 13개 중 실패 이벤트(Sep 04 5건 + 198.51.100.99 1건) 총 6건만 파싱되어야 함
     assert len(valid_events) == 6
     assert all(e.process == "sshd" for e in valid_events)
-
-
-def test_nginx_access_log_parsing() -> None:
-    """Nginx Combined 및 cloudshield_combined 로그 라인 파싱 정합성 검증."""
-    # 1. cloudshield_combined 포맷 (response_time 포함)
-    line_full = (
-        "198.51.100.77 - - [28/Sep/2026:11:52:38 +0000] "
-        '"GET /admin HTTP/1.1" 401 150 "-" "curl/7.81.0" 0.002 "-"'
-    )
-    event_full = NginxAccessLogEvent.parse_line(line_full)
-    assert event_full is not None
-    assert event_full.source_ip == "198.51.100.77"
-    assert event_full.timestamp_str == "28/Sep/2026:11:52:38 +0000"
-    assert event_full.method == "GET"
-    assert event_full.uri == "/admin"
-    assert event_full.status_code == 401
-    assert event_full.response_time == 0.002
-    assert event_full.user_agent == "curl/7.81.0"
-    assert event_full.raw_message == line_full
-
-    # 2. 표준 Combined 포맷 (response_time 미포함 시 기본값 0.0)
-    line_std = (
-        "203.0.113.10 - admin [28/Sep/2026:12:00:01 +0000] "
-        '"POST /api/v1/login HTTP/1.1" 200 45 "https://example.com" "Mozilla/5.0"'
-    )
-    event_std = NginxAccessLogEvent.parse_line(line_std)
-    assert event_std is not None
-    assert event_std.source_ip == "203.0.113.10"
-    assert event_std.timestamp_str == "28/Sep/2026:12:00:01 +0000"
-    assert event_std.method == "POST"
-    assert event_std.uri == "/api/v1/login"
-    assert event_std.status_code == 200
-    assert event_std.response_time == 0.0
-    assert event_std.user_agent == "Mozilla/5.0"
-
-
-def test_nginx_access_log_url_unquote() -> None:
-    """Nginx access.log 파싱 시 1차 URL unquote 및 에러 복원력 검증.
-
-    Why:
-        공격자가 WAF나 시그니처 매칭을 우회하기 위해 URL 인코딩을 적용하더라도
-        계약 모델 단계에서 1차 unquote를 수행하여 동일한 탐지 인터페이스를 제공함.
-    """
-    # 1. 단일 URL 인코딩 파싱 검증
-    encoded_line = (
-        "198.51.100.77 - - [28/Sep/2026:11:52:38 +0000] "
-        '"GET /admin%20login%2Ftest%3Fkey%3Dval HTTP/1.1" 401 150 "-" "curl/7.81.0" 0.002 "-"'
-    )
-    event = NginxAccessLogEvent.parse_line(encoded_line)
-    assert event is not None
-    assert event.uri == "/admin login/test?key=val"
-
-    # 2. 비정상 퍼센트 인코딩(%ZZ) 및 디코딩 불가 시그니처 인입 시에도 에러 없이 안전 유지
-    malformed_line = (
-        "198.51.100.77 - - [28/Sep/2026:11:52:38 +0000] "
-        '"GET /test%ZZ%E0%A4 HTTP/1.1" 404 150 "-" "curl/7.81.0" 0.001 "-"'
-    )
-    malformed_event = NginxAccessLogEvent.parse_line(malformed_line)
-    assert malformed_event is not None
-    assert "%ZZ" in malformed_event.uri
-
-
-def test_nginx_access_log_immutability() -> None:
-    """NginxAccessLogEvent 모델의 불변성(frozen=True) 및 임의 필드 금지(extra=forbid) 검증."""
-    line = (
-        "198.51.100.77 - - [28/Sep/2026:11:52:38 +0000] "
-        '"GET /admin HTTP/1.1" 401 150 "-" "curl/7.81.0" 0.002 "-"'
-    )
-    event = NginxAccessLogEvent.parse_line(line)
-    assert event is not None
-
-    # frozen=True 속성 변경 시도 차단
-    with pytest.raises(ValidationError):
-        event.status_code = 200  # type: ignore[misc]
-
-    # extra='forbid' 정의되지 않은 필드 인입 차단
-    with pytest.raises(ValidationError):
-        NginxAccessLogEvent(
-            source_ip="198.51.100.77",
-            timestamp_str="28/Sep/2026:11:52:38 +0000",
-            method="GET",
-            uri="/admin",
-            status_code=401,
-            response_time=0.002,
-            user_agent="curl/7.81.0",
-            raw_message=line,
-            extra_field="disallowed",  # type: ignore[call-arg]
-        )
-
-
-@pytest.mark.parametrize(
-    "invalid_line",
-    [
-        "",
-        "   ",
-        (
-            "Sep 03 14:20:01 target-ec2 sshd[12341]: "
-            "Failed password for invalid user admin from 198.51.100.50 port 49152 ssh2"
-        ),
-        "invalid non-log string",
-        "-",
-    ],
-)
-def test_nginx_access_log_invalid_lines_return_none(invalid_line: str) -> None:
-    """Nginx access.log 규격에 맞지 않는 라인 인입 시 None 안전 반환 검증."""
-    assert NginxAccessLogEvent.parse_line(invalid_line) is None

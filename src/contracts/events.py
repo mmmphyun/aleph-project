@@ -2,8 +2,8 @@
 # 소유자: 클라우드 A (전역 공통 계약 - 임의 수정 금지)
 """이벤트 데이터 계약 모델 및 압축/해제 유틸리티.
 
-규격 1 (Syslog auth.log), 규격 2 (CloudWatch Logs Subscription Filter),
-규격 3 (Nginx access.log)을 Pydantic V2 모델로 정의하고 상호 변환 및 파싱을 지원함.
+규격 1 (Syslog auth.log) 및 규격 2 (CloudWatch Logs Subscription Filter)를
+Pydantic V2 모델로 정의하고 상호 변환 및 파싱을 지원함.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import base64
 import gzip
 import json
 import re
-from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -147,105 +146,3 @@ class CloudWatchLogsPayload(BaseModel):
         json_bytes = self.model_dump_json().encode("utf-8")
         compressed = gzip.compress(json_bytes)
         return base64.b64encode(compressed).decode("utf-8")
-
-
-class NginxAccessLogEvent(BaseModel):
-    """Nginx access.log 웹 접근 로그 이벤트 모델 (규격 3).
-
-    Why:
-        타깃 EC2 Nginx 웹 서버의 access.log(cloudshield_combined 포맷)를 파싱하여
-        L7 웹 공격(디렉토리 스캐닝, 관리자 페이지 무차별 대입 등)에 대한
-        탐지 룰 엔진 및 차단(WAF IPSet) 오케스트레이터의 공통 표준 인터페이스를 제공함.
-
-    Constraints:
-        - 불변 모델(frozen=True, extra="forbid")로 정의하여 계약 변조 방지.
-        - 필수 필드 8개: source_ip, timestamp_str, method, uri, status_code,
-          response_time, user_agent, raw_message.
-        - 파싱 시 표준 1차 URL unquote 처리를 적용하여 인코딩 우회 공격에 대응.
-
-    Side-effects / Edge-cases:
-        - URL 퍼센트 인코딩 디코딩 시 UTF-8 오류는 errors="replace"로 안전하게 대체 처리.
-        - Nginx access.log 포맷이 아니거나 비정상 요청 라인인 경우 None 반환.
-
-    포맷 예시 (cloudshield_combined):
-        198.51.100.77 - - [28/Sep/2026:11:52:38 +0000] "GET /admin HTTP/1.1"
-        401 150 "-" "curl/7.81.0" 0.002 "-"
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    source_ip: str = Field(..., description="접속 시도 출발지 IPv4")
-    timestamp_str: str = Field(..., description="Nginx 타임스탬프 (예: 28/Sep/2026:11:52:38 +0000)")
-    method: str = Field(..., description="HTTP 요청 메서드 (예: GET, POST)")
-    uri: str = Field(..., description="요청 URI 경로 (1차 URL unquote 처리 완료)")
-    status_code: int = Field(..., description="HTTP 응답 상태 코드 (예: 200, 401, 403, 404)")
-    response_time: float = Field(default=0.0, description="요청 처리 소요 시간 (초)")
-    user_agent: str = Field(..., description="클라이언트 User-Agent 헤더")
-    raw_message: str = Field(..., description="로그 원문 라인")
-
-    @classmethod
-    def parse_line(cls, line: str) -> NginxAccessLogEvent | None:
-        """단일 Nginx access.log 원문 라인을 파싱하여 모델 인스턴스 생성.
-
-        Why:
-            CloudWatch Logs에서 디코딩된 Nginx 접근 로그 문자열로부터
-            L7 탐지 룰 및 WAF 오케스트레이터가 필요로 하는 핵심 필드를 안전하게 추출함.
-
-        Constraints:
-            - 표준 1차 URL unquote 처리(urllib.parse.unquote) 지원.
-            - cloudshield_combined 및 표준 Nginx Combined 로그 포맷 동시 지원.
-
-        Side-effects / Edge-cases:
-            - Nginx 로그 규격과 일치하지 않거나 빈 문자열인 경우 None 반환.
-            - 비정상/불완전 퍼센트 인코딩(%ZZ 등)은 errors="replace"로 안전하게 유지.
-        """
-        stripped = line.strip()
-        if not stripped:
-            return None
-
-        # Nginx Combined / cloudshield_combined 로그 정규식 패턴
-        # Why: 표준 Combined 포맷 외에 cloudshield_combined 포맷의
-        #      응답 소요 시간($request_time) 및 상위 프록시 헤더를 선택적으로 추출함
-        pattern = (
-            r"^(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+"
-            r"(?P<ident>\S+)\s+"
-            r"(?P<user>\S+)\s+"
-            r"\[(?P<time>[^\]]+)\]\s+"
-            r'"(?P<method>[A-Za-z]+)\s+(?P<uri>\S+)(?:\s+[^"]+)?"\s+'
-            r"(?P<status>\d{3})"
-            r"(?:\s+(?P<bytes>\S+)"
-            r'(?:\s+"(?P<referer>[^"]*)")?'
-            r'(?:\s+"(?P<user_agent>[^"]*)")?'
-            r"(?:\s+(?P<response_time>\d+(?:\.\d+)?|-))?"
-            r'(?:\s+"(?P<forwarded>[^"]*)")?)?'
-        )
-        match = re.match(pattern, stripped)
-        if not match:
-            return None
-
-        groups = match.groupdict()
-        raw_uri = groups["uri"]
-        unquoted_uri = unquote(raw_uri, encoding="utf-8", errors="replace")
-
-        resp_time_str = groups.get("response_time")
-        if resp_time_str and resp_time_str != "-":
-            try:
-                resp_time = float(resp_time_str)
-            except ValueError:
-                resp_time = 0.0
-        else:
-            resp_time = 0.0
-
-        ua = groups.get("user_agent")
-        user_agent = ua if ua is not None else "-"
-
-        return cls(
-            source_ip=groups["ip"],
-            timestamp_str=groups["time"],
-            method=groups["method"].upper(),
-            uri=unquoted_uri,
-            status_code=int(groups["status"]),
-            response_time=resp_time,
-            user_agent=user_agent,
-            raw_message=stripped,
-        )
