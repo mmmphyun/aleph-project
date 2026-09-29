@@ -65,12 +65,14 @@ SUBSCRIPTION_FILTER_SPECS: dict[str, dict[str, Any]] = {
 }
 
 # 로그 그룹 경로와 스트림 유형 매핑 매트릭스
-# Why: 로컬 테스트베드 및 Terraform 모듈 표준 경로(/cloudshield/target/...)와
-#      실제 타깃 EC2 인스턴스의 amazon-cloudwatch-agent.json 수집 경로(/aws/ec2/target-server/...)를
-#      모두 포괄하여 스트림 유형("auth" | "nginx")을 정확히 분기함.
+# Why: 배포 설정(amazon-cloudwatch-agent.json)의 표준 경로(/cloudshield/target/...)를 지원하며,
+#      추가적인 레거시 및 대체 경로(/aws/ec2/target-server/...)와의 호환성을 보장하여
+#      스트림 유형("auth" | "nginx")을 정확히 분기 라우팅함.
 LOG_GROUP_STREAM_MAPPING: dict[str, str] = {
+    # 배포 표준 설정 경로 (amazon-cloudwatch-agent.json 기준)
     "/cloudshield/target/auth-log": "auth",
     "/cloudshield/target/nginx-access-log": "nginx",
+    # 호환 및 대체 경로 (타깃 인스턴스 직접 경로 호환용)
     "/aws/ec2/target-server/auth": "auth",
     "/aws/ec2/target-server/nginx/access": "nginx",
 }

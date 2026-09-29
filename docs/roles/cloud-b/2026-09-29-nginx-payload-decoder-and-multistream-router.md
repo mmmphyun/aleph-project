@@ -14,8 +14,8 @@ CloudShield는 단일 10초 관통 위협 탐지 및 다중 계층 자동 대응
 시나리오 1(L4 SSH 무차별 대입)에 이어 시나리오 2(Web Directory Scan & Password Spraying)가 확장됨에 따라,
 타깃 EC2에서 수집되는 원본 로그 스트림이 2개 계층으로 다변화되었습니다:
 
-1. **L4 SSH 인증 로그**: `/cloudshield/target/auth-log` (실 EC2: `/aws/ec2/target-server/auth`)
-2. **L7 Nginx 접근 로그**: `/cloudshield/target/nginx-access-log` (실 EC2: `/aws/ec2/target-server/nginx/access`)
+1. **L4 SSH 인증 로그**: `/cloudshield/target/auth-log` (배포 표준 설정 경로 / 호환 경로: `/aws/ec2/target-server/auth`)
+2. **L7 Nginx 접근 로그**: `/cloudshield/target/nginx-access-log` (배포 표준 설정 경로 / 호환 경로: `/aws/ec2/target-server/nginx/access`)
 
 단일 Lambda 위협 오케스트레이터가 두 로그 그룹의 Subscription Filter 이벤트를 수신할 때,
 인입된 페이로드의 출처를 정확히 식별하여 해당 도메인에 특화된 불변 데이터 계약 모델
@@ -108,28 +108,34 @@ flowchart TD
 
 ### 3.3 로그 그룹 경로 매핑 매트릭스 (`LOG_GROUP_STREAM_MAPPING`)
 
-로컬 개발/가상 테스트베드 환경과 실제 타깃 EC2 인스턴스의 CloudWatch Agent 설정 경로를 모두 완벽히 수용하도록 매핑을 정합화함:
+배포 설정(`amazon-cloudwatch-agent.json`)의 표준 경로와 추가적인 인스턴스 직접 수집 호환 경로를 모두 안전하게 수용하도록 매핑을 정합화함:
 
 | 로그 그룹 경로 | 판별 스트림 (`stream_type`) | 파싱 계약 모델 (`parsed_events`) | 비고 |
 | :--- | :---: | :---: | :--- |
-| `/cloudshield/target/auth-log` | `auth` | `SyslogAuthEvent` | 로컬/가상 테스트베드 SSH 경로 |
-| `/cloudshield/target/nginx-access-log` | `nginx` | `NginxAccessLogEvent` | 로컬/가상 테스트베드 Nginx 경로 |
-| `/aws/ec2/target-server/auth` | `auth` | `SyslogAuthEvent` | 실기기 EC2 CloudWatch Agent 수집 경로 |
-| `/aws/ec2/target-server/nginx/access` | `nginx` | `NginxAccessLogEvent` | 실기기 EC2 CloudWatch Agent 수집 경로 |
+| `/cloudshield/target/auth-log` | `auth` | `SyslogAuthEvent` | **배포 표준 경로** (`amazon-cloudwatch-agent.json` 기준 SSH) |
+| `/cloudshield/target/nginx-access-log` | `nginx` | `NginxAccessLogEvent` | **배포 표준 경로** (`amazon-cloudwatch-agent.json` 기준 Nginx) |
+| `/aws/ec2/target-server/auth` | `auth` | `SyslogAuthEvent` | 호환/대체 경로 (타깃 인스턴스 직접 수집 호환용) |
+| `/aws/ec2/target-server/nginx/access` | `nginx` | `NginxAccessLogEvent` | 호환/대체 경로 (타깃 인스턴스 직접 수집 호환용) |
 | *기타 미등록 경로* | `unknown` | `[]` (빈 리스트) | 오탐 및 비정상 트래픽 격리 |
 
 ---
 
-## 4. 시간 예산(SLA) 준수 및 성능 분석
+## 4. 수집 시간 예산(3초) 설계 및 단계별 지연 추정치 (실측 전 분석)
 
-10초 관통 파이프라인 중 수집 계층에 할당된 시간 예산은 **3초 이내**입니다:
+10초 관통 자동 대응 파이프라인에서 수집 계층(Log Collection)에 할당된 목표 시간 예산은 **3초 이내**입니다.
+현재 수치는 배포 설정(`force_flush_interval: 2`) 및 알고리즘 복잡도에 기반한 **이론적 추정치(Estimates)**이며,
+AWS 네트워크 전송 및 Lambda 트리거를 포함한 실제 E2E 수집 관통 지연은 향후 모의 공격 실측 계측으로 최종 검증합니다.
 
-| 수집 단계 | 처리 내용 | 예상 소요 시간 | 비고 |
+| 수집 단계 | 처리 내용 | 예상 소요 시간 (추정치) | 비고 및 설계 근거 |
 | :--- | :--- | :---: | :--- |
-| **타깃 EC2 $\rightarrow$ CloudWatch** | CloudWatch Agent 버퍼 플러시 | ~1.0초 | `buffer_duration: 1`, `force_flush_interval: 1` 튜닝 완료 |
-| **CloudWatch $\rightarrow$ Lambda** | Subscription Filter 트리거 및 전달 | ~0.5초 | AWS 백본 비동기 푸시 |
-| **Lambda 디코딩 & 라우팅** | Base64/Gzip 해제 + 정규식 파싱 | **< 0.005초 (5ms)** | 100건 배치 기준 선형 O(N) 단일 패스 처리 |
-| **합계** | **수집 Critical Path 총합** | **~1.5초** | **수집 SLA 3.0초 대비 50% 여유 확보** |
+| **타깃 EC2 $\rightarrow$ CloudWatch** | CloudWatch Agent 버퍼 플러시 | 최대 ~2.0초 (상한) | `amazon-cloudwatch-agent.json` 배포 설정(`force_flush_interval: 2`) 기준 |
+| **CloudWatch $\rightarrow$ Lambda** | Subscription Filter 트리거 및 전달 | ~0.5초 ~ 1.0초 (추정) | AWS 백본 내부 비동기 푸시 및 네트워크 전달 (실측 전 추정치) |
+| **Lambda 디코딩 & 라우팅** | Base64/Gzip 해제 + 계약 모델 파싱 | **< 0.005초 (5ms, 추정)** | 100건 배치 기준 선형 O(N) 단일 패스 처리 (실측 전 벤치마크 추정치) |
+| **합계 (추정치)** | **수집 Critical Path 추정 합계** | **약 2.5초 ~ 3.0초 내외** | **수집 목표 예산(3초 이내) 충족 예상 (향후 실측 계측으로 검증 예정)** |
+
+> [!NOTE]
+> **실측 검증 계획**: `force_flush_interval: 2`는 Agent 메모리 버퍼 체류 상한 시간이며 전체 3초 예산 준수를 단독으로 담보하지 않습니다.
+> 수집 파이프라인 배포 및 모의 공격 시뮬레이션 환경에서 로그 발생 시각(타임스탬프)과 Lambda 인입 시각 간의 E2E 지연을 정밀 계측하여 3초 SLA 수렴 여부를 최종 확정할 예정입니다.
 
 ---
 

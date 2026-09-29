@@ -1130,18 +1130,36 @@ def test_route_cw_logs_with_parsed_events_multi_stream() -> None:
     assert unknown_result["parsed_events"] == []
 
 
-def test_route_cw_logs_real_cloudwatch_agent_paths() -> None:
-    """실제 EC2 배포용 CloudWatch Agent 로그 그룹 경로 매핑 정합성 검증.
+def test_route_cw_logs_deployed_and_compat_paths() -> None:
+    """배포 표준 설정 및 호환용 CloudWatch Agent 로그 그룹 경로 매핑 정합성 검증.
 
     Why:
-        amazon-cloudwatch-agent.json에 정의된 실제 타깃 서버 경로
-        (/aws/ec2/target-server/auth 및 /aws/ec2/target-server/nginx/access)가
+        amazon-cloudwatch-agent.json에 정의된 배포 표준 수집 경로
+        (/cloudshield/target/auth-log 및 /cloudshield/target/nginx-access-log)와
+        추가 호환/대체 경로(/aws/ec2/target-server/auth 및 /aws/ec2/target-server/nginx/access)가
         오케스트레이터 라우터에서 'auth'와 'nginx'로 정확히 분류되는지 확인함.
     """
+    # 1. 배포 설정 파일(amazon-cloudwatch-agent.json) 실제 경로 매핑 검증
+    config_path = Path("src/collector/amazon-cloudwatch-agent.json")
+    with config_path.open("r", encoding="utf-8") as f:
+        config_data = json.load(f)
+    collect_list = (
+        config_data.get("logs", {})
+        .get("logs_collected", {})
+        .get("files", {})
+        .get("collect_list", [])
+    )
+    deployed_log_groups = {item["log_group_name"] for item in collect_list}
+    assert "/cloudshield/target/auth-log" in deployed_log_groups
+    assert "/cloudshield/target/nginx-access-log" in deployed_log_groups
+    assert LOG_GROUP_STREAM_MAPPING["/cloudshield/target/auth-log"] == "auth"
+    assert LOG_GROUP_STREAM_MAPPING["/cloudshield/target/nginx-access-log"] == "nginx"
+
+    # 2. 추가 호환/대체 경로 매핑 검증
     assert LOG_GROUP_STREAM_MAPPING["/aws/ec2/target-server/auth"] == "auth"
     assert LOG_GROUP_STREAM_MAPPING["/aws/ec2/target-server/nginx/access"] == "nginx"
 
-    # 실제 경로 기반 Nginx 이벤트 라우팅
+    # 3. 배포 표준 경로 기반 Nginx 이벤트 라우팅
     nginx_line = (
         "198.51.100.99 - - [28/Sep/2026:14:05:00 +0000] "
         '"GET /api/v1/test HTTP/1.1" 401 100 "-" "test-agent" 0.003 "-"'
@@ -1149,12 +1167,38 @@ def test_route_cw_logs_real_cloudwatch_agent_paths() -> None:
     payload_model = CloudWatchLogsPayload(
         messageType="DATA_MESSAGE",
         owner="123456789012",
-        logGroup="/aws/ec2/target-server/nginx/access",
-        logStream="i-real-ec2-instance",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-deployed-ec2-instance",
         subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
-        logEvents=[CloudWatchLogEvent(id="ev-real-1", timestamp=1788500000000, message=nginx_line)],
+        logEvents=[
+            CloudWatchLogEvent(
+                id="ev-dep-1",
+                timestamp=1788500000000,
+                message=nginx_line,
+            )
+        ],
     )
     routed = route_cw_logs({"awslogs": {"data": payload_model.to_awslogs_data()}})
     assert routed["stream_type"] == "nginx"
     assert len(routed["parsed_events"]) == 1
     assert routed["parsed_events"][0].source_ip == "198.51.100.99"
+
+    # 4. 호환 경로 기반 Nginx 이벤트 라우팅
+    payload_compat = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/aws/ec2/target-server/nginx/access",
+        logStream="i-compat-ec2-instance",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(
+                id="ev-compat-1",
+                timestamp=1788500000000,
+                message=nginx_line,
+            )
+        ],
+    )
+    routed_compat = route_cw_logs({"awslogs": {"data": payload_compat.to_awslogs_data()}})
+    assert routed_compat["stream_type"] == "nginx"
+    assert len(routed_compat["parsed_events"]) == 1
+    assert routed_compat["parsed_events"][0].source_ip == "198.51.100.99"
