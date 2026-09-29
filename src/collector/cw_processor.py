@@ -22,7 +22,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from contracts.events import CloudWatchLogEvent, CloudWatchLogsPayload
+from contracts.events import (
+    CloudWatchLogEvent,
+    CloudWatchLogsPayload,
+    NginxAccessLogEvent,
+    SyslogAuthEvent,
+)
 
 # CloudWatch Logs 공백 구분 필터 토큰화 정규식
 # Why: CloudWatch Logs는 공백을 구분자로 사용하되, 대괄호([...]) 및 큰따옴표("...")로
@@ -60,9 +65,16 @@ SUBSCRIPTION_FILTER_SPECS: dict[str, dict[str, Any]] = {
 }
 
 # 로그 그룹 경로와 스트림 유형 매핑 매트릭스
+# Why: 배포 설정(amazon-cloudwatch-agent.json)의 표준 경로(/cloudshield/target/...)를 지원하며,
+#      추가적인 레거시 및 대체 경로(/aws/ec2/target-server/...)와의 호환성을 보장하여
+#      스트림 유형("auth" | "nginx")을 정확히 분기 라우팅함.
 LOG_GROUP_STREAM_MAPPING: dict[str, str] = {
+    # 배포 표준 설정 경로 (amazon-cloudwatch-agent.json 기준)
     "/cloudshield/target/auth-log": "auth",
     "/cloudshield/target/nginx-access-log": "nginx",
+    # 호환 및 대체 경로 (타깃 인스턴스 직접 경로 호환용)
+    "/aws/ec2/target-server/auth": "auth",
+    "/aws/ec2/target-server/nginx/access": "nginx",
 }
 
 
@@ -207,6 +219,36 @@ def decode_cw_logs(payload: dict[str, Any]) -> list[str]:
         raise ValueError(f"CloudWatch Logs 페이로드 해제 실패: {exc}") from exc
 
 
+def decode_nginx_cw_logs(payload: dict[str, Any]) -> list[NginxAccessLogEvent]:
+    """CloudWatch Logs 압축 페이로드에서 Nginx L7 웹 접근 로그를 디코딩하고 계약 모델로 파싱.
+
+    Why:
+        CloudWatch Subscription Filter를 통해 수신된 Base64/Gzip 압축 페이로드에서
+        Nginx access.log 라인을 복원한 뒤, 계약 모델(NginxAccessLogEvent)로 역직렬화하여
+        보안 시그니처 엔진 및 WAF 차단 매퍼로 전달할 수 있는 불변 정형 이벤트 목록을 생성함.
+        정상/의심 Nginx 로그는 보존하고, 빈 라인이나 형식이 일치하지 않는
+        노이즈 라인은 안전하게 필터링함.
+
+    Constraints:
+        - payload: AWS Lambda 이벤트 dict {"awslogs": {"data": "<base64_gzip_str>"}}.
+        - 반환값: 파싱에 성공한 NginxAccessLogEvent 인스턴스 리스트.
+        - 수집 단계 3초 시간 예산 준수를 위한 선형 O(N) 단일 패스 파싱.
+
+    Side-effects / Edge-cases:
+        - payload가 dict가 아니거나 'awslogs'/'data' 키 누락 시 TypeError/KeyError 발생.
+        - Base64/Gzip 데이터가 손상된 경우 ValueError 발생.
+        - Nginx 로그 규격과 일치하지 않는 라인은 NginxAccessLogEvent.parse_line()의
+          안전 반환(None) 특성에 따라 결과 리스트에서 제외됨.
+    """
+    raw_lines = decode_cw_logs(payload)
+    events: list[NginxAccessLogEvent] = []
+    for line in raw_lines:
+        parsed = NginxAccessLogEvent.parse_line(line)
+        if parsed is not None:
+            events.append(parsed)
+    return events
+
+
 def deduplicate_log_events(
     events: list[CloudWatchLogEvent],
     seen_event_ids: set[str],
@@ -249,7 +291,9 @@ def route_cw_logs(
         SSH 인증 실패 로그(/var/log/auth.log)와 Nginx L7 웹 접근 로그(/var/log/nginx/access.log)가
         동일한 Lambda 오케스트레이터로 인입될 때, logGroup 경로를 기준으로 스트림 유형을 식별하고
         후속 분석 엔진(SyslogAuthEvent 파서 vs Nginx 파서/WAF 탐지 룰)으로 안전하게 분기함.
-        호출자가 seen_event_ids를 제공한 경우 단일 배치 기반 1차 중복 제거를 수행함.
+        호출자가 seen_event_ids를 제공한 경우 단일 배치 기반 1차 중복 제거를 수행하며,
+        식별된 스트림 유형에 따라 불변 계약 모델(SyslogAuthEvent 또는 NginxAccessLogEvent)로
+        파싱된 정형 이벤트 목록(parsed_events)을 함께 반환함.
 
     Constraints:
         - payload: {"awslogs": {"data": "<base64_gzip_str>"}} 구조의 딕셔너리.
@@ -260,6 +304,7 @@ def route_cw_logs(
               "log_group": str,
               "log_stream": str,
               "messages": list[str],
+              "parsed_events": list[SyslogAuthEvent | NginxAccessLogEvent],
               "event_ids": list[str],
               "subscription_filters": list[str],
               "dropped_duplicates": int,
@@ -269,7 +314,7 @@ def route_cw_logs(
         - payload가 dict가 아니거나 필수 키 누락 시 decode_cw_logs와 동일하게
           TypeError/KeyError/ValueError 발생.
         - logGroup이 등록된 스트림 경로와 불일치할 경우 stream_type은 "unknown"으로
-          안전하게 격리 분류.
+          안전하게 격리 분류되며 parsed_events는 빈 리스트([]) 반환.
         - seen_event_ids 세트가 제공된 경우 이미 존재하는 event_id는 필터링되고
           세트에 신규 event_id 추가.
         - 한계: seen_event_ids가 None이거나 Lambda 새 실행 환경(Cold start)에서는
@@ -313,11 +358,24 @@ def route_cw_logs(
     messages = [event.message for event in filtered_events]
     event_ids = [event.id for event in filtered_events]
 
+    parsed_events: list[Any] = []
+    if stream_type == "auth":
+        for msg in messages:
+            ev_auth = SyslogAuthEvent.parse_line(msg)
+            if ev_auth is not None:
+                parsed_events.append(ev_auth)
+    elif stream_type == "nginx":
+        for msg in messages:
+            ev_nginx = NginxAccessLogEvent.parse_line(msg)
+            if ev_nginx is not None:
+                parsed_events.append(ev_nginx)
+
     return {
         "stream_type": stream_type,
         "log_group": log_group,
         "log_stream": cw_payload.logStream,
         "messages": messages,
+        "parsed_events": parsed_events,
         "event_ids": event_ids,
         "subscription_filters": list(cw_payload.subscriptionFilters),
         "dropped_duplicates": dropped_count,
