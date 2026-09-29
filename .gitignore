@@ -30,6 +30,7 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+infra/terraform/modules/lambda/build/
 
 # Local and editor files
 .idea/

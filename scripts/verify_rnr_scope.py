@@ -31,6 +31,7 @@ RNR_WHITELIST: dict[str, list[str]] = {
         "tests/unit/test_network.py",
         "docs/roles/network/**",
         "docs/shared/**",
+        "infra/terraform/modules/vpc/**",
     ],
     "cloud-b": [
         "src/collector/**",
@@ -43,6 +44,7 @@ RNR_WHITELIST: dict[str, list[str]] = {
         "nginx.conf",
         "docs/roles/cloud-b/**",
         "docs/shared/**",
+        "infra/terraform/modules/ec2/**",
     ],
     "security": [
         "src/detection/**",
@@ -51,6 +53,7 @@ RNR_WHITELIST: dict[str, list[str]] = {
         "tests/unit/test_incident_mapper.py",
         "docs/roles/security/**",
         "docs/shared/**",
+        "infra/terraform/modules/waf/**",
     ],
     "cloud-a": [
         "**",  # 플랫폼 전담: 전 영역 허용
