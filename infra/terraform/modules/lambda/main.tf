@@ -10,26 +10,11 @@
 # Constraints:
 #   - timeout: 10초 관통 대응 파이프라인 SLA에 맞추어 10초 설정.
 #   - IAM Policy: ec2, wafv2, dynamodb 액션은 명시된 ARN으로만 제한.
-#   - packaging: data.archive_file을 사용하여 src/ 디렉터리를 런타임 zip 파일로 자동 번들링.
+#   - packaging: 사전 빌더(scripts/package_lambda.py)로 생성된 의존성 포함 Linux x86_64 ZIP 아티팩트 강제.
 
 locals {
-  use_custom_zip     = var.package_zip_path != ""
-  lambda_archive_path = local.use_custom_zip ? var.package_zip_path : (length(data.archive_file.lambda_zip) > 0 ? data.archive_file.lambda_zip[0].output_path : "")
-  lambda_archive_hash = local.use_custom_zip ? filebase64sha256(var.package_zip_path) : (length(data.archive_file.lambda_zip) > 0 ? data.archive_file.lambda_zip[0].output_base64sha256 : "")
-}
-
-data "archive_file" "lambda_zip" {
-  count       = var.package_zip_path == "" ? 1 : 0
-  type        = "zip"
-  source_dir  = var.source_dir != "" ? var.source_dir : "${path.module}/build/lambda_bundle"
-  output_path = "${path.module}/build/orchestrator.zip"
-  excludes = [
-    "**/__pycache__/**",
-    "**/*.pyc",
-    "**/tests/**",
-    "**/.pytest_cache/**",
-    "**/*.egg-info/**"
-  ]
+  lambda_archive_path = var.package_zip_path
+  lambda_archive_hash = filebase64sha256(var.package_zip_path)
 }
 
 data "aws_iam_policy_document" "lambda_assume_role" {

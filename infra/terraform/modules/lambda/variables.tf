@@ -40,16 +40,14 @@ variable "slack_webhook_url" {
   sensitive   = true
 }
 
-variable "source_dir" {
-  description = "Lambda 함수 패키징 대상 소스 코드 디렉터리 경로 (src/)"
-  type        = string
-  default     = ""
-}
-
 variable "package_zip_path" {
   description = "사전 빌드된 Lambda ZIP 아티팩트 경로 (pydantic 등 런타임 종속성 포함 ZIP)"
   type        = string
-  default     = ""
+
+  validation {
+    condition     = var.package_zip_path != "" && fileexists(var.package_zip_path)
+    error_message = "Lambda 배포 아티팩트(ZIP)를 찾을 수 없습니다. 배포 전 'uv run python scripts/package_lambda.py'를 실행하여 빌드 아티팩트를 먼저 생성해야 합니다."
+  }
 }
 
 variable "tags" {

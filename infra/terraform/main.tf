@@ -32,9 +32,11 @@ module "lambda" {
   dynamodb_table_name = module.dynamodb.table_name
   quarantine_sg_arn   = var.quarantine_sg_arn
   waf_ipset_arn       = var.waf_ipset_arn
-  slack_webhook_url   = var.slack_webhook_url
-  source_dir          = "${path.module}/../../src"
-  package_zip_path    = var.lambda_package_zip_path
+  package_zip_path    = var.lambda_package_zip_path != "" ? (
+    startswith(var.lambda_package_zip_path, "/") || can(regex("^[A-Za-z]:", var.lambda_package_zip_path)) ?
+    var.lambda_package_zip_path :
+    "${path.module}/${var.lambda_package_zip_path}"
+  ) : "${path.module}/modules/lambda/build/orchestrator.zip"
 }
 
 # ==============================================================================

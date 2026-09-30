@@ -47,6 +47,6 @@ variable "slack_webhook_url" {
 variable "lambda_package_zip_path" {
   description = "사전 빌드된 Lambda ZIP 아티팩트 경로 (pydantic 등 런타임 종속성 포함 ZIP)"
   type        = string
-  default     = ""
+  default     = "modules/lambda/build/orchestrator.zip"
 }
 
