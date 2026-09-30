@@ -710,9 +710,97 @@ def test_threat_orchestrator_slack_integration_success(
         assert call_kwargs["webhook_url"] == dummy_webhook
         assert call_kwargs["report"].incident_id.startswith("INC-")
         assert call_kwargs["report"].attack_type == "SSH Brute Force"
+        assert call_kwargs["report"].mitre_id == "T1110.001"
+        assert call_kwargs["report"].risk_level == "HIGH"
+        assert call_kwargs["report"].action_required == "BLOCK_AND_QUARANTINE"
         assert call_kwargs["report"].source_ip == attacker_ip
+        assert call_kwargs["report"].target_identifier == mocked_ec2_target.instance_id
+        assert call_kwargs["report"].target_accounts == (target_user,)
         assert call_kwargs["remediation_result"]["quarantine_applied"] is True
         assert call_kwargs["remediation_result"]["waf_blocked"] is True
+
+
+def test_threat_orchestrator_password_spraying_mapper_integration(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """Password Spraying 공격 탐지 시 보안 매퍼 연동 및 L7 WAF 전용 차단 검증.
+
+    Why:
+        오케스트레이터가 하드코딩된 보고서 생성을 탈피하고 보안 매퍼와 결합할 때,
+        SSH_PASSWORD_SPRAYING 위협에 대해 MITRE T1110.003, MEDIUM 위험도, BLOCK_IP_ONLY 조치 지시가
+        정상 반영되어 EC2 격리(L4)는 건너뛰고 WAF IP 차단(L7)만 원자적으로 집행되는지 검증함.
+
+    Constraints:
+        - 동일 IP에서 2개 이상의 상이한 사용자 계정 실패 발생 시 탐지.
+        - action_required가 BLOCK_IP_ONLY이므로 quarantine_applied는 False,
+          waf_blocked는 True여야 함.
+        - DynamoDB에 격리 완료 플래그가 정상 마킹되어야 함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    attacker_ip = "198.51.100.105"
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/SPRAY_SUCCESS"
+
+    messages = [
+        (
+            f"Sep 04 15:06:01 target-ec2 sshd[26101]: Failed password for "
+            f"user_alice from {attacker_ip} port 51101 ssh2"
+        ),
+        (
+            f"Sep 04 15:06:02 target-ec2 sshd[26102]: Failed password for "
+            f"user_bob from {attacker_ip} port 51102 ssh2"
+        ),
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True) as mock_send_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url=dummy_webhook,
+        )
+
+        assert res["processed_events"] == 2
+        assert res["threats_detected"] == ["SSH_PASSWORD_SPRAYING"]
+        assert len(res["remediation_results"]) == 1
+        # BLOCK_IP_ONLY 이므로 L4 격리는 False, L7 WAF는 True
+        assert res["remediation_results"][0]["quarantine_applied"] is False
+        assert res["remediation_results"][0]["waf_blocked"] is True
+        assert res["slack_notified"] is True
+
+        # EC2 보안 그룹 변경 없어야 함 (정상 SG 유지)
+        desc = ec2_client.describe_instances(InstanceIds=[mocked_ec2_target.instance_id])
+        current_sgs = [
+            sg["GroupId"] for sg in desc["Reservations"][0]["Instances"][0]["SecurityGroups"]
+        ]
+        assert current_sgs == [mocked_ec2_target.normal_sg_id]
+
+        # WAF IPSet에는 등록되어야 함
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+        # 보안 매퍼로부터 생성된 리포트 정합성 검증
+        mock_send_slack.assert_called_once()
+        report = mock_send_slack.call_args.kwargs["report"]
+        assert report.attack_type == "SSH Password Spraying"
+        assert report.mitre_id == "T1110.003"
+        assert report.risk_level == "MEDIUM"
+        assert report.action_required == "BLOCK_IP_ONLY"
+        assert report.source_ip == attacker_ip
+        assert report.target_identifier == mocked_ec2_target.instance_id
 
 
 def test_threat_orchestrator_slack_failure_fault_isolation(

@@ -22,7 +22,7 @@ import time
 from typing import Any
 
 from contracts.events import CloudWatchLogsPayload, SyslogAuthEvent
-from contracts.incident import IncidentReport
+from detection.incident_mapper import map_threat_to_incident
 from remediation.auth_window import AuthFailureWindow
 from remediation.remediation import RemediationResult, apply_remediation
 from reporter.slack_notifier import send_slack_alert
@@ -150,39 +150,17 @@ def threat_orchestrator_handler(
 
         response["threats_detected"].append(rule_name)
 
-        # 4. 표준 IncidentReport 계약 객체 생성
+        # 4. 보안 매퍼(map_threat_to_incident)를 통한 표준 IncidentReport 계약 객체 생성
+        # Why: 공격 유형별 MITRE 메타데이터, 위험도, 조치 지시(action_required)의
+        #      단일 진실 공급원(SSOT)을 보안 도메인 매퍼에 일원화하여 정책 불일치를 방지함.
         incident_id = f"INC-{int(time.time())}-{source_ip.replace('.', '')[-4:]}"
-        if rule_name == "SSH_BRUTE_FORCE":
-            attack_type = "SSH Brute Force"
-            mitre_id = "T1110.001"
-            action_required = "BLOCK_AND_QUARANTINE"
-            summary_ko = (
-                f"동일 IP({source_ip}) 및 계정({username})에 대한 "
-                f"5분 내 5회 이상 분할 누적 무차별 대입 공격이 탐지되었습니다."
-            )
-        else:
-            attack_type = "SSH Password Spraying"
-            mitre_id = "T1110.003"
-            action_required = "BLOCK_WAF"
-            summary_ko = (
-                f"동일 IP({source_ip})에서 5분 내 2개 이상의 고유 계정을 시도하는 "
-                f"분할 누적 패스워드 스프레잉 공격이 탐지되었습니다."
-            )
-
-        report = IncidentReport(
-            incident_id=incident_id,
-            attack_type=attack_type,
-            mitre_id=mitre_id,
-            risk_level="HIGH",
+        report = map_threat_to_incident(
+            is_threat=True,
+            rule_name=rule_name,
             source_ip=source_ip,
-            target_identifier=target_instance_id,
             target_accounts=(username,),
-            summary_ko=summary_ko,
-            action_required=action_required,
-            recommendations=(
-                "L4 보안 그룹 전면 격리 상태 유지",
-                "WAF IPSet /32 단일 호스트 차단 등록 확인",
-            ),
+            target_identifier=target_instance_id,
+            incident_id=incident_id,
         )
         response["incidents"].append(report.model_dump())
 
@@ -195,7 +173,7 @@ def threat_orchestrator_handler(
         response["remediation_results"].append(remediation_result)
 
         # 6. 필수 격리 조치 완료 검증 후 마킹 (중복 차단 억제 멱등성 및 실패 시 재시도 보장)
-        if is_remediation_successful(action_required, remediation_result):
+        if is_remediation_successful(report.action_required, remediation_result):
             auth_window.mark_quarantined(target_key)
             logger.info(
                 "위협 대응 완료 및 격리 마킹 성공: %s -> %s (결과: %s)",
