@@ -1298,3 +1298,499 @@ def test_web_gobuster_timeout_kills_stubborn_owned_child(web_scan, bash):
 def test_web_bash_syntax(bash):
     result = subprocess.run([bash, "-n", WEB_SCRIPT.as_posix()], capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture
+def web_sequence(web_scan, bash):
+    """연속 응답과 실패를 고정하며 기존 격리 PATH를 재사용해 실제 도구 폴백을 막는다.
+
+    !숫자는 모의 종료 코드이고 나머지는 HTTP 코드다. NUL 구분 argv는 빈 인자와
+    공백·메타문자 경계를 보존한다. 실패한 테스트도 자신이 만든 PID만 회수한다.
+    """
+    run, evidence, args_file, count_file, pid_file, bash_path = web_scan
+    fake_bin = args_file.parent / "web fake bin"
+    (fake_bin / "curl").write_text(
+        r"""#!/bin/bash
+printf '%s\0' "$@" >> "$MOCK_ARGS"
+n=0
+if [[ -f $MOCK_COUNT ]]; then read -r n < "$MOCK_COUNT"; fi
+((n += 1))
+printf '%s\n' "$n" > "$MOCK_COUNT"
+printf 'Authorization: Bearer MOCK-TOKEN; password=MOCK-PASSWORD; MOCK-BODY\n' >&2
+read -r -a codes <<< "$MOCK_CODES"
+code=${codes[n-1]:-404}
+case $code in '!') exit 99 ;; '!'*) exit "${code:1}" ;; esac
+printf '%s' "$code"
+""",
+        newline="\n",
+    )
+    (fake_bin / "gobuster").write_text(
+        r"""#!/bin/bash
+printf '%s\0' "$@" >> "$MOCK_ARGS"
+printf '%s\n' "$$" > "$MOCK_PID"
+while (($#)); do
+  if [[ $1 == -w ]]; then wordlist=$2; break; fi
+  shift
+done
+mapfile -t words < "$wordlist"
+printf '%s\n' "${words[@]}" > "$MOCK_ARGS.words"
+printf 'MOCK-BODY password=MOCK-PASSWORD Authorization: Bearer MOCK-TOKEN\n'
+printf 'diagnostic (Status: 404)\n'
+printf 'diagnostic (Status: 200)\n/unexpected (Status: 200)\n/admin (Status: 404)\n'
+read -r -a codes <<< "$MOCK_CODES"
+i=0
+for code in "${codes[@]}"; do
+  case $code in '!'*) exit "${code:1}" ;; esac
+  case $code in
+    200|301|302|403) printf '/%s (Status: %s) [Size: 77]\n' "${words[i]}" "$code" ;;
+  esac
+  ((i += 1))
+done
+case $MOCK_MODE in
+  partial_int) kill -INT "$PPID"; exec /usr/bin/sleep 30 ;;
+  partial_interrupt) kill -TERM "$PPID"; exec /usr/bin/sleep 30 ;;
+  partial_hang) trap '' TERM; exec /usr/bin/sleep 30 ;;
+esac
+""",
+        newline="\n",
+    )
+    # 소유 임시 경로를 기록하므로 Windows에서도 /tmp 경로의 잘못된 존재 판정을 피한다.
+    (fake_bin / "mktemp").write_text(
+        "#!/bin/bash\n"
+        'directory=$(/usr/bin/mktemp -d "$MOCK_ARGS temp ; literal.XXXXXX") || exit\n'
+        'printf "%s\\n" "$directory" > "$MOCK_ARGS.temp"\n'
+        'printf "%s\\n" "$directory"\n',
+        newline="\n",
+    )
+
+    def native_path(value):
+        if os.name == "nt" and len(value) > 2 and value[0] == "/" and value[2] == "/":
+            return Path(value[1] + ":" + value[2:])
+        return Path(value)
+
+    def invoke(tool="curl", *, codes="200 301 302 403 404 429 500", **kwargs):
+        options = kwargs.pop("options", [])
+        result = run(
+            [
+                "--url",
+                "https://[::1]:65535/",
+                "--tool",
+                tool,
+                "--candidates",
+                str(len(codes.split())),
+                "--evidence",
+                bash_path(evidence),
+                *options,
+                "--execute",
+            ],
+            codes=codes,
+            **kwargs,
+        )
+        return result, dict(line.split("=", 1) for line in evidence.read_text().splitlines())
+
+    def argv():
+        return args_file.read_bytes().decode().split("\0")[:-1]
+
+    def alive():
+        return (
+            subprocess.run(
+                [
+                    bash,
+                    "--noprofile",
+                    "--norc",
+                    "-c",
+                    'kill -0 "$1" 2>/dev/null',
+                    "check",
+                    pid_file.read_text().strip(),
+                ],
+                capture_output=True,
+                timeout=3,
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    yield invoke, argv, native_path, alive
+    if pid_file.exists() and alive():
+        subprocess.run(
+            [
+                bash,
+                "--noprofile",
+                "--norc",
+                "-c",
+                'kill -KILL "$1"; wait "$1" 2>/dev/null',
+                "cleanup",
+                pid_file.read_text().strip(),
+            ],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+
+
+def assert_web_distribution(summary, expected, *, planned, attempted, state="completed", code=0):
+    """고정 집계 키를 모두 비교해 중복 집계와 부분 실패 후 증거 누락을 검출한다."""
+    assert summary["state"] == state
+    assert summary["exit_code"] == str(code)
+    assert summary["planned_requests"] == str(planned)
+    assert summary["attempted_requests"] == str(attempted)
+    assert summary["observed_statuses"] == str(sum(expected))
+    assert [int(summary[f"http_{status}"]) for status in (200, 301, 302, 403, 404, "other")] == (
+        expected
+    )
+
+
+@pytest.mark.parametrize("tool", ["curl", "gobuster"])
+def test_web_dry_run_without_installed_tool_creates_nothing(web_scan, tool):
+    run, evidence, args_file, count_file, pid_file, bash_path = web_scan
+    result = run(
+        ["--url", "http://127.0.0.1", "--tool", tool, "--evidence", bash_path(evidence)],
+        missing=tool,
+    )
+    assert result.returncode == 0 and "dry-run" in result.stdout
+    assert all(not path.exists() for path in (evidence, args_file, count_file, pid_file))
+    assert not list((args_file.parent / "web fake bin").glob("web-dir-scan-*.txt"))
+
+
+@pytest.mark.parametrize("candidates,concurrency,timeout", [(1, 1, 1), (20, 4, 10)])
+def test_web_gobuster_executes_boundaries_with_exact_wordlist(
+    web_sequence, web_scan, candidates, concurrency, timeout
+):
+    invoke, argv, native_path, alive = web_sequence
+    _, _, args_file, _, _, _ = web_scan
+    result, summary = invoke(
+        "gobuster",
+        codes=" ".join(["200"] * candidates),
+        options=["--concurrency", str(concurrency), "--timeout", str(timeout)],
+    )
+    assert result.returncode == 0, result.stderr
+    assert_web_distribution(
+        summary, [candidates, 0, 0, 0, 0, 0], planned=candidates, attempted="unknown"
+    )
+    arguments = argv()
+    wordlist = arguments[arguments.index("-w") + 1]
+    assert arguments == [
+        "dir",
+        "-q",
+        "--no-color",
+        "--no-progress",
+        "--no-error",
+        "-u",
+        "https://[::1]:65535",
+        "-w",
+        wordlist,
+        "-t",
+        str(concurrency),
+        "--timeout",
+        f"{timeout}s",
+        "-b",
+        "",
+        "-s",
+        "200,301,302,403",
+    ]
+    words = args_file.with_name(args_file.name + ".words").read_text().splitlines()
+    expected = [
+        "admin",
+        "login",
+        "dashboard",
+        "api",
+        "health",
+        "backup",
+        "config",
+        "robots.txt",
+        "sitemap.xml",
+        "uploads",
+        "images",
+        "static",
+        "assets",
+        "private",
+        "internal",
+        "debug",
+        "status",
+        "metrics",
+        "old",
+        "test",
+    ]
+    assert words == expected[:candidates]
+    assert "; literal" in wordlist and not (native_path(wordlist).parent).exists()
+    assert not alive()
+
+
+@pytest.mark.parametrize("candidates,timeout", [(1, 1), (20, 10)])
+def test_web_curl_exact_argv_and_boundary_attempt_counts(web_sequence, candidates, timeout):
+    invoke, argv, _, _ = web_sequence
+    result, summary = invoke(
+        codes=" ".join(["404"] * candidates), options=["--timeout", str(timeout)]
+    )
+    assert result.returncode == 0, result.stderr
+    assert_web_distribution(
+        summary, [0, 0, 0, 0, candidates, 0], planned=candidates, attempted=candidates
+    )
+    arguments = argv()
+    urls = [argument for argument in arguments if argument.startswith("https://")]
+    assert len(urls) == candidates and len(set(urls)) == candidates
+    for index, url in enumerate(urls):
+        expected = [
+            "-q",
+            "--silent",
+            "--noproxy",
+            "*",
+            "--proxy",
+            "",
+            "--max-redirs",
+            "0",
+            "--proto",
+            "=http,https",
+            "--connect-timeout",
+            str(timeout),
+            "--max-time",
+            str(timeout),
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "--",
+            url,
+        ]
+        assert arguments[index * len(expected) : (index + 1) * len(expected)] == expected
+    assert urls[0] == "https://[::1]:65535/admin"
+
+
+def test_web_curl_mixed_repeated_statuses_and_no_redirect_requests(web_sequence, web_scan):
+    invoke, argv, _, _ = web_sequence
+    result, summary = invoke(codes="200 301 302 403 404 429 500 301 200 404")
+    assert result.returncode == 0, result.stderr
+    assert_web_distribution(summary, [2, 2, 1, 1, 2, 2], planned=10, attempted=10)
+    urls = [argument for argument in argv() if argument.startswith("https://")]
+    assert [url.rsplit("/", 1)[-1] for url in urls] == [
+        "admin",
+        "login",
+        "dashboard",
+        "api",
+        "health",
+        "backup",
+        "config",
+        "robots.txt",
+        "sitemap.xml",
+        "uploads",
+    ]
+    assert "--location" not in argv() and "-L" not in argv()
+    assert web_scan[3].read_text().strip() == "10"
+
+
+@pytest.mark.parametrize(
+    "failure,state,code",
+    [
+        ("!6", "connection_failure", 6),
+        ("!7", "connection_failure", 7),
+        ("!28", "timeout", 124),
+        ("!130", "interrupted", 130),
+        ("!143", "interrupted", 143),
+        ("!42", "tool_error", 42),
+        ("000", "connection_failure", 7),
+        ("MOCK-BODY", "tool_error", 70),
+    ],
+)
+def test_web_curl_partial_failure_preserves_only_confirmed_responses(
+    web_sequence, web_scan, failure, state, code
+):
+    invoke, argv, _, _ = web_sequence
+    result, summary = invoke(codes=f"200 301 404 {failure} 403")
+    assert result.returncode == code, result.stderr
+    assert_web_distribution(
+        summary, [1, 1, 0, 0, 1, 0], planned=5, attempted=4, state=state, code=code
+    )
+    assert web_scan[3].read_text().strip() == "4"
+    assert len([arg for arg in argv() if arg.startswith("https://")]) == 4
+
+
+@pytest.mark.parametrize(
+    "failure,state,code",
+    [
+        ("!1", "connection_failure", 1),
+        ("!28", "timeout", 124),
+        ("!130", "interrupted", 130),
+        ("!143", "interrupted", 143),
+        ("!42", "tool_error", 42),
+    ],
+)
+def test_web_gobuster_partial_failure_retains_filtered_observations(
+    web_sequence, failure, state, code
+):
+    invoke, argv, native_path, alive = web_sequence
+    result, summary = invoke("gobuster", codes=f"200 301 404 429 403 {failure} 302")
+    assert result.returncode == code, result.stderr
+    assert_web_distribution(
+        summary, [1, 1, 0, 1, 0, 0], planned=7, attempted="unknown", state=state, code=code
+    )
+    assert not native_path(argv()[argv().index("-w") + 1]).parent.exists()
+    assert not alive()
+
+
+@pytest.mark.parametrize(
+    "mode,state,code",
+    [
+        ("partial_int", "interrupted", 130),
+        ("partial_interrupt", "interrupted", 143),
+        ("partial_hang", "timeout", 124),
+    ],
+)
+def test_web_gobuster_partial_signal_or_deadline_keeps_counts_and_cleans_files(
+    web_sequence, mode, state, code
+):
+    invoke, argv, native_path, alive = web_sequence
+    result, summary = invoke("gobuster", codes="200", mode=mode, options=["--timeout", "1"])
+    assert result.returncode == code, result.stderr
+    assert_web_distribution(
+        summary, [1, 0, 0, 0, 0, 0], planned=1, attempted="unknown", state=state, code=code
+    )
+    directory = native_path(argv()[argv().index("-w") + 1]).parent
+    assert not directory.exists()
+    assert not alive()
+
+
+@pytest.mark.parametrize("tool", ["curl", "gobuster"])
+def test_web_evidence_is_only_summary_without_sensitive_raw_output(
+    web_sequence, web_scan, monkeypatch, tool
+):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "MOCK-AWS-SECRET")
+    monkeypatch.setenv("HTTP_PROXY", "http://user:MOCK-PASSWORD@proxy.invalid")
+    invoke, _, _, _ = web_sequence
+    result, summary = invoke(tool, codes="200 301 302 403 404 429 500")
+    assert result.returncode == 0, result.stderr
+    assert_web_distribution(
+        summary,
+        [1, 1, 1, 1, 1 if tool == "curl" else 0, 2 if tool == "curl" else 0],
+        planned=7,
+        attempted=7 if tool == "curl" else "unknown",
+    )
+    assert set(summary) == {
+        "started_at",
+        "ended_at",
+        "tool",
+        "target",
+        "state",
+        "exit_code",
+        "planned_requests",
+        "attempted_requests",
+        "observed_statuses",
+        "http_200",
+        "http_301",
+        "http_302",
+        "http_403",
+        "http_404",
+        "http_other",
+    }
+    assert summary["tool"] == tool and summary["target"] == "https://[::1]:65535"
+    assert summary["started_at"] <= summary["ended_at"]
+    for timestamp in (summary["started_at"], summary["ended_at"]):
+        assert len(timestamp) == 20 and timestamp.endswith("Z")
+    output = web_scan[1].read_text() + result.stdout + result.stderr
+    for secret in ("MOCK-AWS-SECRET", "MOCK-PASSWORD", "MOCK-TOKEN", "MOCK-BODY", "[Size:"):
+        assert secret not in output
+
+
+def test_web_evidence_metacharacters_are_literal_and_second_run_cannot_append(web_scan):
+    run, _, args_file, count_file, _, bash_path = web_scan
+    evidence = args_file.parent / "summary ; $(touch INJECTED).txt"
+    options = [
+        "--url",
+        "http://127.0.0.1",
+        "--candidates",
+        "1",
+        "--evidence",
+        bash_path(evidence),
+        "--execute",
+    ]
+    result = run(options)
+    assert result.returncode == 0, result.stderr
+    original = evidence.read_bytes()
+    original_args = args_file.read_bytes()
+    result = run(options)
+    assert result.returncode == 2, result.stderr
+    assert evidence.read_bytes() == original and args_file.read_bytes() == original_args
+    assert count_file.read_text().strip() == "1"
+    assert not (args_file.parent / "web fake bin" / "INJECTED").exists()
+
+
+@pytest.mark.parametrize("tool", ["curl", "gobuster"])
+def test_web_missing_tool_summary_has_zero_attempts_and_observations(web_sequence, web_scan, tool):
+    result, summary = web_sequence[0](tool, codes="200 301 302 403 404", missing=tool)
+    assert result.returncode == 127, result.stderr
+    assert_web_distribution(
+        summary, [0, 0, 0, 0, 0, 0], planned=5, attempted=0, state="tool_missing", code=127
+    )
+    assert all(not path.exists() for path in web_scan[2:5])
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--candidates", "999999999999999999999999"),
+        ("--concurrency", "5"),
+        ("--timeout", "11"),
+    ],
+)
+def test_web_gobuster_over_limit_creates_no_evidence_or_temp(web_sequence, web_scan, option, value):
+    run, evidence, args_file, count_file, pid_file, bash_path = web_scan
+    result = run(
+        [
+            "--url",
+            "http://127.0.0.1",
+            "--tool",
+            "gobuster",
+            "--evidence",
+            bash_path(evidence),
+            option,
+            value,
+            "--execute",
+        ]
+    )
+    assert result.returncode == 2, result.stderr
+    assert all(not path.exists() for path in (evidence, args_file, count_file, pid_file))
+    assert not args_file.with_name(args_file.name + ".temp").exists()
+
+
+def test_web_curl_rejects_parallelism_before_creating_evidence(web_scan):
+    run, evidence, args_file, count_file, pid_file, bash_path = web_scan
+    result = run(
+        [
+            "--url",
+            "http://127.0.0.1",
+            "--concurrency",
+            "2",
+            "--evidence",
+            bash_path(evidence),
+            "--execute",
+        ]
+    )
+    assert result.returncode == 2, result.stderr
+    assert all(not path.exists() for path in (evidence, args_file, count_file, pid_file))
+
+
+def test_web_cleanup_keeps_unrelated_process_and_file(web_sequence, web_scan, bash):
+    """동일 환경의 비소유 PID·파일을 보존하고 테스트가 만든 대조 PID는 finally에서 회수한다."""
+    unrelated = web_scan[2].parent / "unrelated.txt"
+    unrelated.write_text("keep original")
+    other = subprocess.Popen(
+        [bash, "--noprofile", "--norc", "-c", "printf '%s\\n' $$; exec /usr/bin/sleep 30"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        other_pid = other.stdout.readline().strip()
+        result, summary = web_sequence[0]("gobuster", codes="200", mode="partial_interrupt")
+        assert result.returncode == 143 and summary["state"] == "interrupted"
+        assert other.poll() is None
+        assert unrelated.read_text() == "keep original"
+        assert not web_sequence[3]()
+    finally:
+        subprocess.run(
+            [bash, "--noprofile", "--norc", "-c", 'kill -TERM "$1"', "cleanup", other_pid],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        other.wait(timeout=3)
+        other.stdout.close()
