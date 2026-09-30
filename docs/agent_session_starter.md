@@ -48,18 +48,22 @@
    - 일치 티켓 발견 시: 해당 노션 카드 URL을 담아 `gh issue create` 실행 $\rightarrow$ 칸반 보드가 자동으로 `[진행 중]`으로 전이됨.
    - 미발견 시(신규 일감): 즉시 `gh issue create` 실행 $\rightarrow$ 파이프라인이 노션에 `[진행 중]` 신규 카드를 자동 발급.
 3. **작업 환경 격리**: `git checkout -b feat/<직무>-<기능>` 브랜치 분기.
-4. **개념 선행 설명**: 사용자에게 기술 개념 2~3줄 선행 설명 후 구현 착수.
+4. **자산 중복 사전 검사 (Check-before-write)**:
+   - 신규 코드 작성 전 `src/contracts/`, `src/detection/`, `src/remediation/`, `src/reporter/`를 탐색하여 재사용 가능한 함수, 모델, 상수가 있는지 먼저 스캔한다.
+   - 동일 목적 로직 재발명 및 독자 enum/literal 정의를 전면 금지한다.
+5. **개념 선행 설명**: 사용자에게 기술 개념 2~3줄 선행 설명 후 구현 착수.
 
 ---
 
-## 4. 작업 라이프사이클 4단계 요약
+## 4. 작업 라이프사이클 5단계 요약
 
 | 단계 | 팀원 및 에이전트 행동 | 노션 칸반 상태 전이 |
 | :--- | :--- | :--- |
 | **1단계: 진입** | 대화창 오픈 $\rightarrow$ `uv run python scripts/get_my_tasks.py`로 `[시작 전]` 티켓 확인 $\rightarrow$ 개념 문답 | `[시작 전]` 유지 |
 | **2단계: 착수** | `gh issue create`(노션 링크 바인딩) $\rightarrow$ 브랜치 분기 | **`[진행 중]` 자동 전이** (기간 start 기록) |
-| **3단계: 구현** | 본인 디렉토리 구현 $\rightarrow$ `powershell .\scripts\check.ps1` 검증 $\rightarrow$ 단위 커밋 | `[진행 중]` 유지 |
-| **4단계: 종료** | PR 생성 (기술 원리 3줄 요약 필수) $\rightarrow$ 리뷰 $\rightarrow$ 머지 $\rightarrow$ **대화창 종료** | **`[검토 중]` $\rightarrow$ `[완료]` 자동 전이** (Commit, 기간 end, 요약 블록) |
+| **3단계: 정찰** | `Check-before-write`: 기존 인터페이스 및 자산 중복 사전 스캔 | `[진행 중]` 유지 |
+| **4단계: 구현** | 본인 디렉토리 구현 $\rightarrow$ `powershell .\scripts\check.ps1` 검증 $\rightarrow$ 단위 커밋 | `[진행 중]` 유지 |
+| **5단계: 종료** | PR 생성 (기술 원리 3줄 요약 필수) $\rightarrow$ 리뷰 $\rightarrow$ 머지 $\rightarrow$ **대화창 종료** | **`[검토 중]` $\rightarrow$ `[완료]` 자동 전이** (Commit, 기간 end, 요약 블록) |
 
 ---
 

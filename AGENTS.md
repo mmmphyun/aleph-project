@@ -82,8 +82,11 @@
    - `uv run python scripts/get_my_tasks.py` 실행 (열린 PR 존재 시 하드 가드로 실행 차단됨).
    - `gh issue create --title "<타입>(<직무>): <제목>" --body "- Notion Task: <노션URL>\n- 브랜치: feat/<직무>-<기능명>"` 실행하여 이슈 번호 확보.
 4. **3단계 (작업 브랜치 분기)**: `git checkout -b feat/<직무>-<기능명>` 생성 후 개발 착수.
-5. **4단계 (로컬 통합 검증)**: PR 생성 전 `powershell .\scripts\check.ps1` 단일 게이트 100% 통과 (우회 플래그 사용 절대 금지).
-6. **5단계 (PR 발행 및 1:1 짝꿍 리뷰어 지정)**:
+5. **4단계 (기존 자산 정찰 및 중복 방지 - Check-before-write)**:
+   - 코드를 새로 작성하기 전에 `src/contracts/`, `src/detection/`, `src/remediation/`, `src/reporter/` 내에 이미 존재하는 데이터 모델, 헬퍼 함수(`map_threat_to_incident`), 상수를 반드시 먼저 검색·확인(Hydration)한다.
+   - 타 직무나 플랫폼이 이미 정의한 함수/로직 재발명 및 독자 enum/literal 정의를 엄격히 금지하며, 인터페이스 계약을 최우선으로 재사용한다.
+6. **5단계 (로컬 통합 검증)**: PR 생성 전 `powershell .\scripts\check.ps1` 단일 게이트 100% 통과 (우회 플래그 사용 절대 금지).
+7. **6단계 (PR 발행 및 1:1 짝꿍 리뷰어 지정)**:
    - **PR 본문 작성 표준 파이프라인 (템플릿 준수 필수)**:
      - 에이전트는 PR을 발행하기 전 반드시 `.github/pull_request_template.md` 파일을 먼저 확인한다.
      - 템플릿의 정규 5단계 섹션(`## 1` ~ `## 5`) 구조를 100% 유지하며 내용을 채워 넣는다.
