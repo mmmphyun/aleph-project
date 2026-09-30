@@ -106,16 +106,23 @@ def test_lambda_bundle_excludes_unwanted_files(
 
 def test_lambda_bundle_isolated_process_import(
     lambda_bundle_artifacts: tuple[Path, Path],
+    tmp_path: Path,
 ) -> None:
-    """격리된 서브프로세스(python -S)에서 ZIP 아티팩트만으로 종속성 및 핸들러 로딩 무결성 검증."""
+    """격리된 서브프로세스(python -S)에서 ZIP 아티팩트 추출 환경의 의존성 로딩 무결성 검증."""
     _, zip_path = lambda_bundle_artifacts
-    zip_abs_path = str(zip_path.resolve())
+
+    # AWS Lambda 실제 실행 환경(ZIP -> /var/task 추출)을 모사하여 아티팩트 압축 해제
+    task_dir = tmp_path / "lambda_task"
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(task_dir)
+
+    task_abs_path = str(task_dir.resolve())
 
     # python -S 로 실행하여 호스트 가상환경 site-packages 자동 주입 원천 차단
     test_script = f"""
 import sys
-# site-packages 배제 확인 후 ZIP 아티팩트를 sys.path 최우선 삽입
-sys.path.insert(0, {repr(zip_abs_path)})
+# site-packages 배제 확인 후 Lambda 태스크 디렉터리를 sys.path 최우선 삽입
+sys.path.insert(0, {repr(task_abs_path)})
 
 # 1. 런타임 필수 순수 파이썬 의존성 독립 임포트 검증
 import typing_inspection
