@@ -87,6 +87,24 @@ record_status() {
   ((observed += 1))
 }
 
+collect_gobuster_statuses() {
+  local line path status i
+  [[ $tool == gobuster && -n $temp_dir && -f $temp_dir/output ]] || return 0
+  # 완료·중단 모두 종료 트랩에서 한 번만 집계한다. 필터 밖 404나 진단 문구는 관측 응답이 아니다.
+  # 합성 후보의 결과 행만 허용하며 최대 20개 후보와 4종 상태로 비교량을 제한한다.
+  while IFS= read -r line; do
+    if [[ $line =~ ^/([a-zA-Z0-9.]+)[[:space:]]+\(Status:[[:space:]]*(200|301|302|403)\) ]]; then
+      path=${BASH_REMATCH[1]} status=${BASH_REMATCH[2]}
+      for ((i = 0; i < MAX_CANDIDATES; i++)); do
+        if [[ $path == "${PATHS[i]}" ]]; then
+          record_status "$status"
+          break
+        fi
+      done
+    fi
+  done < "$temp_dir/output"
+}
+
 finish() {
   local code=$1 ended_at
   trap - EXIT INT TERM
@@ -101,6 +119,7 @@ finish() {
     fi
     wait "$child_pid" 2>/dev/null || true
   fi
+  collect_gobuster_statuses
   if [[ -n $temp_dir && -d $temp_dir ]]; then
     rm -f -- "$temp_dir/wordlist" "$temp_dir/output"
     rmdir -- "$temp_dir" 2>/dev/null || true
@@ -169,14 +188,13 @@ else
   done
   if wait "$child_pid"; then rc=0; else rc=$?; fi
   child_pid=''
-  while IFS= read -r line; do
-    if [[ $line =~ \(Status:[[:space:]]*([0-9]{3})\) ]]; then
-      record_status "${BASH_REMATCH[1]}"
-    fi
-  done < "$temp_dir/output"
   if ((rc != 0)); then
-    state=connection_failure
-    exit "$rc"
+    case $rc in
+      28|124) state=timeout; exit 124 ;;
+      130|143) state=interrupted; exit "$rc" ;;
+      1|6|7) state=connection_failure; exit "$rc" ;;
+      *) state=tool_error; exit "$rc" ;;
+    esac
   fi
 fi
 state=completed
