@@ -1081,3 +1081,104 @@ def test_send_slack_alert_auto_waf_payload(monkeypatch: pytest.MonkeyPatch) -> N
     sent_payload = json.loads(captured_requests[0].data.decode("utf-8"))
     assert sent_payload.get("is_waf_card") is True
     assert "L7 WAF 웹 침해사고" in sent_payload["blocks"][0]["text"]["text"]
+
+
+def test_reporter_package_exports() -> None:
+    """src/reporter 패키지 루트의 public API export 무결성 검증."""
+    import reporter
+
+    assert hasattr(reporter, "build_slack_payload")
+    assert hasattr(reporter, "build_waf_slack_payload")
+    assert hasattr(reporter, "send_slack_alert")
+    assert hasattr(reporter, "truncate_text")
+    assert hasattr(reporter, "MAX_FIELD_LENGTH")
+    assert hasattr(reporter, "MAX_HEADER_LENGTH")
+
+
+def test_build_waf_slack_payload_empty_accounts_and_recommendations() -> None:
+    """WAF 카드에서 대상 계정 및 권고 조치가 빈 경우 대체 안내 문구가 정상 렌더링되는지 검증."""
+    report = IncidentReport(
+        incident_id="INC-20260930-001",
+        attack_type="Web L7 Directory Scan",
+        mitre_id="T1083",
+        risk_level="HIGH",
+        source_ip="198.51.100.99",
+        target_identifier="i-0abcd1234ef567890",
+        target_accounts=[],
+        summary_ko="공격자가 웹 디렉터리 스캔을 수행하였습니다.",
+        action_required="BLOCK_WAF",
+        recommendations=[],
+    )
+
+    payload = build_waf_slack_payload(report)
+    blocks = payload["blocks"]
+
+    # 계정 필드가 비어있을 때 웹 엔드포인트 대체 문구 확인
+    accounts_section = next(
+        b for b in blocks if "*공격 대상 엔드포인트/계정:*" in b.get("text", {}).get("text", "")
+    )
+    assert "지정 계정 없음 (웹 엔드포인트 URL/디렉토리 스캐닝)" in accounts_section["text"]["text"]
+
+    # 권고 조치가 비어있을 때 기본 WAF 완료 문구 확인
+    recommendations_section = next(
+        b for b in blocks if "*SecOps 웹 방어 권고 조치:*" in b.get("text", {}).get("text", "")
+    )
+    assert "별도 권고 조치 없음 (WAF 차단 완료)" in recommendations_section["text"]["text"]
+
+
+def test_send_slack_alert_explicit_use_waf_card_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """use_waf_card 명시적 플래그로 자동 감지 로직을 오버라이드할 수 있는지 검증."""
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/OVERRIDE"
+
+    mock_response = MagicMock()
+    mock_response.getcode.return_value = 200
+    mock_response.status = 200
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = None
+
+    captured_requests: list[urllib.request.Request] = []
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> MagicMock:
+        captured_requests.append(req)
+        return mock_response
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    # 1. BLOCK_WAF 조치이지만 use_waf_card=False 명시 -> 기본 카드로 발송
+    waf_report = IncidentReport(
+        incident_id="INC-20260930-002",
+        attack_type="Web L7 Scan",
+        mitre_id="T1083",
+        risk_level="MEDIUM",
+        source_ip="198.51.100.101",
+        target_identifier="i-0abcd1234ef567890",
+        target_accounts=[],
+        summary_ko="WAF 기본 카드 오버라이드 검증",
+        action_required="BLOCK_WAF",
+        recommendations=[],
+    )
+    success = send_slack_alert(waf_report, webhook_url=dummy_webhook, use_waf_card=False)
+    assert success is True
+    payload_default = json.loads(captured_requests[-1].data.decode("utf-8"))
+    assert payload_default.get("is_waf_card") is not True
+
+    # 2. QUARANTINE_EC2 조치이지만 use_waf_card=True 명시 -> WAF 카드로 발송
+    ssh_report = IncidentReport(
+        incident_id="INC-20260930-003",
+        attack_type="SSH Brute Force",
+        mitre_id="T1110.001",
+        risk_level="HIGH",
+        source_ip="198.51.100.102",
+        target_identifier="i-0abcd1234ef567890",
+        target_accounts=["root"],
+        summary_ko="SSH 공격의 WAF 카드 강제 적용 검증",
+        action_required="QUARANTINE_EC2",
+        recommendations=[],
+    )
+    success = send_slack_alert(ssh_report, webhook_url=dummy_webhook, use_waf_card=True)
+    assert success is True
+    payload_waf = json.loads(captured_requests[-1].data.decode("utf-8"))
+    assert payload_waf.get("is_waf_card") is True
+    assert "L7 WAF 웹 침해사고" in payload_waf["blocks"][0]["text"]["text"]
