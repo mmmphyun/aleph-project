@@ -134,10 +134,26 @@ print("[격리검증-성공] typing_inspection 및 필수 종속성 단독 로�
 # 2. 플랫폼 환경별 네이티브 모듈 로딩 분기 검증
 import platform
 if platform.system() == "Linux":
+    # AWS Lambda 런타임 내장 SDK(boto3/botocore) 환경 에뮬레이션
+    import unittest.mock
+    for mod in [
+        "boto3",
+        "boto3.dynamodb",
+        "boto3.dynamodb.conditions",
+        "botocore",
+        "botocore.exceptions",
+    ]:
+        sys.modules[mod] = unittest.mock.MagicMock()
+
     import pydantic
+    import contracts.events as ev
+    import contracts.incident as inc
     import remediation.orchestrator as orch
+
     assert hasattr(orch, "threat_orchestrator_handler")
-    print("[격리검증-성공] Linux 환경 전체 핸들러 로딩 완료")
+    assert hasattr(ev, "CloudWatchLogsPayload")
+    assert hasattr(inc, "IncidentReport")
+    print("[격리검증-성공] Linux 환경 전체 핸들러 및 pydantic 계약 모델 로딩 완료")
 else:
     # Windows/macOS 개발 환경: Linux .so 가 탑재되어 있으므로 OS 불일치로 인한
     # c-extension 로드 실패가 정상 동작임 (네이티브 .so 교차 탑재 입증)
