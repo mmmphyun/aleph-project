@@ -12,9 +12,16 @@
 #   - IAM Policy: ec2, wafv2, dynamodb 액션은 명시된 ARN으로만 제한.
 #   - packaging: data.archive_file을 사용하여 src/ 디렉터리를 런타임 zip 파일로 자동 번들링.
 
+locals {
+  use_custom_zip     = var.package_zip_path != ""
+  lambda_archive_path = local.use_custom_zip ? var.package_zip_path : (length(data.archive_file.lambda_zip) > 0 ? data.archive_file.lambda_zip[0].output_path : "")
+  lambda_archive_hash = local.use_custom_zip ? filebase64sha256(var.package_zip_path) : (length(data.archive_file.lambda_zip) > 0 ? data.archive_file.lambda_zip[0].output_base64sha256 : "")
+}
+
 data "archive_file" "lambda_zip" {
+  count       = var.package_zip_path == "" ? 1 : 0
   type        = "zip"
-  source_dir  = var.source_dir
+  source_dir  = var.source_dir != "" ? var.source_dir : "${path.module}/build/lambda_bundle"
   output_path = "${path.module}/build/orchestrator.zip"
   excludes = [
     "**/__pycache__/**",
@@ -67,24 +74,41 @@ data "aws_iam_policy_document" "least_privilege" {
     ]
   }
 
-  # 3. L4 EC2 보안 그룹 원자적 격리 권한 (와일드카드 배제)
+  # 3-1. EC2 상태 및 보안 그룹 조회 권한 (AWS IAM 스펙상 리소스 레벨 권한 미지원으로 "*" 필수)
+  statement {
+    sid    = "EC2DescribeActions"
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeInstances",
+      "ec2:DescribeSecurityGroups"
+    ]
+    resources = ["*"]
+  }
+
+  # 3-2. L4 EC2 보안 그룹 원자적 교체 격리 권한 (최소 권한: 대상 인스턴스 및 격리 SG로 한정)
   statement {
     sid    = "EC2QuarantineRemediation"
     effect = "Allow"
     actions = [
-      "ec2:DescribeInstances",
-      "ec2:DescribeSecurityGroups",
-      "ec2:ModifyNetworkInterfaceAttribute"
+      "ec2:ModifyInstanceAttribute"
     ]
     resources = [
-      var.quarantine_sg_arn,
       "arn:aws:ec2:*:*:instance/*",
-      "arn:aws:ec2:*:*:network-interface/*",
-      "arn:aws:ec2:*:*:security-group/*"
+      var.quarantine_sg_arn
     ]
   }
 
-  # 4. L7 WAFv2 IPSet /32 단일 차단 권한
+  # 4-1. WAFv2 IPSet 목록 조회 권한 (AWS IAM 스펙상 리소스 레벨 권한 미지원으로 "*" 필수)
+  statement {
+    sid    = "WAFv2ListActions"
+    effect = "Allow"
+    actions = [
+      "wafv2:ListIPSets"
+    ]
+    resources = ["*"]
+  }
+
+  # 4-2. L7 WAFv2 IPSet /32 단일 차단 권한 (주입된 대상 IPSet ARN으로 엄격히 제한)
   statement {
     sid    = "WAFv2IPSetBlocking"
     effect = "Allow"
@@ -138,8 +162,8 @@ resource "aws_cloudwatch_log_group" "lambda_log" {
 
 resource "aws_lambda_function" "orchestrator" {
   function_name    = var.function_name
-  filename         = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  filename         = local.lambda_archive_path
+  source_code_hash = local.lambda_archive_hash
   handler          = "remediation.orchestrator.threat_orchestrator_handler"
   runtime          = "python3.12"
   timeout          = 10

@@ -43,6 +43,13 @@ variable "slack_webhook_url" {
 variable "source_dir" {
   description = "Lambda 함수 패키징 대상 소스 코드 디렉터리 경로 (src/)"
   type        = string
+  default     = ""
+}
+
+variable "package_zip_path" {
+  description = "사전 빌드된 Lambda ZIP 아티팩트 경로 (pydantic 등 런타임 종속성 포함 ZIP)"
+  type        = string
+  default     = ""
 }
 
 variable "tags" {

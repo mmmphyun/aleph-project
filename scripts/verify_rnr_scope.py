@@ -90,6 +90,10 @@ LOCAL_UNTRACKED_IGNORES: list[str] = [
     ".gemini/**",
     ".claude",
     ".claude/**",
+    "build",
+    "build/**",
+    "infra/terraform/modules/lambda/build",
+    "infra/terraform/modules/lambda/build/**",
 ]
 
 

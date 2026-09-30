@@ -32,7 +32,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "[1/5] 테스트 파일 표준 경로 검사 중..." -ForegroundColor Cyan
 $wrongTests = Get-ChildItem -Path . -Recurse -Filter "test_*.py" -File | Where-Object { 
-    $_.FullName -notmatch "[\\/]tests[\\/]" -and $_.FullName -notmatch "[\\/]\.venv[\\/]" 
+    $_.FullName -notmatch "[\\/]tests[\\/]" -and $_.FullName -notmatch "[\\/]\.venv[\\/]" -and $_.FullName -notmatch "[\\/]build[\\/]"
 }
 if ($wrongTests) {
     Write-Error "[오류] 표준 경로(tests/) 외부에 단위 테스트 파일이 발견되었습니다:`n$($wrongTests.FullName -join "`n")`n모든 단위 테스트는 tests/unit/ 하위에 위치해야 합니다."

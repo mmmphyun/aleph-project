@@ -34,6 +34,7 @@ module "lambda" {
   waf_ipset_arn       = var.waf_ipset_arn
   slack_webhook_url   = var.slack_webhook_url
   source_dir          = "${path.module}/../../src"
+  package_zip_path    = var.lambda_package_zip_path
 }
 
 # ==============================================================================
