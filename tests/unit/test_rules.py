@@ -13,11 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from contracts.events import SyslogAuthEvent
+from contracts.events import NginxAccessLogEvent, SyslogAuthEvent
 from detection.rules import (
     BRUTE_FORCE_THRESHOLD,
     PASSWORD_SPRAYING_THRESHOLD,
+    WEB_SCAN_PATH_THRESHOLD,
     evaluate_rules,
+    evaluate_web_rules,
     extract_auth_failure_identity,
 )
 from detection.url_normalizer import MAX_URL_VALUE_LENGTH, normalize_url_value
@@ -463,6 +465,94 @@ def test_normalize_url_value_requires_string() -> None:
     """바이트열의 암묵적 디코딩을 막아 호출부가 문자 인코딩을 명시하게 한다."""
     with pytest.raises(TypeError, match="문자열"):
         normalize_url_value(b"%2e%2e%2f")  # type: ignore[arg-type]
+
+
+def _make_nginx_event(
+    *,
+    second: int,
+    uri: str,
+    status_code: int = 404,
+    source_ip: str = "198.51.100.77",
+) -> NginxAccessLogEvent:
+    """Web 룰의 시간창과 출발지 경계를 명시하는 불변 이벤트를 생성한다."""
+    timestamp = f"28/Sep/2026:11:52:{second:02d} +0000"
+    return NginxAccessLogEvent(
+        source_ip=source_ip,
+        timestamp_str=timestamp,
+        method="GET",
+        uri=uri,
+        status_code=status_code,
+        response_time=0.002,
+        user_agent="curl/8.0",
+        raw_message=f'{source_ip} - - [{timestamp}] "GET {uri} HTTP/1.1" {status_code}',
+    )
+
+
+def test_web_rules_detect_double_encoded_path_traversal() -> None:
+    """이중 인코딩된 상위 경로 이동도 정규화 후 PATH_TRAVERSAL로 탐지한다."""
+    event = _make_nginx_event(second=0, uri="/%252e%252e%252fetc/passwd")
+
+    assert evaluate_web_rules([event]) == (True, "PATH_TRAVERSAL")
+
+
+@pytest.mark.parametrize("uri", ["/.env", "/.git/config", "/wp-config.php", "/backup.sql"])
+def test_web_rules_detect_sensitive_file_probing(uri: str) -> None:
+    """고정된 민감 파일 경로는 대소문자와 쿼리 유무에 영향받지 않고 탐지한다."""
+    event = _make_nginx_event(second=0, uri=f"{uri}?cache=false")
+
+    assert evaluate_web_rules([event]) == (True, "SENSITIVE_FILE_PROBING")
+
+
+def test_web_rules_detect_directory_scan_at_exact_threshold() -> None:
+    """동일 IP의 10초 내 실패 고유 경로가 정확히 임계치에 도달하면 탐지한다."""
+    events = [
+        _make_nginx_event(second=index, uri=f"/candidate-{index}")
+        for index in range(WEB_SCAN_PATH_THRESHOLD)
+    ]
+
+    assert evaluate_web_rules(events) == (True, "WEB_DIRECTORY_SCANNING")
+
+
+def test_web_rules_ignore_repeated_missing_static_asset() -> None:
+    """같은 정적 자원의 반복 404는 경로 열거가 아니므로 오탐하지 않는다."""
+    events = [
+        _make_nginx_event(second=index, uri="/static/app.js")
+        for index in range(WEB_SCAN_PATH_THRESHOLD)
+    ]
+
+    assert evaluate_web_rules(events) == (False, None)
+
+
+def test_web_rules_keep_source_ips_in_separate_windows() -> None:
+    """서로 다른 출구 IP의 요청을 합산해 단일 스캐너로 오판하지 않는다."""
+    events = [
+        _make_nginx_event(
+            second=index,
+            uri=f"/candidate-{index}",
+            source_ip=f"198.51.100.{77 + index % 2}",
+        )
+        for index in range(WEB_SCAN_PATH_THRESHOLD)
+    ]
+
+    assert evaluate_web_rules(events) == (False, None)
+
+
+def test_web_rules_exclude_success_responses_from_scan_threshold() -> None:
+    """200 응답 경로는 디렉터리 열거의 403/404 실패 빈도에 포함하지 않는다."""
+    events = [
+        _make_nginx_event(second=index, uri=f"/page-{index}", status_code=200)
+        for index in range(WEB_SCAN_PATH_THRESHOLD)
+    ]
+
+    assert evaluate_web_rules(events) == (False, None)
+
+
+def test_web_rules_reject_oversized_uri_before_regex_evaluation() -> None:
+    """정규식 실행 전에 과대 입력을 거부해 공격자의 처리 시간 증폭을 제한한다."""
+    event = _make_nginx_event(second=0, uri="/" + "a" * MAX_URL_VALUE_LENGTH)
+
+    with pytest.raises(ValueError, match="4096자를 초과"):
+        evaluate_web_rules([event])
 
 
 def test_brute_force_has_priority_over_spraying() -> None:
