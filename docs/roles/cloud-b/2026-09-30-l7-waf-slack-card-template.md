@@ -36,7 +36,8 @@ flowchart TD
     end
 
     subgraph Dispatcher["전파 모듈 (slack_notifier.py)"]
-        CHECK{"use_waf_card is True\nor action_required == 'BLOCK_WAF'?"}
+        CHECK_OVERRIDE{"use_waf_card\n명시적 지정 여부?\n(is not None)"}
+        CHECK_AUTO{"action_required\n== 'BLOCK_WAF'?"}
         WAF_PAYLOAD["build_waf_slack_payload()\n- L7 WAF 전용 레이아웃\n- IPSet /32 차단 상태 강조\n- 엔드포인트/스캔 문구"]
         DEFAULT_PAYLOAD["build_slack_payload()\n- L4 SG 격리 중심 레이아웃"]
         TRUNC["truncate_text()\n- 필드/본문: 500자 상한\n- 헤더: 150자 상한"]
@@ -47,10 +48,14 @@ flowchart TD
         CARD["L7 WAF 웹 침해사고 대응 카드 렌더링"]
     end
 
-    IR --> CHECK
-    RR -.-> CHECK
-    CHECK -->|Yes| WAF_PAYLOAD
-    CHECK -->|No| DEFAULT_PAYLOAD
+    IR --> CHECK_OVERRIDE
+    RR -.-> WAF_PAYLOAD
+    RR -.-> DEFAULT_PAYLOAD
+    CHECK_OVERRIDE -->|True| WAF_PAYLOAD
+    CHECK_OVERRIDE -->|False| DEFAULT_PAYLOAD
+    CHECK_OVERRIDE -->|None (미지정)| CHECK_AUTO
+    CHECK_AUTO -->|Yes| WAF_PAYLOAD
+    CHECK_AUTO -->|No| DEFAULT_PAYLOAD
     WAF_PAYLOAD --> TRUNC
     DEFAULT_PAYLOAD --> TRUNC
     TRUNC --> NET
@@ -141,12 +146,15 @@ flowchart TD
 }
 ```
 
-### 3.3 차단 상태 3상(Tri-state) 매핑 규칙
+### 3.3 차단 상태 및 권고 조치 3상(Tri-state) 매핑 규칙
 
-`remediation_result` 수신 상태에 따라 다음 3가지 상태 문자열이 동적으로 렌더링됩니다:
-1. **집행 완료 (`waf_blocked=True`)**: `✅ AWS WAFv2 IPSet `{ipset_name}` /32 등록 차단 집행 완료`
-2. **집행 실패 (`waf_blocked=False`)**: `❌ AWS WAFv2 IPSet `{ipset_name}` 차단 실패 / 미완료`
-3. **집행 대기/미수신 (`remediation_result is None`)**: `⏳ AWS WAFv2 IPSet `{ipset_name}` 차단 집행 진행 중 / 대기`
+`remediation_result` 수신 상태에 따라 집행 현황과 사후 권고 조치(`recommendations` 미지정 시)가 모순 없이 동기화되어 동적으로 렌더링됩니다:
+
+| 구분 | 집행 현황 (`L7 WAF 방어 계층 집행 현황`) | 사후 권고 조치 (`SecOps 웹 방어 권고 조치`) |
+| :--- | :--- | :--- |
+| **집행 완료 (`waf_blocked=True`)** | `✅ AWS WAFv2 IPSet `{ipset_name}` /32 등록 차단 집행 완료` | `별도 권고 조치 없음 (WAF 차단 완료)` |
+| **집행 실패 (`waf_blocked=False`)** | `❌ AWS WAFv2 IPSet `{ipset_name}` 차단 실패 / 미완료` | `수동 차단 및 웹 방화벽 점검 권고 (WAF 차단 실패)` |
+| **집행 대기/미수신 (`remediation_result is None`)** | `⏳ AWS WAFv2 IPSet `{ipset_name}` 차단 집행 진행 중 / 대기` | `별도 권고 조치 없음 (차단 집행 진행 중 / 대기)` |
 
 ---
 
@@ -167,11 +175,11 @@ flowchart TD
 
 ## 5. 단위 테스트 및 검증 결과
 
-`tests/unit/test_reporter.py` 내 총 34개 테스트 케이스 전수 통과:
+`tests/unit/test_reporter.py` 내 총 35개 테스트 케이스 전수 통과:
 - `test_reporter_package_exports`: `src/reporter` 패키지 수준 `__all__` export 무결성 검증.
 - `test_build_waf_slack_payload_required_keys`: 4대 필수 키 및 WAF 레이아웃 무결성 검증.
 - `test_build_waf_slack_payload_remediation_status`: 3상 차단 상태(성공/실패/대기) 및 커스텀 IPSet명 표시 검증.
 - `test_build_waf_slack_payload_truncation`: 초과 길이 필드 500자 안전 자르기 검증.
-- `test_build_waf_slack_payload_empty_accounts_and_recommendations`: 계정 및 권고 조치 누락 시 기본 대체 안내 문구 렌더링 검증.
+- `test_build_waf_slack_payload_empty_accounts_and_recommendations`: 계정 누락 대체 문구 및 집행 결과 3상(대기/실패/완료)별 권고 조치 상태 정합성 렌더링 검증.
 - `test_send_slack_alert_auto_waf_payload`: `BLOCK_WAF` 조치 시 자동 WAF 전용 카드 분기 검증.
 - `test_send_slack_alert_explicit_use_waf_card_override`: `use_waf_card` 명시 플래그 오버라이드 동작 검증.

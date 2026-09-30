@@ -1096,7 +1096,7 @@ def test_reporter_package_exports() -> None:
 
 
 def test_build_waf_slack_payload_empty_accounts_and_recommendations() -> None:
-    """WAF 카드에서 대상 계정 및 권고 조치가 빈 경우 대체 안내 문구가 정상 렌더링되는지 검증."""
+    """WAF 카드에서 대상 계정 및 권고 조치가 빈 경우 상태별(대기/실패/완료) 정합성 렌더링 검증."""
     report = IncidentReport(
         incident_id="INC-20260930-001",
         attack_type="Web L7 Directory Scan",
@@ -1110,20 +1110,63 @@ def test_build_waf_slack_payload_empty_accounts_and_recommendations() -> None:
         recommendations=[],
     )
 
-    payload = build_waf_slack_payload(report)
-    blocks = payload["blocks"]
+    # 1. 차단 결과 미수신 (remediation_result is None): 집행 대기 상태와 일치
+    payload_pending = build_waf_slack_payload(report)
+    blocks_pending = payload_pending["blocks"]
 
-    # 계정 필드가 비어있을 때 웹 엔드포인트 대체 문구 확인
-    accounts_section = next(
-        b for b in blocks if "*공격 대상 엔드포인트/계정:*" in b.get("text", {}).get("text", "")
+    accounts_sec = next(
+        b
+        for b in blocks_pending
+        if "*공격 대상 엔드포인트/계정:*" in b.get("text", {}).get("text", "")
     )
-    assert "지정 계정 없음 (웹 엔드포인트 URL/디렉토리 스캐닝)" in accounts_section["text"]["text"]
+    assert "지정 계정 없음 (웹 엔드포인트 URL/디렉토리 스캐닝)" in accounts_sec["text"]["text"]
 
-    # 권고 조치가 비어있을 때 기본 WAF 완료 문구 확인
-    recommendations_section = next(
-        b for b in blocks if "*SecOps 웹 방어 권고 조치:*" in b.get("text", {}).get("text", "")
+    waf_sec_pending = next(
+        b
+        for b in blocks_pending
+        if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
     )
-    assert "별도 권고 조치 없음 (WAF 차단 완료)" in recommendations_section["text"]["text"]
+    rec_sec_pending = next(
+        b
+        for b in blocks_pending
+        if "*SecOps 웹 방어 권고 조치:*" in b.get("text", {}).get("text", "")
+    )
+    assert "진행 중 / 대기" in waf_sec_pending["text"]["text"]
+    assert "별도 권고 조치 없음 (차단 집행 진행 중 / 대기)" in rec_sec_pending["text"]["text"]
+
+    # 2. 차단 실패 (waf_blocked=False): 집행 실패 현황과 수동 점검 권고 일치
+    payload_failed = build_waf_slack_payload(report, remediation_result={"waf_blocked": False})
+    blocks_failed = payload_failed["blocks"]
+
+    waf_sec_failed = next(
+        b
+        for b in blocks_failed
+        if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    rec_sec_failed = next(
+        b
+        for b in blocks_failed
+        if "*SecOps 웹 방어 권고 조치:*" in b.get("text", {}).get("text", "")
+    )
+    assert "차단 실패 / 미완료" in waf_sec_failed["text"]["text"]
+    assert "수동 차단 및 웹 방화벽 점검 권고 (WAF 차단 실패)" in rec_sec_failed["text"]["text"]
+
+    # 3. 차단 완료 (waf_blocked=True): 집행 완료 현황과 완료 권고 일치
+    payload_success = build_waf_slack_payload(report, remediation_result={"waf_blocked": True})
+    blocks_success = payload_success["blocks"]
+
+    waf_sec_success = next(
+        b
+        for b in blocks_success
+        if "*L7 WAF 방어 계층 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    rec_sec_success = next(
+        b
+        for b in blocks_success
+        if "*SecOps 웹 방어 권고 조치:*" in b.get("text", {}).get("text", "")
+    )
+    assert "등록 차단 집행 완료" in waf_sec_success["text"]["text"]
+    assert "별도 권고 조치 없음 (WAF 차단 완료)" in rec_sec_success["text"]["text"]
 
 
 def test_send_slack_alert_explicit_use_waf_card_override(
