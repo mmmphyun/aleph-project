@@ -26,7 +26,8 @@ import re
 from collections import defaultdict
 from datetime import datetime
 
-from contracts.events import SyslogAuthEvent
+from contracts.events import NginxAccessLogEvent, SyslogAuthEvent
+from detection.url_normalizer import normalize_url_value
 
 # 타입 호환성 및 개발 편의성을 위한 별칭 제공
 SyslogEvent = SyslogAuthEvent
@@ -50,6 +51,40 @@ PASSWORD_SPRAYING_THRESHOLD: int = 2
 #      자동화 공격으로 오판하지 않도록, 공격의 시간적 밀집도를 필수 조건으로 둠.
 # Constraints: CloudWatch Subscription Filter의 전송 지연을 고려한 5분(300초) 고정 창.
 DETECTION_WINDOW_SECONDS: int = 5 * 60
+
+# Web 디렉터리 열거는 짧은 시간에 서로 다른 실패 경로를 대량 조회하는 행위로 판정한다.
+# Why: 동일 정적 자원의 반복 404를 공격으로 오인하지 않으면서 10초 관통 대응 목표를 맞춘다.
+# Constraints: 동일 출발지에서 의심 경로 5개와 실패 경로 3개가 10초 안에 관측되어야 한다.
+WEB_SCAN_WINDOW_SECONDS: int = 10
+WEB_SCAN_PATH_THRESHOLD: int = 5
+WEB_SCAN_FAILURE_THRESHOLD: int = 3
+WEB_SCAN_FAILURE_STATUS_CODES: frozenset[int] = frozenset({401, 403, 404})
+
+# PR #90의 합성 공격 경로 중 정상 서비스에서도 반복될 수 있는 health·정적 자원은 제외한다.
+# 첫 경로 세그먼트만 비교해 /admin/users 같은 하위 관리 경로도 같은 위험군으로 분류한다.
+WEB_SUSPICIOUS_PATH_ROOTS: frozenset[str] = frozenset(
+    {
+        "admin",
+        "login",
+        "dashboard",
+        "api",
+        "backup",
+        "config",
+        "private",
+        "internal",
+        "debug",
+        "status",
+        "metrics",
+        "old",
+        "test",
+    }
+)
+
+# 공격자가 제어하는 URI에 적용되므로 중첩 수량자, 역참조, 무제한 와일드카드를 사용하지 않는다.
+# 두 패턴 모두 고정 대안과 경계만 소비하여 입력 길이 n에 대해 O(n)으로 동작한다.
+PATH_TRAVERSAL_PATTERN = re.compile(r"(?:^|/)\.\.(?:/|$)")
+SENSITIVE_FILE_PATHS: frozenset[str] = frozenset({"/.env", "/.git/config", "/wp-config.php"})
+SENSITIVE_FILE_EXTENSION_PATTERN = re.compile(r"\.(?:bak|sql|zip)$", re.IGNORECASE)
 
 # SSH 실패 로그에서 룰 엔진이 관심 갖는 최소 식별자만 추출하는 선형 정규식.
 # Why: 보안 담당 산출물로 공격자 IP와 시도 계정을 명시적으로 검증해
@@ -97,6 +132,101 @@ def _timestamp_to_epoch_seconds(timestamp_str: str) -> float | None:
     except ValueError:
         # 계약 밖의 시각 포맷은 시간 기반 집계에서 제외해 오래된 이벤트의 오탐을 방지한다.
         return None
+
+
+def _nginx_timestamp_to_epoch_seconds(timestamp_str: str) -> float | None:
+    """Nginx ``time_local`` 값을 10초 웹 탐지 시간창 계산용 epoch 초로 변환한다."""
+    try:
+        return datetime.strptime(timestamp_str, "%d/%b/%Y:%H:%M:%S %z").timestamp()
+    except ValueError:
+        # 계약 밖 시각을 임의 보정하면 서로 무관한 요청을 같은 공격으로 묶을 수 있어 제외한다.
+        return None
+
+
+def _normalized_web_path(uri: str) -> str | None:
+    """쿼리를 제외하고 최대 2회 디코딩된 검사 경로를 반환한다.
+
+    Side-effects / Edge-cases:
+        4,096자 초과 URI는 정규화 계약의 ValueError를 전파해 과대 입력을 명시적으로 거부한다.
+    """
+    # NginxAccessLogEvent 계약이 1차 unquote를 완료하므로 여기서는 한 번만 추가 디코딩한다.
+    return normalize_url_value(uri, decode_rounds=1).split("?", 1)[0] or None
+
+
+def _is_sensitive_file_path(path: str) -> bool:
+    """정확한 민감 경로 또는 파일명 확장자 시그니처인지 판정한다."""
+    lowered = path.casefold()
+    return lowered in SENSITIVE_FILE_PATHS or bool(SENSITIVE_FILE_EXTENSION_PATTERN.search(path))
+
+
+def _is_suspicious_web_path(path: str) -> bool:
+    """PR #99에서 정의한 반복 판정 대상 경로군인지 판정한다."""
+    root_segment = path.lstrip("/").split("/", 1)[0].casefold()
+    return root_segment in WEB_SUSPICIOUS_PATH_ROOTS or _is_sensitive_file_path(path)
+
+
+def evaluate_web_rules(
+    logs: list[NginxAccessLogEvent],
+) -> tuple[bool, str | None]:
+    """Nginx 접근 이벤트에 결정론적 Web L7 시그니처를 적용한다.
+
+    우선순위는 경로 탈출, 민감 파일 탐색, 디렉터리 열거 순이다. 앞의 두 룰은
+    단일 요청 자체가 명확한 공격 문자열이며, 디렉터리 열거는 동일 IP의 10초 시간창에서
+    의심 경로 5개 이상과 401/403/404 실패 경로 3개 이상이 함께 관측될 때 탐지한다.
+
+    Side-effects / Edge-cases:
+        호출 간 상태를 저장하지 않는다. 분할 배치 누적과 중복 제거는 오케스트레이터가 담당한다.
+    """
+    if not logs:
+        return False, None
+
+    normalized: list[tuple[NginxAccessLogEvent, str]] = []
+    for event in logs:
+        path = _normalized_web_path(event.uri)
+        if path is not None:
+            normalized.append((event, path))
+
+    if any(PATH_TRAVERSAL_PATTERN.search(path) for _, path in normalized):
+        return True, "PATH_TRAVERSAL"
+
+    if any(_is_sensitive_file_path(path) for _, path in normalized):
+        return True, "SENSITIVE_FILE_PROBING"
+
+    ip_events: dict[str, list[tuple[float, str, bool]]] = defaultdict(list)
+    for event, path in normalized:
+        if not _is_suspicious_web_path(path):
+            continue
+        timestamp = _nginx_timestamp_to_epoch_seconds(event.timestamp_str)
+        if timestamp is not None:
+            is_failure = event.status_code in WEB_SCAN_FAILURE_STATUS_CODES
+            ip_events[event.source_ip].append((timestamp, path, is_failure))
+
+    for events in ip_events.values():
+        events.sort(key=lambda item: item[0])
+        path_counts: dict[str, int] = defaultdict(int)
+        failed_path_counts: dict[str, int] = defaultdict(int)
+        left = 0
+        for timestamp, path, is_failure in events:
+            path_counts[path] += 1
+            if is_failure:
+                failed_path_counts[path] += 1
+            while timestamp - events[left][0] > WEB_SCAN_WINDOW_SECONDS:
+                _, expired_path, expired_is_failure = events[left]
+                path_counts[expired_path] -= 1
+                if path_counts[expired_path] == 0:
+                    del path_counts[expired_path]
+                if expired_is_failure:
+                    failed_path_counts[expired_path] -= 1
+                    if failed_path_counts[expired_path] == 0:
+                        del failed_path_counts[expired_path]
+                left += 1
+            if (
+                len(path_counts) >= WEB_SCAN_PATH_THRESHOLD
+                and len(failed_path_counts) >= WEB_SCAN_FAILURE_THRESHOLD
+            ):
+                return True, "WEB_DIRECTORY_SCANNING"
+
+    return False, None
 
 
 def _has_repeated_events_within_window(timestamps: list[float], threshold: int) -> bool:
