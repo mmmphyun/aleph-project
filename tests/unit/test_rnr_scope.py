@@ -24,7 +24,7 @@ from scripts.verify_rnr_scope import (  # noqa: E402
 
 
 def test_whitelist_matching_for_cloud_b() -> None:
-    """클라우드 B 허용 화이트리스트(nginx.conf, test_target_server.py 포함) 및 차단 검증."""
+    """클라우드 B 허용 화이트리스트(nginx.conf, modules/ec2 등) 및 차단 검증."""
     patterns = RNR_WHITELIST["cloud-b"]
 
     # 1. 허용되어야 하는 파일들
@@ -36,6 +36,7 @@ def test_whitelist_matching_for_cloud_b() -> None:
     assert is_file_allowed("tests/unit/test_collector.py", patterns)
     assert is_file_allowed("tests/unit/test_reporter.py", patterns)
     assert is_file_allowed("tests/unit/test_target_server.py", patterns)
+    assert is_file_allowed("infra/terraform/modules/ec2/main.tf", patterns)
     assert is_file_allowed("docs/roles/cloud-b/2026-09-09-target-server-init.md", patterns)
     assert is_file_allowed("docs/shared/meetings/meeting.md", patterns)
     assert is_file_allowed(".agent-role", patterns)
@@ -47,6 +48,8 @@ def test_whitelist_matching_for_cloud_b() -> None:
     assert not is_file_allowed("src/contracts/incident.py", patterns)
     assert not is_file_allowed("src/remediation/remediation.py", patterns)
     assert not is_file_allowed("infra/terraform/main.tf", patterns)
+    assert not is_file_allowed("infra/terraform/modules/vpc/main.tf", patterns)
+    assert not is_file_allowed("infra/terraform/modules/waf/main.tf", patterns)
     assert not is_file_allowed(".github/workflows/ci.yml", patterns)
     assert not is_file_allowed("tests/test_contracts.py", patterns)
     assert not is_file_allowed("tests/conftest.py", patterns)
@@ -62,6 +65,7 @@ def test_whitelist_matching_for_security() -> None:
     assert is_file_allowed("tests/unit/test_rules.py", patterns)
     assert is_file_allowed("tests/unit/test_llm_analyzer.py", patterns)
     assert is_file_allowed("tests/unit/test_incident_mapper.py", patterns)
+    assert is_file_allowed("infra/terraform/modules/waf/main.tf", patterns)
     assert is_file_allowed("docs/roles/security/report.md", patterns)
     assert is_file_allowed("docs/shared/ideas/idea.md", patterns)
 
@@ -69,6 +73,8 @@ def test_whitelist_matching_for_security() -> None:
     assert not is_file_allowed("src/contracts/events.py", patterns)
     assert not is_file_allowed("src/remediation/remediation.py", patterns)
     assert not is_file_allowed("src/collector/cw_processor.py", patterns)
+    assert not is_file_allowed("infra/terraform/modules/vpc/main.tf", patterns)
+    assert not is_file_allowed("infra/terraform/modules/ec2/main.tf", patterns)
     assert not is_file_allowed("scripts/check.ps1", patterns)
 
 
@@ -80,11 +86,14 @@ def test_whitelist_matching_for_network() -> None:
     assert is_file_allowed("network/attack_simulation.sh", patterns)
     assert is_file_allowed("network/lab/Dockerfile", patterns)
     assert is_file_allowed("tests/unit/test_network.py", patterns)
+    assert is_file_allowed("infra/terraform/modules/vpc/main.tf", patterns)
     assert is_file_allowed("docs/roles/network/report.md", patterns)
 
     # 2. 차단 대상
     assert not is_file_allowed("src/contracts/events.py", patterns)
     assert not is_file_allowed("src/detection/rules.py", patterns)
+    assert not is_file_allowed("infra/terraform/modules/ec2/main.tf", patterns)
+    assert not is_file_allowed("infra/terraform/modules/waf/main.tf", patterns)
     assert not is_file_allowed("scripts/check.ps1", patterns)
 
 
