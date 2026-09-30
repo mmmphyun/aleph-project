@@ -319,6 +319,8 @@ def build_waf_slack_payload(
     Side-effects / Edge-cases:
         - remediation_result가 전달되지 않은 경우에도 WAF 차단 대기 상태를 안전하게 표시.
         - target_accounts가 비어 있는 경우 '웹 엔드포인트 전역 스캔' 문구 제공.
+        - recommendations가 비어 있는 경우 remediation_result 상태(완료/실패/대기)에 부합하도록
+          권고 조치 문구를 동적으로 매핑하여 집행 현황과의 상태 모순 방지.
     """
     risk_emojis = {
         "HIGH": "🚨",
@@ -380,8 +382,14 @@ def build_waf_slack_payload(
     if report.recommendations:
         rec_lines = [f"{idx + 1}. {rec}" for idx, rec in enumerate(report.recommendations)]
         recommendations_text = "\n".join(rec_lines)
+    elif remediation_result is not None:
+        waf_blocked = bool(remediation_result.get("waf_blocked", False))
+        if waf_blocked:
+            recommendations_text = "별도 권고 조치 없음 (WAF 차단 완료)"
+        else:
+            recommendations_text = "수동 차단 및 웹 방화벽 점검 권고 (WAF 차단 실패)"
     else:
-        recommendations_text = "별도 권고 조치 없음 (WAF 차단 완료)"
+        recommendations_text = "별도 권고 조치 없음 (차단 집행 진행 중 / 대기)"
     recommendations_block_text = truncate_text(
         f"*SecOps 웹 방어 권고 조치:*\n{recommendations_text}", MAX_FIELD_LENGTH
     )
