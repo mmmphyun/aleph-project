@@ -24,26 +24,30 @@ MAX_URL_VALUE_LENGTH = 4096
 MAX_DECODE_ROUNDS = 2
 
 
-def normalize_url_value(value: str) -> str:
+def normalize_url_value(value: str, *, decode_rounds: int = MAX_DECODE_ROUNDS) -> str:
     """단일·이중 퍼센트 인코딩 URL 값을 탐지용 문자열로 정규화한다.
 
     Args:
         value: Nginx 요청 경로 등에서 추출한 URL 문자열.
+        decode_rounds: 이 호출에서 허용할 디코딩 횟수. 앞단 계약이 이미 한 번
+            디코딩한 경우 1을 전달해 원본 기준 최대 2회 경계를 유지한다.
 
     Returns:
         최대 두 번 퍼센트 디코딩한 문자열. 추가 변환이 없으면 즉시 반환한다.
 
     Raises:
         TypeError: 입력이 문자열이 아닌 경우.
-        ValueError: 입력 길이가 4096자를 초과하는 경우.
+        ValueError: 입력 길이가 4096자를 초과하거나 디코딩 횟수가 범위를 벗어난 경우.
     """
     if not isinstance(value, str):
         raise TypeError("URL 정규화 입력은 문자열이어야 합니다.")
     if len(value) > MAX_URL_VALUE_LENGTH:
         raise ValueError(f"URL 정규화 입력은 {MAX_URL_VALUE_LENGTH}자를 초과할 수 없습니다.")
+    if not isinstance(decode_rounds, int) or not 0 <= decode_rounds <= MAX_DECODE_ROUNDS:
+        raise ValueError(f"URL 디코딩 횟수는 0~{MAX_DECODE_ROUNDS} 범위여야 합니다.")
 
     normalized = value
-    for _ in range(MAX_DECODE_ROUNDS):
+    for _ in range(decode_rounds):
         decoded = unquote(normalized, encoding="utf-8", errors="replace")
         if decoded == normalized:
             break
