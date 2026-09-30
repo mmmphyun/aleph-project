@@ -24,7 +24,11 @@ root_dir = Path(__file__).resolve().parents[2]
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from scripts.package_lambda import RUNTIME_DEPENDENCIES, build_lambda_bundle  # noqa: E402
+from scripts.package_lambda import (  # noqa: E402
+    RUNTIME_DEPENDENCIES,
+    build_lambda_bundle,
+    validate_linux_native_binaries,
+)
 
 
 @pytest.fixture(scope="module")
@@ -176,3 +180,38 @@ else:
         f"격리된 프로세스에서 ZIP 종속성 임포트 실패:\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
     )
     assert "[격리검증-성공]" in res.stdout
+
+
+def test_validate_linux_native_binaries_blocks_pyd(tmp_path: Path) -> None:
+    """Windows 전용 .pyd 바이너리가 번들 내 존재할 경우 즉시 예외로 차단되는지 검증."""
+    fake_bundle = tmp_path / "fake_bundle"
+    pydantic_core_dir = fake_bundle / "pydantic_core"
+    pydantic_core_dir.mkdir(parents=True, exist_ok=True)
+    (pydantic_core_dir / "_pydantic_core.cp312-win_amd64.pyd").touch()
+
+    with pytest.raises(RuntimeError, match=r"호환되지 않는 Windows 전용 \.pyd"):
+        validate_linux_native_binaries(fake_bundle)
+
+
+def test_validate_linux_native_binaries_requires_so(tmp_path: Path) -> None:
+    """pydantic_core 디렉터리에 .so 바이너리가 누락된 경우 즉시 예외로 차단되는지 검증."""
+    fake_bundle = tmp_path / "fake_bundle_no_so"
+    pydantic_core_dir = fake_bundle / "pydantic_core"
+    pydantic_core_dir.mkdir(parents=True, exist_ok=True)
+    (pydantic_core_dir / "__init__.py").touch()
+
+    with pytest.raises(RuntimeError, match=r"\.so 공유 라이브러리가 번들에 누락"):
+        validate_linux_native_binaries(fake_bundle)
+
+
+def test_build_lambda_bundle_fails_closed_on_invalid_platform(tmp_path: Path) -> None:
+    """지원되지 않는 플랫폼 타깃으로 빌드 시 즉시 실패(Fail-Closed)하는지 검증."""
+    src_dir = root_dir / "src"
+    out_dir = tmp_path / "fail_bundle"
+
+    with pytest.raises(RuntimeError, match=r"호환 패키지 다운로드에 실패했습니다"):
+        build_lambda_bundle(
+            src_dir=src_dir,
+            output_dir=out_dir,
+            target_platform="invalid-non-existent-platform",
+        )
