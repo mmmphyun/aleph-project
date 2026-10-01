@@ -27,6 +27,7 @@ def test_analyze_incident_interface(sample_auth_log_lines: list[str]) -> None:
     assert report.target_identifier == "i-0abcd1234ef567890"
     assert report.target_accounts == ("admin", "root", "guest")
     assert report.action_required == "BLOCK_IP_ONLY"
+    assert report.risk_level == "MEDIUM"
 
 
 def test_analyze_incident_maps_t1110_001_to_brute_force_report() -> None:
@@ -93,6 +94,41 @@ def test_map_threat_to_incident_unifies_window_rule_metadata(
     assert report.risk_level == expected_risk
     assert report.action_required == expected_action
     assert report.target_accounts == ("root", "admin")
+
+
+def test_spraying_accumulated_accounts_preserve_evidence_and_policy() -> None:
+    """누적 계정 목록의 순서·중복 제거 및 SSH 전용 권고를 함께 검증한다."""
+    accounts = ["admin", "root", "admin", "guest"]
+    report = map_threat_to_incident(
+        is_threat=True,
+        rule_name="SSH_PASSWORD_SPRAYING",
+        source_ip="203.0.113.44",
+        target_accounts=accounts,
+        incident_id="INC-SPRAY-001",
+    )
+    assert accounts == ["admin", "root", "admin", "guest"]
+    assert report.target_accounts == ("admin", "root", "guest")
+    assert report.incident_id == "INC-SPRAY-001"
+    assert report.mitre_id == "T1110.003"
+    assert report.risk_level == "MEDIUM"
+    assert report.action_required == "BLOCK_IP_ONLY"
+    assert "admin, root, guest" in report.summary_ko
+    assert report.recommendations == (
+        "출발지 IP 203.0.113.44/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+        "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+    )
+
+
+@pytest.mark.parametrize("accounts", ["admin", b"admin", [""], ["  "], [None], [1]])
+def test_mapper_rejects_invalid_account_evidence(accounts: object) -> None:
+    """문자 단위 분해와 빈 계정 때문에 부정확한 사고 보고가 생성되는 것을 방지한다."""
+    with pytest.raises(ValueError, match="문자열 목록"):
+        map_threat_to_incident(
+            is_threat=True,
+            rule_name="SSH_PASSWORD_SPRAYING",
+            source_ip="203.0.113.44",
+            target_accounts=accounts,  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,8 @@ Constraints:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from contracts.events import SyslogAuthEvent
 from contracts.incident import IncidentReport
 from detection.rules import evaluate_rules
@@ -81,7 +83,7 @@ def map_threat_to_incident(
     is_threat: bool,
     rule_name: str | None,
     source_ip: str,
-    target_accounts: tuple[str, ...],
+    target_accounts: Sequence[str],
     target_identifier: str = _DEFAULT_TARGET_IDENTIFIER,
     incident_id: str = _DEFAULT_INCIDENT_ID,
 ) -> IncidentReport:
@@ -94,7 +96,9 @@ def map_threat_to_incident(
 
     Constraints:
         - ``rule_name``은 ``SSH_BRUTE_FORCE`` 또는 ``SSH_PASSWORD_SPRAYING``이어야 한다.
-        - ``target_accounts``는 최소 한 개의 계정을 포함해야 한다.
+        - ``target_accounts``는 비어 있지 않은 계정 문자열 시퀀스이며 입력 순서를 보존한다.
+          문자열 자체는 계정 목록이 아니므로 거부한다. 누적 목록 수집은 호출부가 담당한다.
+        - Password Spraying은 MEDIUM / BLOCK_IP_ONLY이며 EC2 격리를 요청하지 않는다.
         - IP와 EC2 식별자의 최종 형식 검증은 보호된 IncidentReport 계약에 위임한다.
 
     Side-effects / Edge-cases:
@@ -109,6 +113,12 @@ def map_threat_to_incident(
         raise ValueError(f"지원하지 않는 탐지 룰입니다: {rule_name}")
     if not target_accounts:
         raise ValueError("위협 보고서에는 최소 한 개의 대상 계정이 필요합니다.")
+    if isinstance(target_accounts, (str, bytes)) or any(
+        not isinstance(account, str) or not account.strip() for account in target_accounts
+    ):
+        # 계정 문자열을 문자 단위 목록으로 오인하거나 빈 계정을 증거로 승격하는 것을 방지한다.
+        # 식별자 변형으로 증거가 달라지지 않도록 유효 계정은 정규화 없이 보존한다.
+        raise ValueError("대상 계정은 비어 있지 않은 문자열 목록이어야 합니다.")
 
     unique_target_accounts = tuple(dict.fromkeys(target_accounts))
 
@@ -171,7 +181,9 @@ def _build_recommendations(
     target_identifier: str,
 ) -> tuple[str, ...]:
     common = (
-        f"AWS WAF IPSet에 {source_ip}/32를 등록해 반복 접근을 차단",
+        # SSH는 WAF의 HTTP 검사 대상이 아니므로 권고를 L4 차단 요구로 표현한다.
+        # 실제 차단 엔진의 BLOCK_IP_ONLY 집행 방식은 플랫폼 담당이 정합화해야 한다.
+        f"출발지 IP {source_ip}/32의 SSH 접근을 차단하는 네트워크 정책 적용",
         "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
     )
     if mitre_id == "T1110.001":
