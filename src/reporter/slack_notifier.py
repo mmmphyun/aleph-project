@@ -103,9 +103,24 @@ def build_slack_payload(
         accounts_text = "없음 (단일 호스트 스캔)"
 
     # 사후 권고 조치 목록 포맷팅
+    # Why: recommendations가 없을 때 고정 문구 "대응 완료"를 표시하면,
+    #      BLOCK_IP_ONLY 등 WAF 차단 실패 시 현황 섹션의 ❌와 모순되는 상태를 노출함.
+    #      remediation_result가 전달된 경우에는 실제 WAF 차단 결과를 참조하여
+    #      관제 채널에 일관성 있는 권고 문구를 동적으로 매핑함.
     if report.recommendations:
         rec_lines = [f"{idx + 1}. {rec}" for idx, rec in enumerate(report.recommendations)]
         recommendations_text = "\n".join(rec_lines)
+    elif remediation_result is not None:
+        req_waf = report.action_required in (
+            "BLOCK_AND_QUARANTINE",
+            "BLOCK_WAF",
+            "BLOCK_IP_ONLY",
+        )
+        if req_waf and not bool(remediation_result.get("waf_blocked", False)):
+            # WAF 차단이 지시되었으나 실패한 경우 — "대응 완료" 문구 오표시 방지
+            recommendations_text = "수동 WAF IPSet 차단 및 인프라 점검 권고 (차단 실패)"
+        else:
+            recommendations_text = "별도 권고 조치 없음 (대응 완료)"
     else:
         recommendations_text = "별도 권고 조치 없음 (대응 완료)"
 
@@ -204,31 +219,38 @@ def build_slack_payload(
         waf_blocked = bool(remediation_result.get("waf_blocked", False))
         iam_revoked = bool(remediation_result.get("iam_revoked", False))
 
-        # 1. L4 EC2 격리: BLOCK_AND_QUARANTINE 또는 QUARANTINE_EC2 시 필수 조치
+        # 1. L4 EC2 격리: BLOCK_AND_QUARANTINE 또는 QUARANTINE_EC2 시에만 필수 조치.
+        #    Why: quarantine_applied 결과 체크를 req_l4와 AND로 결합하여
+        #         미지시 액션(BLOCK_IP_ONLY 등)에서 잘못된 성공 결과가 인입되더라도
+        #         "✅ 격리 성공" 오표시를 원천 차단함.
         req_l4 = report.action_required in ("BLOCK_AND_QUARANTINE", "QUARANTINE_EC2")
-        if quarantine_applied:
+        if req_l4 and quarantine_applied:
             l4_status = "✅ 격리 성공 (SG 전면 차단)"
         elif req_l4:
             l4_status = "❌ 격리 실패 / 미완료"
         else:
             l4_status = "ℹ️ 격리 미대상"
 
-        # 2. L7 WAF IP 차단: BLOCK_AND_QUARANTINE, BLOCK_WAF, BLOCK_IP_ONLY 시 필수 조치
+        # 2. L7 WAF IP 차단: BLOCK_AND_QUARANTINE, BLOCK_WAF, BLOCK_IP_ONLY 시 필수 조치.
+        #    Why: waf_blocked 결과 체크를 req_l7와 AND로 결합하여
+        #         미지시 액션에서 성공 결과 오표시를 방지함.
         req_l7 = report.action_required in (
             "BLOCK_AND_QUARANTINE",
             "BLOCK_WAF",
             "BLOCK_IP_ONLY",
         )
-        if waf_blocked:
+        if req_l7 and waf_blocked:
             l7_status = "✅ IPSet 차단 완료 (/32)"
         elif req_l7:
             l7_status = "❌ 차단 실패 / 미완료"
         else:
             l7_status = "ℹ️ 차단 미대상"
 
-        # 3. Identity IAM 세션 무효화: REVOKE_IAM_SESSION 시 필수 조치
+        # 3. Identity IAM 세션 무효화: REVOKE_IAM_SESSION 시에만 필수 조치.
+        #    Why: iam_revoked 결과 체크를 req_iam과 AND로 결합하여
+        #         미지시 액션에서 성공 결과 오표시를 방지함.
         req_iam = report.action_required == "REVOKE_IAM_SESSION"
-        if iam_revoked:
+        if req_iam and iam_revoked:
             iam_status = "✅ 세션 만료 완료"
         elif req_iam:
             iam_status = "❌ 세션 무효화 실패 / 미완료"
