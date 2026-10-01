@@ -1225,3 +1225,147 @@ def test_send_slack_alert_explicit_use_waf_card_override(
     payload_waf = json.loads(captured_requests[-1].data.decode("utf-8"))
     assert payload_waf.get("is_waf_card") is True
     assert "L7 WAF 웹 침해사고" in payload_waf["blocks"][0]["text"]["text"]
+
+
+def test_build_slack_payload_with_block_ip_only(
+    sample_incident_data: dict[str, Any],
+) -> None:
+    """BLOCK_IP_ONLY 액션 수신 시 Slack 카드 상태 정합성 검증.
+
+    Why:
+        시나리오 1 SSH Password Spraying의 대응 지시 액션인 BLOCK_IP_ONLY는
+        L4 EC2 격리를 지시하지 않고 WAF IPSet /32 단독 차단만 집행한다.
+        L4 격리 조치는 '미대상(ℹ️)'으로 표시되어야 하며,
+        WAF 차단 성공/실패 여부는 실제 결과에 따라 정확히 반영되어야 한다.
+        이를 검증하지 않으면 L4 상태 오표시로 인해 SecOps 관제 센터에
+        잘못된 격리 성공 신호가 전달될 위험이 있다.
+
+    Constraints:
+        - BLOCK_IP_ONLY + quarantine_applied=True → L4는 여전히 ℹ️ 미대상
+        - BLOCK_IP_ONLY + waf_blocked=True  → L7 ✅ IPSet 차단 완료 (/32)
+        - BLOCK_IP_ONLY + waf_blocked=False → L7 ❌ 차단 실패 / 미완료
+        - IAM은 항상 ℹ️ 미대상
+    """
+    data = dict(sample_incident_data)
+    data["action_required"] = "BLOCK_IP_ONLY"
+    data["attack_type"] = "SSH Password Spraying"
+    report = IncidentReport.model_validate(data)
+
+    # --- 케이스 A: WAF 차단 성공 ---
+    remediation_res_success: dict[str, Any] = {
+        "waf_blocked": True,
+        # quarantine_applied=True 가 잘못 인입되는 상황을 의도적으로 시뮬레이션
+        "quarantine_applied": True,
+        "iam_revoked": False,
+    }
+    payload_success = build_slack_payload(report, remediation_result=remediation_res_success)
+
+    blocks_success = payload_success["blocks"]
+    rem_block_success = next(
+        b
+        for b in blocks_success
+        if "*인프라 원자적 차단 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    block_text_success = rem_block_success["text"]["text"]
+
+    # L4는 BLOCK_IP_ONLY에서 지시되지 않으므로 quarantine_applied=True 무관하게 미대상
+    assert "• L4 EC2 네트워크 격리: ℹ️ 격리 미대상" in block_text_success, (
+        f"BLOCK_IP_ONLY에서 L4 격리가 미대상(ℹ️)이어야 하나, 실제 표시: {block_text_success!r}"
+    )
+    assert "• L7 WAFv2 IP 차단: ✅ IPSet 차단 완료 (/32)" in block_text_success
+    assert "• Identity IAM 세션 무효화: ℹ️ 미대상 (SSH 시나리오 제외)" in block_text_success
+
+    # --- 케이스 B: WAF 차단 실패 + 권고 조치 빈 튜플 → 모순 없는 동적 안내 ---
+    data_no_rec = dict(sample_incident_data)
+    data_no_rec["action_required"] = "BLOCK_IP_ONLY"
+    data_no_rec["attack_type"] = "SSH Password Spraying"
+    data_no_rec["recommendations"] = []
+    report_no_rec = IncidentReport.model_validate(data_no_rec)
+
+    remediation_res_fail: dict[str, Any] = {
+        "waf_blocked": False,
+        "quarantine_applied": False,
+        "iam_revoked": False,
+    }
+    payload_fail = build_slack_payload(report_no_rec, remediation_result=remediation_res_fail)
+
+    blocks_fail = payload_fail["blocks"]
+    rem_block_fail = next(
+        b
+        for b in blocks_fail
+        if "*인프라 원자적 차단 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    block_text_fail = rem_block_fail["text"]["text"]
+
+    assert "• L4 EC2 네트워크 격리: ℹ️ 격리 미대상" in block_text_fail
+    assert "• L7 WAFv2 IP 차단: ❌ 차단 실패 / 미완료" in block_text_fail
+
+    # 권고 조치 섹션이 차단 실패 상태와 모순되지 않아야 함
+    rec_block = next(
+        b for b in blocks_fail if "*SecOps 권고 조치:*" in b.get("text", {}).get("text", "")
+    )
+    rec_text = rec_block["text"]["text"]
+    assert "별도 권고 조치 없음 (대응 완료)" not in rec_text, (
+        "WAF 차단 실패(❌) 상황에서 '대응 완료' 문구가 표시되면 UI 모순 발생"
+    )
+    assert "수동 WAF IPSet 차단 및 인프라 점검 권고 (차단 실패)" in rec_text
+
+
+def test_send_slack_alert_routing_block_ip_only(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_incident_data: dict[str, Any],
+) -> None:
+    """BLOCK_IP_ONLY 액션 수신 시 send_slack_alert가 기본 통합 카드로 라우팅되는지 검증.
+
+    Why:
+        BLOCK_IP_ONLY는 SSH 시나리오의 호스트 기반 침해 대응 액션으로,
+        시나리오 2 전용 웹 침해 카드(build_waf_slack_payload)가 아닌
+        기본 통합 카드(build_slack_payload)로 발송되어야 한다.
+        이를 검증하지 않으면 향후 send_slack_alert의 is_waf 분기 조건을
+        is_waf = action_required in ("BLOCK_WAF", "BLOCK_IP_ONLY")로 잘못 확장할 경우
+        SSH 공격에 웹 전용 문구("L7 웹 위협 요약", "웹 엔드포인트 URL/디렉토리 스캐닝")가
+        관제 채널에 송출되는 회귀 버그가 무방비로 통과된다.
+
+    Constraints:
+        - BLOCK_IP_ONLY → is_waf_card 키 부재 또는 True 아님
+        - 헤더 텍스트가 L4/L7 통합 알림 문구("침해사고 긴급 탐지 및 자동 대응 알림")를 포함
+        - "L7 WAF 웹 침해사고" 문구가 헤더에 없어야 함
+    """
+    dummy_webhook = "https://hooks.slack.com/services/T000/B000/BLOCK_IP_ONLY_ROUTING"
+
+    data = dict(sample_incident_data)
+    data["action_required"] = "BLOCK_IP_ONLY"
+    data["attack_type"] = "SSH Password Spraying"
+    report = IncidentReport.model_validate(data)
+
+    mock_response = MagicMock()
+    mock_response.getcode.return_value = 200
+    mock_response.status = 200
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = None
+
+    captured_requests: list[urllib.request.Request] = []
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> MagicMock:
+        captured_requests.append(req)
+        return mock_response
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    success = send_slack_alert(report, webhook_url=dummy_webhook)
+    assert success is True
+    assert len(captured_requests) == 1
+
+    sent_payload = json.loads(captured_requests[0].data.decode("utf-8"))
+
+    # WAF 카드 전용 식별 플래그가 없어야 함
+    assert sent_payload.get("is_waf_card") is not True, (
+        "BLOCK_IP_ONLY는 SSH 시나리오이므로 WAF 전용 카드(is_waf_card=True)로 발송되면 안 됨"
+    )
+
+    # 헤더 텍스트: L4/L7 통합 카드 문구여야 함
+    header_text = sent_payload["blocks"][0]["text"]["text"]
+    assert "L7 WAF 웹 침해사고" not in header_text, (
+        "BLOCK_IP_ONLY에서 웹 전용 헤더 문구가 발송되면 관제 채널에 혼선 발생"
+    )
+    assert "침해사고 긴급 탐지 및 자동 대응 알림" in header_text
