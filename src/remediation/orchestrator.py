@@ -144,21 +144,27 @@ def threat_orchestrator_handler(
 
     # 3. 누적 윈도우 기반 위협 판정 및 복합 차단 트리거
     for source_ip, username in inspected_targets:
-        is_threat, rule_name, target_key = auth_window.check_threat(source_ip, username)
-        if not is_threat or not rule_name:
+        threat_check = auth_window.check_threat(source_ip, username)
+        if not threat_check.is_threat or not threat_check.rule_name:
             continue
+
+        rule_name = threat_check.rule_name
+        target_key = threat_check.target_key
+        detected_accounts = threat_check.detected_accounts or (username,)
 
         response["threats_detected"].append(rule_name)
 
         # 4. 보안 매퍼(map_threat_to_incident)를 통한 표준 IncidentReport 계약 객체 생성
         # Why: 공격 유형별 MITRE 메타데이터, 위험도, 조치 지시(action_required)의
         #      단일 진실 공급원(SSOT)을 보안 도메인 매퍼에 일원화하여 정책 불일치를 방지함.
+        #      특히 Password Spraying의 경우 누적 윈도우에 기록된 실제 공격 대상 고유
+        #      계정 집합(detected_accounts)을 보존 전달함.
         incident_id = f"INC-{int(time.time())}-{source_ip.replace('.', '')[-4:]}"
         report = map_threat_to_incident(
             is_threat=True,
             rule_name=rule_name,
             source_ip=source_ip,
-            target_accounts=(username,),
+            target_accounts=detected_accounts,
             target_identifier=target_instance_id,
             incident_id=incident_id,
         )

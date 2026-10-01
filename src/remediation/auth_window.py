@@ -46,6 +46,45 @@ PASSWORD_SPRAYING_THRESHOLD = 2
 DEFAULT_WINDOW_SECONDS = 300
 
 
+class ThreatCheckResult(tuple):
+    """(is_threat, rule_name, target_key) 3-튜플 호환성을 유지하며
+    detected_accounts 메타데이터를 제공하는 결과 객체.
+
+    Why:
+        기존 3-튜플 언패킹(is_threat, rule_name, target_key = check_threat(...))을
+        사용하는 호출부와의 하위 호환성을 100% 보장함과 동시에, Password Spraying 공격에
+        노출된 고유 계정 목록(detected_accounts)을 오케스트레이터 및 IncidentReport에
+        손실 없이 전달함.
+    """
+
+    def __new__(
+        cls,
+        is_threat: bool,
+        rule_name: str | None,
+        target_key: str,
+        detected_accounts: tuple[str, ...] = (),
+    ) -> ThreatCheckResult:
+        instance = super().__new__(cls, (is_threat, rule_name, target_key))
+        instance._detected_accounts = tuple(detected_accounts)
+        return instance
+
+    @property
+    def is_threat(self) -> bool:
+        return self[0]
+
+    @property
+    def rule_name(self) -> str | None:
+        return self[1]
+
+    @property
+    def target_key(self) -> str:
+        return self[2]
+
+    @property
+    def detected_accounts(self) -> tuple[str, ...]:
+        return self._detected_accounts
+
+
 class AuthFailureWindow:
     """DynamoDB 기반 2-버킷 타임스탬프 슬라이딩 윈도우 집계 엔진.
 
@@ -225,7 +264,7 @@ class AuthFailureWindow:
         source_ip: str,
         username: str,
         timestamp_epoch: float | None = None,
-    ) -> tuple[bool, str | None, str]:
+    ) -> ThreatCheckResult:
         """직전/현재/직후 3-버킷 타임스탬프 슬라이딩 윈도우 기반 위협 임계치 도달 여부 판정.
 
         Why:
@@ -238,9 +277,9 @@ class AuthFailureWindow:
             ConsistentRead=True를 통해 리더 노드로부터 최신 데이터를 강하게 일관되게 조회함.
 
         Returns:
-            (is_threat: bool, rule_name: str | None, target_key: str)
-            - rule_name: "SSH_BRUTE_FORCE" 또는 "SSH_PASSWORD_SPRAYING" 또는 None.
-            - target_key: 조치 완료 마킹 시 사용할 현재 버킷 파티션 키.
+            ThreatCheckResult:
+            - 3-튜플 언패킹 호환: (is_threat: bool, rule_name: str | None, target_key: str)
+            - detected_accounts: 공격 대상 고유 계정 튜플 (스프레잉 시 다중 계정 보존).
         """
         if timestamp_epoch is None:
             now = self._last_seen_timestamps.get(source_ip, int(time.time()))
@@ -296,11 +335,11 @@ class AuthFailureWindow:
                             break
 
                     if is_bf_detected:
-                        return True, "SSH_BRUTE_FORCE", bf_curr_key
+                        return ThreatCheckResult(True, "SSH_BRUTE_FORCE", bf_curr_key, (username,))
                 else:
                     valid_count = int(item_curr.get("failure_count", 0))
                     if valid_count >= BRUTE_FORCE_THRESHOLD:
-                        return True, "SSH_BRUTE_FORCE", bf_curr_key
+                        return ThreatCheckResult(True, "SSH_BRUTE_FORCE", bf_curr_key, (username,))
         except ClientError as e:
             logger.error("DynamoDB Brute Force 상태 조회 실패: %s", e)
 
@@ -341,6 +380,7 @@ class AuthFailureWindow:
                     )
                     attempt_times = [int(att.get("ts", 0)) for att in all_attempts if "ts" in att]
                     ref_candidates_spray = set(attempt_times) | {now}
+                    all_detected_users: set[str] = set()
                     is_spray_detected = False
                     for ref_time in ref_candidates_spray:
                         cutoff_low = ref_time - self.window_seconds
@@ -352,18 +392,25 @@ class AuthFailureWindow:
                         }
                         if len(valid_users) >= PASSWORD_SPRAYING_THRESHOLD:
                             is_spray_detected = True
-                            break
+                            all_detected_users.update(valid_users)
 
                     if is_spray_detected:
-                        return True, "SSH_PASSWORD_SPRAYING", spray_curr_key
+                        return ThreatCheckResult(
+                            True,
+                            "SSH_PASSWORD_SPRAYING",
+                            spray_curr_key,
+                            tuple(sorted(all_detected_users)),
+                        )
                 else:
-                    users_count = len(set(item_s_curr.get("usernames", set())))
-                    if users_count >= PASSWORD_SPRAYING_THRESHOLD:
-                        return True, "SSH_PASSWORD_SPRAYING", spray_curr_key
+                    users = sorted(set(item_s_curr.get("usernames", set())))
+                    if len(users) >= PASSWORD_SPRAYING_THRESHOLD:
+                        return ThreatCheckResult(
+                            True, "SSH_PASSWORD_SPRAYING", spray_curr_key, tuple(users)
+                        )
         except ClientError as e:
             logger.error("DynamoDB Password Spraying 상태 조회 실패: %s", e)
 
-        return False, None, ""
+        return ThreatCheckResult(False, None, "", ())
 
     def mark_quarantined(self, target_key: str) -> bool:
         """해당 공격 타깃에 대한 격리 조치가 완료되었음을 현재 버킷 레코드에 마킹.
