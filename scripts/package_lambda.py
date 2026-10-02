@@ -55,10 +55,10 @@ def fetch_linux_dependencies(
             platform,
             "--python-version",
             python_version,
-            "pydantic",
+            "pydantic>=2.0",
         ]
         res = subprocess.run(cmd_uv, capture_output=True, text=True, check=False)
-        if res.returncode == 0:
+        if res.returncode == 0 and (target_dir / "pydantic_core").exists():
             return True
         sys.stderr.write(f"[패키징 경고] uv pip install 실패: {res.stderr}\n")
     except FileNotFoundError:
@@ -81,10 +81,10 @@ def fetch_linux_dependencies(
             "--python-version",
             python_version,
             "--only-binary=:all:",
-            "pydantic",
+            "pydantic>=2.0",
         ]
         res = subprocess.run(cmd_pip, capture_output=True, text=True, check=False)
-        if res.returncode == 0:
+        if res.returncode == 0 and (target_dir / "pydantic_core").exists():
             return True
         sys.stderr.write(f"[패키징 경고] pip install fallback 실패: {res.stderr}\n")
     except Exception as exc:
