@@ -1001,6 +1001,22 @@ def web_plan(web_sequence, web_scan):
     """
     run, evidence, args_file, _, _, bash_path = web_scan
     fake_bin = args_file.parent / "web fake bin"
+    Path(str(args_file) + ".clock").write_text("0\n", newline="\n")
+    # 감시 루프가 빈 파일을 읽지 않도록 같은 디렉터리에서 완성한 값을 rename으로 공개한다.
+    # 단일 writer(간격 대기 또는 curl)만 활성화되며 실패하면 기존 시각을 보존하고 종료한다.
+    clock_set = fake_bin / "clock-set"
+    clock_set.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        'pending="$MOCK_ARGS.clock.$$"\n'
+        "trap '/usr/bin/rm -f -- \"$pending\"' EXIT\n"
+        ': > "$pending"\n'
+        'if [[ $MOCK_MODE == atomic_probe ]]; then date +%s >> "$MOCK_ARGS.reads"; fi\n'
+        'printf "%s\\n" "$1" > "$pending"\n'
+        'if [[ $MOCK_MODE == atomic_probe ]]; then date +%s >> "$MOCK_ARGS.reads"; fi\n'
+        '/usr/bin/mv -f -- "$pending" "$MOCK_ARGS.clock"\n',
+        newline="\n",
+    )
+    clock_set.chmod(0o755)
     (fake_bin / "date").write_text(
         "#!/bin/bash\nif [[ $1 == +%s ]]; then\n"
         ' n=0; if [[ -f $MOCK_ARGS.clock ]]; then read -r n < "$MOCK_ARGS.clock"; fi\n'
@@ -1011,7 +1027,7 @@ def web_plan(web_sequence, web_scan):
         "#!/bin/bash\nif [[ $1 == 0.1 ]]; then exec /usr/bin/sleep 0.001; fi\n"
         "[[ $MOCK_MODE != sleep_failure ]] || exit 42\n"
         'n=0; if [[ -f $MOCK_ARGS.clock ]]; then read -r n < "$MOCK_ARGS.clock"; fi\n'
-        'printf "%s\\n" "$((n + $1))" > "$MOCK_ARGS.clock"\n',
+        'exec clock-set "$((n + $1))"\n',
         newline="\n",
     )
     curl = fake_bin / "curl"
@@ -1022,7 +1038,7 @@ def web_plan(web_sequence, web_scan):
             'date +%s >> "$MOCK_ARGS.times"\n'
             "if [[ $n == 2 ]]; then\n"
             " case $MOCK_MODE in\n"
-            '  deadline) printf "300\\n" > "$MOCK_ARGS.clock"; '
+            "  deadline) clock-set 300 || exit; "
             'printf "%s\\n" "$$" > "$MOCK_PID"; exec /usr/bin/sleep 30 ;;\n'
             '  signal) printf "%s\\n" "$$" > "$MOCK_PID"; '
             'kill -TERM "$PPID"; exec /usr/bin/sleep 30 ;;\n'
@@ -1165,6 +1181,17 @@ def test_web_plan_exact_window_boundary_from_observations(web_plan, offset, expe
     # 마지막 응답의 가상 지연만 바꿔 경계 양쪽을 비교한다. 실제 sleep과 운영 SLA 주장을 피한다.
     times[-1] += WEB_SCAN_WINDOW_SECONDS + offset
     assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == expected
+
+
+def test_web_plan_clock_readers_never_see_pending_write(web_plan, web_scan):
+    """빈 임시 파일과 완성된 임시 파일 단계마다 별도 reader를 실행해 공개 전 값을 확인한다."""
+    paths = ["admin", "login", "dashboard", "api", "backup"]
+    result, _, _, times = web_plan(paths, [404] * len(paths), interval=3, mode="atomic_probe")
+    assert result.returncode == 0, result.stderr
+    assert times == [0, 3, 6, 9, 12]
+    reads = Path(str(web_scan[2]) + ".reads").read_text().splitlines()
+    assert reads == ["0", "0", "3", "3", "6", "6", "9", "9"]
+    assert not list(web_scan[2].parent.glob("argv.txt.clock.*"))
 
 
 def test_web_plan_normalization_and_collection_gap(web_plan):
