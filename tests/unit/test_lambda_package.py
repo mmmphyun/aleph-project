@@ -268,3 +268,20 @@ def test_fetch_linux_dependencies_pip_fallback_maps_default_linux_platform(
 
     pip_cmd = captured_commands[1]
     assert pip_cmd[pip_cmd.index("--platform") + 1] == "manylinux2014_x86_64"
+
+
+def test_fetch_linux_dependencies_fails_if_pydantic_core_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설치 명령이 0을 반환하더라도 pydantic_core 디렉터리가 없으면 False 반환 검증."""
+
+    def mock_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    success = fetch_linux_dependencies(
+        target_dir=tmp_path,
+        platform="x86_64-unknown-linux-gnu",
+    )
+    assert not success
