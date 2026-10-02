@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -990,6 +991,263 @@ def test_capture_unrelated_process_survives(capture, bash):
 
 
 WEB_SCRIPT = SCRIPT.with_name("web_dir_scan.sh")
+
+
+@pytest.fixture
+def web_plan(web_sequence, web_scan):
+    """기존 격리 도구에 가상 초 시계를 결합한다. 요청 간 대기는 실제로 수행하지 않는다.
+
+    요청별 시각·argv만 합성 로그로 연결하며 실제 서버 응답이나 운영 수집 성공을 가정하지 않는다.
+    """
+    run, evidence, args_file, _, _, bash_path = web_scan
+    fake_bin = args_file.parent / "web fake bin"
+    (fake_bin / "date").write_text(
+        "#!/bin/bash\nif [[ $1 == +%s ]]; then\n"
+        ' n=0; if [[ -f $MOCK_ARGS.clock ]]; then read -r n < "$MOCK_ARGS.clock"; fi\n'
+        ' printf "%s\\n" "$n"\nelse exec /usr/bin/date "$@"; fi\n',
+        newline="\n",
+    )
+    (fake_bin / "sleep").write_text(
+        "#!/bin/bash\nif [[ $1 == 0.1 ]]; then exec /usr/bin/sleep 0.001; fi\n"
+        "[[ $MOCK_MODE != sleep_failure ]] || exit 42\n"
+        'n=0; if [[ -f $MOCK_ARGS.clock ]]; then read -r n < "$MOCK_ARGS.clock"; fi\n'
+        'printf "%s\\n" "$((n + $1))" > "$MOCK_ARGS.clock"\n',
+        newline="\n",
+    )
+    curl = fake_bin / "curl"
+    original = curl.read_text()
+    curl.write_text(
+        original.replace(
+            "printf '%s' \"$code\"",
+            'date +%s >> "$MOCK_ARGS.times"\n'
+            "if [[ $n == 2 ]]; then\n"
+            " case $MOCK_MODE in\n"
+            '  deadline) printf "300\\n" > "$MOCK_ARGS.clock"; '
+            'printf "%s\\n" "$$" > "$MOCK_PID"; exec /usr/bin/sleep 30 ;;\n'
+            '  signal) printf "%s\\n" "$$" > "$MOCK_PID"; '
+            'kill -TERM "$PPID"; exec /usr/bin/sleep 30 ;;\n'
+            " esac\nfi\n"
+            "printf '%s' \"$code\"",
+        ),
+        newline="\n",
+    )
+
+    def invoke(paths, codes, *, interval=0, mode="ok", limit=205):
+        result = run(
+            [
+                "--url",
+                "http://127.0.0.1:8080",
+                "--paths",
+                ",".join(paths),
+                "--interval",
+                str(interval),
+                "--max-runtime",
+                str(limit),
+                "--evidence",
+                bash_path(evidence),
+                "--execute",
+            ],
+            codes=" ".join(map(str, codes)),
+            mode=mode,
+        )
+        summary = dict(line.split("=", 1) for line in evidence.read_text().splitlines())
+        arguments = web_sequence[1]()
+        urls = [arg for arg in arguments if arg.startswith("http://")]
+        times_file = Path(str(args_file) + ".times")
+        times = list(map(int, times_file.read_text().splitlines())) if times_file.exists() else []
+        return result, summary, urls, times
+
+    return invoke
+
+
+def web_plan_logs(paths, codes, times):
+    """모의 관측값을 계약 파서 입력으로 변환한다. 탐지 집계·정규화는 구현하지 않는다."""
+    from contracts.events import NginxAccessLogEvent
+
+    logs = []
+    for path, code, second in zip(paths, codes, times, strict=True):
+        timestamp = datetime.fromtimestamp(1790899200 + second, UTC).strftime(
+            "%d/%b/%Y:%H:%M:%S %z"
+        )
+        line = (
+            f'198.51.100.77 - - [{timestamp}] "GET /{path} HTTP/1.1" {code} 0 "-" "mock" 0.001 "-"'
+        )
+        event = NginxAccessLogEvent.parse_line(line)
+        assert event is not None
+        logs.append(event)
+    return logs
+
+
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_web_plan_thresholds_use_existing_rule(web_plan, delta):
+    from detection.rules import WEB_SCAN_PATH_THRESHOLD, evaluate_web_rules
+
+    paths = ["admin", "login", "dashboard", "api", "backup", "config"]
+    paths = paths[: WEB_SCAN_PATH_THRESHOLD + delta]
+    codes = [404] * len(paths)
+    result, summary, urls, times = web_plan(paths, codes)
+    assert result.returncode == 0, result.stderr
+    assert urls == ["http://127.0.0.1:8080/" + path for path in paths]
+    assert summary["attempted_requests"] == str(len(paths))
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times)) == (
+        (True, "WEB_DIRECTORY_SCANNING") if delta >= 0 else (False, None)
+    )
+
+
+@pytest.mark.parametrize("fail_delta", [-1, 0, 1])
+def test_web_plan_failure_paths_are_distinct_and_status_dependent(web_plan, fail_delta):
+    from detection.rules import (
+        WEB_SCAN_FAILURE_THRESHOLD,
+        WEB_SCAN_PATH_THRESHOLD,
+        evaluate_web_rules,
+    )
+
+    paths = ["admin", "login", "dashboard", "api", "backup", "config"][:WEB_SCAN_PATH_THRESHOLD]
+    failure_count = WEB_SCAN_FAILURE_THRESHOLD + fail_delta
+    codes = [401, 403, 404, 401][:failure_count] + [200] * (len(paths) - failure_count)
+    result, _, _, times = web_plan(paths, codes)
+    assert result.returncode == 0
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == (fail_delta >= 0)
+
+
+@pytest.mark.parametrize(
+    "paths,codes,expected",
+    [
+        (["admin", "login", "dashboard", "api", "health"], [404] * 5, False),
+        (["admin", "admin", "admin", "login", "dashboard"], [404] * 5, False),
+        (
+            ["admin", "login", "dashboard", "api", "backup", "admin", "admin"],
+            [404, 200, 301, 302, 500, 401, 403],
+            False,
+        ),
+        (
+            ["admin", "login", "dashboard", "api", "backup", "admin"],
+            [200, 401, 403, 301, 500, 404],
+            True,
+        ),
+        (
+            ["health", "images", "static", "assets", "robots.txt", "sitemap.xml", "uploads"],
+            [404] * 7,
+            False,
+        ),
+    ],
+)
+def test_web_plan_noise_and_duplicates_preserve_request_order(web_plan, paths, codes, expected):
+    from detection.rules import evaluate_web_rules
+
+    result, summary, urls, times = web_plan(paths, codes)
+    assert result.returncode == 0
+    assert [url.rsplit("/", 1)[-1] for url in urls] == paths
+    assert summary["observed_statuses"] == str(len(paths))
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == expected
+
+
+@pytest.mark.parametrize("interval,expected", [(0, True), (2, True), (3, False), (11, False)])
+def test_web_plan_intervals_use_virtual_time(web_plan, interval, expected):
+    from detection.rules import evaluate_web_rules
+
+    paths = ["admin", "login", "dashboard", "api", "backup"]
+    codes = [404] * len(paths)
+    result, _, _, times = web_plan(paths, codes, interval=interval)
+    assert result.returncode == 0
+    assert times == [i * interval for i in range(len(paths))]
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == expected
+
+
+@pytest.mark.parametrize("offset,expected", [(-1, True), (0, True), (1, False)])
+def test_web_plan_exact_window_boundary_from_observations(web_plan, offset, expected):
+    from detection.rules import WEB_SCAN_WINDOW_SECONDS, evaluate_web_rules
+
+    paths = ["admin", "login", "dashboard", "api", "backup"]
+    codes = [404] * len(paths)
+    result, _, _, times = web_plan(paths, codes)
+    assert result.returncode == 0
+    # 마지막 응답의 가상 지연만 바꿔 경계 양쪽을 비교한다. 실제 sleep과 운영 SLA 주장을 피한다.
+    times[-1] += WEB_SCAN_WINDOW_SECONDS + offset
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == expected
+
+
+def test_web_plan_normalization_and_collection_gap(web_plan):
+    from collector.cw_processor import NGINX_SUBSCRIPTION_FILTER_SPEC, matches_subscription_filter
+    from detection.rules import evaluate_web_rules
+
+    paths = ["admin", "login", "dashboard", "api", "backup", "admin"]
+    codes = [401, 403, 404, 200, 302, 404]
+    result, _, _, times = web_plan(paths, codes)
+    assert result.returncode == 0
+    logs = web_plan_logs(paths, codes, times)
+    assert evaluate_web_rules(logs) == (True, "WEB_DIRECTORY_SCANNING")
+    filtered = [
+        event
+        for event in logs
+        if matches_subscription_filter(
+            event.raw_message, NGINX_SUBSCRIPTION_FILTER_SPEC["filter_pattern"]
+        )
+    ]
+    assert evaluate_web_rules(filtered) == (False, None)
+    # 경로 입력은 제한된 합성 후보만 허용한다. 인코딩·쿼리 표현 차이는 파서 경계에서만 검증한다.
+    variants = ["admin", "%61dmin", "%2561dmin", "admin?sample=1", "admin"]
+    assert evaluate_web_rules(web_plan_logs(variants, [404] * 5, [0] * 5)) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--paths", ""],
+        ["--paths", "admin,"],
+        ["--paths", "admin,,login"],
+        ["--paths", "../admin"],
+        ["--paths", "admin?token=MOCK-SECRET"],
+        ["--paths", "Authorization: MOCK-SECRET"],
+        ["--paths", "unknown"],
+        ["--paths", ",".join(["admin"] * 21)],
+        ["--paths", "a" * 513],
+        ["--paths", "admin", "--candidates", "1"],
+        ["--paths", "admin", "--tool", "gobuster"],
+        ["--interval", "1", "--tool", "gobuster"],
+        ["--interval", "-1"],
+        ["--interval", "12"],
+        ["--interval", "0.5"],
+        ["--max-runtime", "0"],
+        ["--max-runtime", "301"],
+        ["--max-runtime", "1e2"],
+        ["--paths", "admin,login", "--interval", "11", "--max-runtime", "11"],
+        ["--MOCK-SECRET"],
+    ],
+)
+def test_web_plan_invalid_inputs_fail_before_side_effects(web_scan, options):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    result = run(
+        ["--url", "http://127.0.0.1", "--evidence", bash_path(evidence), *options, "--execute"]
+    )
+    assert result.returncode == 2
+    assert not evidence.exists() and not args_file.exists()
+    assert "MOCK-SECRET" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "mode,state,code,attempted",
+    [
+        ("deadline", "timeout", 124, 2),
+        ("signal", "interrupted", 143, 2),
+        ("sleep_failure", "tool_error", 42, 1),
+    ],
+)
+def test_web_plan_stops_and_cleans_owned_curl(
+    web_plan, web_sequence, web_scan, mode, state, code, attempted
+):
+    result, summary, urls, _ = web_plan(
+        ["admin", "login", "backup"], [404] * 3, mode=mode, interval=1
+    )
+    assert result.returncode == code
+    assert_web_distribution(
+        summary, [0, 0, 0, 0, 1, 0], planned=3, attempted=attempted, state=state, code=code
+    )
+    assert len(urls) == attempted
+    if web_scan[4].exists():
+        assert not web_sequence[3]()
+    temp = Path(str(web_scan[2]) + ".temp").read_text().strip()
+    assert not web_sequence[2](temp).exists()
 
 
 @pytest.fixture
