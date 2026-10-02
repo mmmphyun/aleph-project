@@ -126,3 +126,20 @@ def test_load_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(get_my_tasks, "Path", lambda p: env_file if p == ".env" else Path(p))
     assert load_env() == "secret_test_key_123"
+
+
+def test_check_ps1_contains_exit_code_guards() -> None:
+    """scripts/check.ps1에 모든 단계별 $LASTEXITCODE 검증 가드가 존재하는지 정적 검증."""
+    check_ps1_path = root_dir / "scripts" / "check.ps1"
+    content = check_ps1_path.read_text(encoding="utf-8")
+
+    assert "[0/5] R&R 도메인 경계선(Scope) 검사 중..." in content
+    assert "[2/5] Ruff Lint 검사 실행 중..." in content
+    assert "[3/5] Ruff Format 검사 실행 중..." in content
+    assert "[4/5] Pytest 단위 및 계약 테스트 실행 중..." in content
+
+    lines = content.splitlines()
+    exit_checks = [line for line in lines if "exit $LASTEXITCODE" in line]
+    assert len(exit_checks) >= 4, (
+        "모든 검증 단계(0, 2, 3, 4)에 exit $LASTEXITCODE 가드가 존재해야 함"
+    )
