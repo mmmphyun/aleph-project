@@ -15,6 +15,25 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 
+def validate_spray(accounts, interval, max_attempts, seconds):
+    # 운영 계정을 받지 않고 합성 미존재 계정만 사용한다. 개수·간격은 재현 도구의
+    # 자원 상한이며 탐지 임계치가 아니다. 중복은 단일 계정 반복 공격으로 변질되므로 거부한다.
+    if (
+        not isinstance(accounts, list)
+        or not 2 <= len(accounts) <= 10
+        or any(
+            not isinstance(a, str) or not re.fullmatch(r"spraylab(?:[1-9]|10)", a) for a in accounts
+        )
+        or len(set(accounts)) != len(accounts)
+        or type(interval) is not int
+        or not 1 <= interval <= 10
+        or type(max_attempts) is not int
+        or not len(accounts) <= max_attempts <= 10
+        or (len(accounts) - 1) * interval >= seconds
+    ):
+        raise ValueError("합성 고유 계정 2~10개, 간격 1~10초, 목록 이상 실행 한도 2~10회 필요")
+
+
 def validate(spec):
     ipaddress.IPv4Address(spec["target"])
     if spec["port"] != 2222 or spec["tasks"] != 1:
@@ -23,6 +42,10 @@ def validate(spec):
         raise ValueError("후보 1~10 / 시간 3~55초만 허용")
     if not re.fullmatch(r"cs-ssh-[0-9a-f]{32}", spec["run_id"]):
         raise ValueError("실행 소유권 식별자 오류")
+    if "accounts" in spec:
+        validate_spray(spec["accounts"], spec["interval"], spec["max_attempts"], spec["seconds"])
+        if spec["candidates"] != 1:
+            raise ValueError("스프레이는 계정당 후보 하나만 허용")
 
 
 def classify(code, output, timed_out=False, interrupted=False):
@@ -42,15 +65,17 @@ def classify(code, output, timed_out=False, interrupted=False):
     return "unconfirmed"
 
 
-def command(binary, spec, candidates):
+def command(binary, spec, candidates, account="hydralab"):
     validate(spec)
+    if account != "hydralab" and not re.fullmatch(r"spraylab(?:[1-9]|10)", account):
+        raise ValueError("실험 계정 오류")
     return [
         binary,
         "-I",
         "-K",
         "-f",
         "-l",
-        "hydralab",
+        account,
         "-P",
         str(candidates),
         "-t",
@@ -64,12 +89,46 @@ def command(binary, spec, candidates):
     ]
 
 
-def execute(spec):
+def execute_spray(spec):
     validate(spec)
+    deadline = time.monotonic() + spec["seconds"]
+    password = "WRONG-" + secrets.token_hex(16)
+    single = {k: v for k, v in spec.items() if k not in ("accounts", "interval", "max_attempts")}
+    results = []
+    state = "timeout"
+    # 동일 오답은 메모리와 기존 private tmpfs만 거친다. argv·환경·결과에는 싣지 않는다.
+    # 각 호출 완료 후 간격을 두고, 실패/성공/중단 시 후속 계정으로 진행하지 않는다.
+    for account in spec["accounts"]:
+        if time.monotonic() >= deadline:
+            state = "timeout"
+            break
+        result = execute(single, account=account, password=password, deadline=deadline)
+        result["account"] = account
+        results.append(result)
+        state = result["state"]
+        if state != "exhausted_without_success":
+            break
+        if len(results) < len(spec["accounts"]):
+            remaining = deadline - time.monotonic()
+            if remaining <= spec["interval"]:
+                state = "timeout"
+                break
+            time.sleep(spec["interval"])
+    return {"state": state, "attempted_accounts": len(results), "attempts": results}
+
+
+def execute(spec, *, account="hydralab", password=None, deadline=None):
+    validate(spec)
+    if "accounts" in spec:
+        return execute_spray(spec)
+    shared_deadline = deadline is not None
     binary = shutil.which("hydra")
     if not binary:
         raise RuntimeError("Hydra 미설치")
-    help_result = subprocess.run([binary, "-h"], capture_output=True, text=True, timeout=5)
+    help_timeout = 5 if deadline is None else max(0.001, min(5, deadline - time.monotonic()))
+    help_result = subprocess.run(
+        [binary, "-h"], capture_output=True, text=True, timeout=help_timeout
+    )
     help_text = help_result.stdout + help_result.stderr
     services = re.search(r"Supported services:\s*([^\r\n]+)", help_text)
     if not services or "ssh" not in services[1].split() or "-K" not in help_text:
@@ -83,12 +142,17 @@ def execute(spec):
         folder = Path(directory)
         candidates = folder / "candidates"
         candidates.write_text(
-            "".join("WRONG-" + secrets.token_hex(16) + "\n" for _ in range(spec["candidates"]))
+            password + "\n"
+            if password is not None
+            else "".join("WRONG-" + secrets.token_hex(16) + "\n" for _ in range(spec["candidates"]))
         )
         with (folder / "output").open("w+") as output:
-            deadline = time.monotonic() + spec["seconds"]
+            if deadline is None:
+                deadline = time.monotonic() + spec["seconds"]
+            elif time.monotonic() >= deadline:
+                return {"state": "timeout"}
             proc = subprocess.Popen(
-                command(binary, spec, candidates),
+                command(binary, spec, candidates, account),
                 cwd=folder,
                 stdout=output,
                 stderr=subprocess.STDOUT,
@@ -122,6 +186,12 @@ def execute(spec):
             state = classify(
                 proc.returncode, (folder / "output").read_text(), timed_out, interrupted
             )
+            if (
+                shared_deadline
+                and state == "exhausted_without_success"
+                and time.monotonic() >= deadline
+            ):
+                state = "timeout"
         result = {
             "state": state,
             "exit": proc.returncode,

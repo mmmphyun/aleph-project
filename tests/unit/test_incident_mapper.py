@@ -27,6 +27,7 @@ def test_analyze_incident_interface(sample_auth_log_lines: list[str]) -> None:
     assert report.target_identifier == "i-0abcd1234ef567890"
     assert report.target_accounts == ("admin", "root", "guest")
     assert report.action_required == "BLOCK_IP_ONLY"
+    assert report.risk_level == "MEDIUM"
 
 
 def test_analyze_incident_maps_t1110_001_to_brute_force_report() -> None:
@@ -95,6 +96,41 @@ def test_map_threat_to_incident_unifies_window_rule_metadata(
     assert report.target_accounts == ("root", "admin")
 
 
+def test_spraying_accumulated_accounts_preserve_evidence_and_policy() -> None:
+    """누적 계정 목록의 순서·중복 제거 및 SSH 전용 권고를 함께 검증한다."""
+    accounts = ["admin", "root", "admin", "guest"]
+    report = map_threat_to_incident(
+        is_threat=True,
+        rule_name="SSH_PASSWORD_SPRAYING",
+        source_ip="203.0.113.44",
+        target_accounts=accounts,
+        incident_id="INC-SPRAY-001",
+    )
+    assert accounts == ["admin", "root", "admin", "guest"]
+    assert report.target_accounts == ("admin", "root", "guest")
+    assert report.incident_id == "INC-SPRAY-001"
+    assert report.mitre_id == "T1110.003"
+    assert report.risk_level == "MEDIUM"
+    assert report.action_required == "BLOCK_IP_ONLY"
+    assert "admin, root, guest" in report.summary_ko
+    assert report.recommendations == (
+        "출발지 IP 203.0.113.44/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+        "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+    )
+
+
+@pytest.mark.parametrize("accounts", ["admin", b"admin", [""], ["  "], [None], [1]])
+def test_mapper_rejects_invalid_account_evidence(accounts: object) -> None:
+    """문자 단위 분해와 빈 계정 때문에 부정확한 사고 보고가 생성되는 것을 방지한다."""
+    with pytest.raises(ValueError, match="문자열 목록"):
+        map_threat_to_incident(
+            is_threat=True,
+            rule_name="SSH_PASSWORD_SPRAYING",
+            source_ip="203.0.113.44",
+            target_accounts=accounts,  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize(
     ("is_threat", "rule_name", "target_accounts", "message"),
     [
@@ -117,3 +153,97 @@ def test_map_threat_to_incident_rejects_invalid_decisions(
             source_ip="198.51.100.52",
             target_accounts=target_accounts,
         )
+
+
+@pytest.mark.parametrize(
+    ("uris", "expected_rule", "expected_mitre"),
+    [
+        (["/../etc/passwd"], "PATH_TRAVERSAL", "T1595.002"),
+        (["/.env"], "SENSITIVE_FILE_PROBING", "T1595.003"),
+        (
+            ["/admin", "/login", "/backup", "/config", "/debug"],
+            "WEB_DIRECTORY_SCANNING",
+            "T1595.003",
+        ),
+    ],
+)
+def test_web_detection_maps_to_contract_and_waf_card(
+    uris: list[str],
+    expected_rule: str,
+    expected_mitre: str,
+) -> None:
+    """실제 Nginx 파싱부터 WAF 카드까지 공통 계약을 교차검증한다."""
+    from contracts.events import NginxAccessLogEvent
+    from detection.rules import evaluate_web_rules
+    from reporter.slack_notifier import build_waf_slack_payload
+
+    events = []
+    for index, uri in enumerate(uris):
+        event = NginxAccessLogEvent.parse_line(
+            f"198.51.100.77 - - [28/Sep/2026:11:52:0{index} +0000] "
+            f'"GET {uri} HTTP/1.1" 404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        assert event is not None
+        events.append(event)
+    detected, rule = evaluate_web_rules(events)
+    assert detected and rule == expected_rule
+    report = map_threat_to_incident(
+        is_threat=detected,
+        rule_name=rule,
+        source_ip=events[0].source_ip,
+        target_identifier="i-0123456789abcdef0",
+        incident_id="INC-WEB-001",
+    )
+    assert IncidentReport.model_validate_json(report.model_dump_json()) == report
+    assert report.target_accounts == ()
+    assert report.action_required == "BLOCK_WAF"
+    assert report.risk_level == "HIGH"
+    assert report.mitre_id == expected_mitre
+    assert report.incident_id == "INC-WEB-001"
+    assert report.target_identifier == "i-0123456789abcdef0"
+    assert "SSH" not in report.summary_ko
+    assert all("SSH" not in item and "격리" not in item for item in report.recommendations)
+    assert "별도 확인" in report.summary_ko
+    payload = build_waf_slack_payload(report, {"waf_blocked": False})
+    assert payload["incident_id"] == report.incident_id
+    assert payload["remediation_action"] == "BLOCK_WAF"
+
+
+@pytest.mark.parametrize("accounts", ["admin", b"admin", [""], [" "], [None]])
+def test_web_mapper_rejects_invalid_accounts(accounts: object) -> None:
+    """Web 빈 계정 허용이 잘못된 계정 증거 허용으로 확대되지 않도록 검증한다."""
+    with pytest.raises(ValueError, match="문자열 목록"):
+        map_threat_to_incident(
+            is_threat=True,
+            rule_name="PATH_TRAVERSAL",
+            source_ip="198.51.100.77",
+            target_accounts=accounts,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value", [("source_ip", "999.1.1.1"), ("target_identifier", "web-host")]
+)
+def test_web_mapper_preserves_contract_validation(field: str, value: str) -> None:
+    """Web 보고서도 보호된 IPv4·EC2 계약 검증을 그대로 적용한다."""
+    with pytest.raises(ValueError):
+        map_threat_to_incident(
+            is_threat=True,
+            rule_name="WEB_DIRECTORY_SCANNING",
+            **{
+                "source_ip": "198.51.100.77",
+                "target_identifier": "i-0123456789abcdef0",
+                field: value,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "rule", ["PATH_TRAVERSAL", "SENSITIVE_FILE_PROBING", "WEB_DIRECTORY_SCANNING"]
+)
+def test_web_mapper_rejects_non_threat_and_uses_web_default_id(rule: str) -> None:
+    """비위협은 승격하지 않고 데모 기본 식별자도 SSH 사고와 분리한다."""
+    with pytest.raises(ValueError):
+        map_threat_to_incident(is_threat=False, rule_name=rule, source_ip="198.51.100.77")
+    report = map_threat_to_incident(is_threat=True, rule_name=rule, source_ip="198.51.100.77")
+    assert report.incident_id == "INC-SIG-WEB-L7-001"

@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -309,10 +310,16 @@ def test_hydra_target_must_be_current_owned_pair(hydra_lab, monkeypatch, violati
         (True, 124, "unexpected_success", 0, 1),
     ],
 )
+@pytest.mark.parametrize("spray", [False, True])
 def test_hydra_capture_requires_ready_and_real_log_evidence(
-    hydra_lab, monkeypatch, ready, code, state, failures, accepted
+    hydra_lab, monkeypatch, ready, code, state, failures, accepted, spray
 ):
     host, _, lab = hydra_lab
+    if spray:
+        lab.accounts = ["spraylab2", "spraylab1"]
+        lab.candidates = 1
+        lab.interval = 2
+        lab.max_attempts = 2
     lab.context = "local"
     calls = []
     capture_waits = []
@@ -334,6 +341,15 @@ def test_hydra_capture_requires_ready_and_real_log_evidence(
 
     def fake(*args, **kwargs):
         calls.append(args)
+        spec = json.loads(kwargs["data"])
+        assert spec["target"] == "192.0.2.2"
+        assert "password" not in spec
+        if spray:
+            assert spec["accounts"] == ["spraylab2", "spraylab1"]
+            assert spec["candidates"] == 1 and spec["interval"] == 2
+            assert spec["max_attempts"] == 2
+        else:
+            assert "accounts" not in spec
         return subprocess.CompletedProcess(args, 0, json.dumps({"state": state}), "")
 
     monkeypatch.setattr(host.subprocess, "Popen", Capture)
@@ -975,6 +991,290 @@ def test_capture_unrelated_process_survives(capture, bash):
 
 
 WEB_SCRIPT = SCRIPT.with_name("web_dir_scan.sh")
+
+
+@pytest.fixture
+def web_plan(web_sequence, web_scan):
+    """기존 격리 도구에 가상 초 시계를 결합한다. 요청 간 대기는 실제로 수행하지 않는다.
+
+    요청별 시각·argv만 합성 로그로 연결하며 실제 서버 응답이나 운영 수집 성공을 가정하지 않는다.
+    """
+    run, evidence, args_file, _, _, bash_path = web_scan
+    fake_bin = args_file.parent / "web fake bin"
+    Path(str(args_file) + ".clock").write_text("0\n", newline="\n")
+    # 감시 루프가 빈 파일을 읽지 않도록 같은 디렉터리에서 완성한 값을 rename으로 공개한다.
+    # 단일 writer(간격 대기 또는 curl)만 활성화되며 실패하면 기존 시각을 보존하고 종료한다.
+    clock_set = fake_bin / "clock-set"
+    clock_set.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        'pending="$MOCK_ARGS.clock.$$"\n'
+        "trap '/usr/bin/rm -f -- \"$pending\"' EXIT\n"
+        ': > "$pending"\n'
+        'if [[ $MOCK_MODE == atomic_probe ]]; then date +%s >> "$MOCK_ARGS.reads"; fi\n'
+        'printf "%s\\n" "$1" > "$pending"\n'
+        'if [[ $MOCK_MODE == atomic_probe ]]; then date +%s >> "$MOCK_ARGS.reads"; fi\n'
+        '/usr/bin/mv -f -- "$pending" "$MOCK_ARGS.clock"\n',
+        newline="\n",
+    )
+    clock_set.chmod(0o755)
+    (fake_bin / "date").write_text(
+        "#!/bin/bash\nif [[ $1 == +%s ]]; then\n"
+        ' n=0; if [[ -f $MOCK_ARGS.clock ]]; then read -r n < "$MOCK_ARGS.clock"; fi\n'
+        ' printf "%s\\n" "$n"\nelse exec /usr/bin/date "$@"; fi\n',
+        newline="\n",
+    )
+    (fake_bin / "sleep").write_text(
+        "#!/bin/bash\nif [[ $1 == 0.1 ]]; then exec /usr/bin/sleep 0.001; fi\n"
+        "[[ $MOCK_MODE != sleep_failure ]] || exit 42\n"
+        'n=0; if [[ -f $MOCK_ARGS.clock ]]; then read -r n < "$MOCK_ARGS.clock"; fi\n'
+        'exec clock-set "$((n + $1))"\n',
+        newline="\n",
+    )
+    curl = fake_bin / "curl"
+    original = curl.read_text()
+    curl.write_text(
+        original.replace(
+            "printf '%s' \"$code\"",
+            'date +%s >> "$MOCK_ARGS.times"\n'
+            "if [[ $n == 2 ]]; then\n"
+            " case $MOCK_MODE in\n"
+            "  deadline) clock-set 300 || exit; "
+            'printf "%s\\n" "$$" > "$MOCK_PID"; exec /usr/bin/sleep 30 ;;\n'
+            '  signal) printf "%s\\n" "$$" > "$MOCK_PID"; '
+            'kill -TERM "$PPID"; exec /usr/bin/sleep 30 ;;\n'
+            " esac\nfi\n"
+            "printf '%s' \"$code\"",
+        ),
+        newline="\n",
+    )
+
+    def invoke(paths, codes, *, interval=0, mode="ok", limit=205):
+        result = run(
+            [
+                "--url",
+                "http://127.0.0.1:8080",
+                "--paths",
+                ",".join(paths),
+                "--interval",
+                str(interval),
+                "--max-runtime",
+                str(limit),
+                "--evidence",
+                bash_path(evidence),
+                "--execute",
+            ],
+            codes=" ".join(map(str, codes)),
+            mode=mode,
+        )
+        summary = dict(line.split("=", 1) for line in evidence.read_text().splitlines())
+        arguments = web_sequence[1]()
+        urls = [arg for arg in arguments if arg.startswith("http://")]
+        times_file = Path(str(args_file) + ".times")
+        times = list(map(int, times_file.read_text().splitlines())) if times_file.exists() else []
+        return result, summary, urls, times
+
+    return invoke
+
+
+def web_plan_logs(paths, codes, times):
+    """모의 관측값을 계약 파서 입력으로 변환한다. 탐지 집계·정규화는 구현하지 않는다."""
+    from contracts.events import NginxAccessLogEvent
+
+    logs = []
+    for path, code, second in zip(paths, codes, times, strict=True):
+        timestamp = datetime.fromtimestamp(1790899200 + second, UTC).strftime(
+            "%d/%b/%Y:%H:%M:%S %z"
+        )
+        line = (
+            f'198.51.100.77 - - [{timestamp}] "GET /{path} HTTP/1.1" {code} 0 "-" "mock" 0.001 "-"'
+        )
+        event = NginxAccessLogEvent.parse_line(line)
+        assert event is not None
+        logs.append(event)
+    return logs
+
+
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_web_plan_thresholds_use_existing_rule(web_plan, delta):
+    from detection.rules import WEB_SCAN_PATH_THRESHOLD, evaluate_web_rules
+
+    paths = ["admin", "login", "dashboard", "api", "backup", "config"]
+    paths = paths[: WEB_SCAN_PATH_THRESHOLD + delta]
+    codes = [404] * len(paths)
+    result, summary, urls, times = web_plan(paths, codes)
+    assert result.returncode == 0, result.stderr
+    assert urls == ["http://127.0.0.1:8080/" + path for path in paths]
+    assert summary["attempted_requests"] == str(len(paths))
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times)) == (
+        (True, "WEB_DIRECTORY_SCANNING") if delta >= 0 else (False, None)
+    )
+
+
+@pytest.mark.parametrize("fail_delta", [-1, 0, 1])
+def test_web_plan_failure_paths_are_distinct_and_status_dependent(web_plan, fail_delta):
+    from detection.rules import (
+        WEB_SCAN_FAILURE_THRESHOLD,
+        WEB_SCAN_PATH_THRESHOLD,
+        evaluate_web_rules,
+    )
+
+    paths = ["admin", "login", "dashboard", "api", "backup", "config"][:WEB_SCAN_PATH_THRESHOLD]
+    failure_count = WEB_SCAN_FAILURE_THRESHOLD + fail_delta
+    codes = [401, 403, 404, 401][:failure_count] + [200] * (len(paths) - failure_count)
+    result, _, _, times = web_plan(paths, codes)
+    assert result.returncode == 0
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == (fail_delta >= 0)
+
+
+@pytest.mark.parametrize(
+    "paths,codes,expected",
+    [
+        (["admin", "login", "dashboard", "api", "health"], [404] * 5, False),
+        (["admin", "admin", "admin", "login", "dashboard"], [404] * 5, False),
+        (
+            ["admin", "login", "dashboard", "api", "backup", "admin", "admin"],
+            [404, 200, 301, 302, 500, 401, 403],
+            False,
+        ),
+        (
+            ["admin", "login", "dashboard", "api", "backup", "admin"],
+            [200, 401, 403, 301, 500, 404],
+            True,
+        ),
+        (
+            ["health", "images", "static", "assets", "robots.txt", "sitemap.xml", "uploads"],
+            [404] * 7,
+            False,
+        ),
+    ],
+)
+def test_web_plan_noise_and_duplicates_preserve_request_order(web_plan, paths, codes, expected):
+    from detection.rules import evaluate_web_rules
+
+    result, summary, urls, times = web_plan(paths, codes)
+    assert result.returncode == 0
+    assert [url.rsplit("/", 1)[-1] for url in urls] == paths
+    assert summary["observed_statuses"] == str(len(paths))
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == expected
+
+
+@pytest.mark.parametrize("interval,expected", [(0, True), (2, True), (3, False), (11, False)])
+def test_web_plan_intervals_use_virtual_time(web_plan, interval, expected):
+    from detection.rules import evaluate_web_rules
+
+    paths = ["admin", "login", "dashboard", "api", "backup"]
+    codes = [404] * len(paths)
+    result, _, _, times = web_plan(paths, codes, interval=interval)
+    assert result.returncode == 0
+    assert times == [i * interval for i in range(len(paths))]
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == expected
+
+
+@pytest.mark.parametrize("offset,expected", [(-1, True), (0, True), (1, False)])
+def test_web_plan_exact_window_boundary_from_observations(web_plan, offset, expected):
+    from detection.rules import WEB_SCAN_WINDOW_SECONDS, evaluate_web_rules
+
+    paths = ["admin", "login", "dashboard", "api", "backup"]
+    codes = [404] * len(paths)
+    result, _, _, times = web_plan(paths, codes)
+    assert result.returncode == 0
+    # 마지막 응답의 가상 지연만 바꿔 경계 양쪽을 비교한다. 실제 sleep과 운영 SLA 주장을 피한다.
+    times[-1] += WEB_SCAN_WINDOW_SECONDS + offset
+    assert evaluate_web_rules(web_plan_logs(paths, codes, times))[0] == expected
+
+
+def test_web_plan_clock_readers_never_see_pending_write(web_plan, web_scan):
+    """빈 임시 파일과 완성된 임시 파일 단계마다 별도 reader를 실행해 공개 전 값을 확인한다."""
+    paths = ["admin", "login", "dashboard", "api", "backup"]
+    result, _, _, times = web_plan(paths, [404] * len(paths), interval=3, mode="atomic_probe")
+    assert result.returncode == 0, result.stderr
+    assert times == [0, 3, 6, 9, 12]
+    reads = Path(str(web_scan[2]) + ".reads").read_text().splitlines()
+    assert reads == ["0", "0", "3", "3", "6", "6", "9", "9"]
+    assert not list(web_scan[2].parent.glob("argv.txt.clock.*"))
+
+
+def test_web_plan_normalization_and_collection_gap(web_plan):
+    from collector.cw_processor import NGINX_SUBSCRIPTION_FILTER_SPEC, matches_subscription_filter
+    from detection.rules import evaluate_web_rules
+
+    paths = ["admin", "login", "dashboard", "api", "backup", "admin"]
+    codes = [401, 403, 404, 200, 302, 404]
+    result, _, _, times = web_plan(paths, codes)
+    assert result.returncode == 0
+    logs = web_plan_logs(paths, codes, times)
+    assert evaluate_web_rules(logs) == (True, "WEB_DIRECTORY_SCANNING")
+    filtered = [
+        event
+        for event in logs
+        if matches_subscription_filter(
+            event.raw_message, NGINX_SUBSCRIPTION_FILTER_SPEC["filter_pattern"]
+        )
+    ]
+    assert evaluate_web_rules(filtered) == (False, None)
+    # 경로 입력은 제한된 합성 후보만 허용한다. 인코딩·쿼리 표현 차이는 파서 경계에서만 검증한다.
+    variants = ["admin", "%61dmin", "%2561dmin", "admin?sample=1", "admin"]
+    assert evaluate_web_rules(web_plan_logs(variants, [404] * 5, [0] * 5)) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--paths", ""],
+        ["--paths", "admin,"],
+        ["--paths", "admin,,login"],
+        ["--paths", "../admin"],
+        ["--paths", "admin?token=MOCK-SECRET"],
+        ["--paths", "Authorization: MOCK-SECRET"],
+        ["--paths", "unknown"],
+        ["--paths", ",".join(["admin"] * 21)],
+        ["--paths", "a" * 513],
+        ["--paths", "admin", "--candidates", "1"],
+        ["--paths", "admin", "--tool", "gobuster"],
+        ["--interval", "1", "--tool", "gobuster"],
+        ["--interval", "-1"],
+        ["--interval", "12"],
+        ["--interval", "0.5"],
+        ["--max-runtime", "0"],
+        ["--max-runtime", "301"],
+        ["--max-runtime", "1e2"],
+        ["--paths", "admin,login", "--interval", "11", "--max-runtime", "11"],
+        ["--MOCK-SECRET"],
+    ],
+)
+def test_web_plan_invalid_inputs_fail_before_side_effects(web_scan, options):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    result = run(
+        ["--url", "http://127.0.0.1", "--evidence", bash_path(evidence), *options, "--execute"]
+    )
+    assert result.returncode == 2
+    assert not evidence.exists() and not args_file.exists()
+    assert "MOCK-SECRET" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "mode,state,code,attempted",
+    [
+        ("deadline", "timeout", 124, 2),
+        ("signal", "interrupted", 143, 2),
+        ("sleep_failure", "tool_error", 42, 1),
+    ],
+)
+def test_web_plan_stops_and_cleans_owned_curl(
+    web_plan, web_sequence, web_scan, mode, state, code, attempted
+):
+    result, summary, urls, _ = web_plan(
+        ["admin", "login", "backup"], [404] * 3, mode=mode, interval=1
+    )
+    assert result.returncode == code
+    assert_web_distribution(
+        summary, [0, 0, 0, 0, 1, 0], planned=3, attempted=attempted, state=state, code=code
+    )
+    assert len(urls) == attempted
+    if web_scan[4].exists():
+        assert not web_sequence[3]()
+    temp = Path(str(web_scan[2]) + ".temp").read_text().strip()
+    assert not web_sequence[2](temp).exists()
 
 
 @pytest.fixture
@@ -1794,3 +2094,242 @@ def test_web_cleanup_keeps_unrelated_process_and_file(web_sequence, web_scan, ba
         )
         other.wait(timeout=3)
         other.stdout.close()
+
+
+def spray_spec(**overrides):
+    return dict(
+        hydra_spec(),
+        **dict(
+            candidates=1,
+            seconds=30,
+            accounts=["spraylab3", "spraylab1", "spraylab2"],
+            interval=2,
+            max_attempts=3,
+        )
+        | overrides,
+    )
+
+
+@pytest.mark.parametrize("options", [[], ["run"], ["plan", "--execute"]])
+def test_spray_dry_run_never_calls_docker(hydra_lab, monkeypatch, options, capsys):
+    host, _, _ = hydra_lab
+    monkeypatch.setattr(host.HydraLab, "preflight", lambda *_: pytest.fail("Docker called"))
+    assert host.main([*options, "--mode", "password-spraying"]) == 0
+    assert "Password Spraying" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--accounts", "root", "admin"],
+        ["--accounts", "spraylab1"],
+        ["--accounts", "spraylab1", "spraylab1"],
+        ["--accounts", "spraylab1", "spraylab11"],
+        ["--accounts", "spraylab1", "spraylab2;id"],
+        ["--accounts"],
+        ["--interval", "0"],
+        ["--interval", "11"],
+        ["--interval", "nan"],
+        ["--max-attempts", "1"],
+        ["--max-attempts", "11"],
+        ["--accounts", "spraylab1", "spraylab2", "spraylab3", "--max-attempts", "2"],
+        ["--seconds", "3", "--interval", "3"],
+        ["--seconds", "56"],
+        ["--target", "10.0.0.1"],
+        ["--target", "127.0.0.1"],
+        ["--port", "22"],
+        ["--tasks", "2"],
+        ["--candidates", "1"],
+        ["--password", "MOCK-SECRET"],
+    ],
+)
+def test_spray_cli_rejects_invalid_inputs_before_side_effects(hydra_lab, monkeypatch, options):
+    host, _, _ = hydra_lab
+    monkeypatch.setattr(host.HydraLab, "__init__", lambda *a, **k: pytest.fail("Lab created"))
+    with pytest.raises(SystemExit) as exc:
+        host.main(["run", "--execute", "--mode", "password-spraying", *options])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"accounts": []},
+        {"accounts": "spraylab1"},
+        {"accounts": [None, "spraylab1"]},
+        {"accounts": ["spraylab1", "spraylab1"]},
+        {"interval": True},
+        {"interval": 1.5},
+        {"max_attempts": 2},
+        {"max_attempts": 11},
+        {"candidates": 2},
+        {"target": "127.0.0.1;id"},
+    ],
+)
+def test_spray_worker_revalidates_stdin(hydra_lab, monkeypatch, override):
+    worker = hydra_lab[1]
+    monkeypatch.setattr(worker.shutil, "which", lambda *_: pytest.fail("External lookup"))
+    with pytest.raises(ValueError):
+        worker.execute(spray_spec(**override))
+
+
+@pytest.fixture
+def spray_process(hydra_lab, monkeypatch, tmp_path):
+    """실제 Hydra 폴백 없이 argv·private 후보를 관측하고 가상 시계로 순서와 중단을 검증한다."""
+    worker = hydra_lab[1]
+    original_temp = tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        worker.tempfile,
+        "TemporaryDirectory",
+        lambda **kw: original_temp(prefix="spray-", dir=tmp_path),
+    )
+    monkeypatch.setattr(worker.os, "umask", lambda *_: None)
+    monkeypatch.setattr(worker.shutil, "which", lambda *_: "mock-hydra")
+    monkeypatch.setattr(
+        worker.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a, 0, "Hydra MOCK\n-K\nSupported services: ssh\n", ""
+        ),
+    )
+    evidence = dict(calls=[], sleeps=[], now=0, mode="normal", secrets=[], folders=[])
+    monkeypatch.setattr(worker.time, "monotonic", lambda: evidence["now"])
+
+    def sleep(seconds):
+        evidence["sleeps"].append(seconds)
+        evidence["now"] += seconds
+
+    monkeypatch.setattr(worker.time, "sleep", sleep)
+
+    class FakeHydra:
+        pid = 7123
+        returncode = 0
+
+        def __init__(self, argv, cwd, stdout, **kwargs):
+            evidence["calls"].append((argv, evidence["now"]))
+            evidence["folders"].append(cwd)
+            secret = (cwd / "candidates").read_text()
+            evidence["secrets"].append(secret)
+            (cwd / "hydra.restore").write_text(secret)
+            assert kwargs["start_new_session"] is True
+            mode = evidence["mode"] if len(evidence["calls"]) == 2 else "normal"
+            if mode == "launch_error":
+                raise OSError("MOCK-SECRET launch error")
+            if mode == "deadline":
+                evidence["now"] = 30
+            if mode == "interrupt":
+                raise KeyboardInterrupt()
+            if mode == "failure":
+                self.returncode = 1
+            stdout.write(
+                {
+                    "success": "[2222][ssh] login: spraylab1 password: " + secret,
+                    "failure": "[ERROR] could not connect " + secret,
+                    "unconfirmed": "",
+                }.get(mode, "0 valid passwords found")
+            )
+            stdout.flush()
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(worker.subprocess, "Popen", FakeHydra)
+    return worker, evidence
+
+
+def test_spray_order_shared_secret_gap_and_cleanup(spray_process):
+    worker, evidence = spray_process
+    result = worker.execute(spray_spec())
+    assert result["state"] == "exhausted_without_success"
+    assert result["attempted_accounts"] == 3
+    assert evidence["sleeps"] == [2, 2]
+    assert len(set(evidence["secrets"])) == 1
+    for (argv, when), account, expected_time in zip(
+        evidence["calls"], spray_spec()["accounts"], [0, 2, 4], strict=True
+    ):
+        candidate_path = argv[argv.index("-P") + 1]
+        assert argv == [
+            "mock-hydra",
+            "-I",
+            "-K",
+            "-f",
+            "-l",
+            account,
+            "-P",
+            candidate_path,
+            "-t",
+            "1",
+            "-w",
+            "3",
+            "-s",
+            "2222",
+            "192.0.2.2",
+            "ssh",
+        ]
+        assert when == expected_time
+        assert evidence["secrets"][0].strip() not in json.dumps(argv) + json.dumps(result)
+    assert all(not folder.exists() for folder in evidence["folders"])
+
+
+@pytest.mark.parametrize(
+    "mode,state",
+    [
+        ("failure", "connection_error"),
+        ("success", "unexpected_success"),
+        ("unconfirmed", "unconfirmed"),
+        ("deadline", "timeout"),
+        ("launch_error", None),
+        ("interrupt", None),
+    ],
+)
+def test_spray_stops_after_partial_failure(spray_process, mode, state):
+    worker, evidence = spray_process
+    evidence["mode"] = mode
+    if state is None:
+        with pytest.raises((OSError, KeyboardInterrupt)):
+            worker.execute(spray_spec())
+    else:
+        result = worker.execute(spray_spec())
+        assert result["state"] == state
+        assert result["attempted_accounts"] == 2
+        for secret in evidence["secrets"]:
+            assert secret.strip() not in json.dumps(result)
+    assert len(evidence["calls"]) == 2
+    assert all(not folder.exists() for folder in evidence["folders"])
+
+
+def test_spray_maximum_account_limit_has_no_extra_round(spray_process):
+    worker, evidence = spray_process
+    result = worker.execute(
+        spray_spec(
+            accounts=[f"spraylab{i}" for i in range(1, 11)], interval=1, max_attempts=10, seconds=55
+        )
+    )
+    assert result["attempted_accounts"] == 10
+    assert len(evidence["calls"]) == 10 and len(evidence["sleeps"]) == 9
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_spray_server_evidence_requires_each_requested_account(
+    hydra_lab, monkeypatch, tmp_path, complete
+):
+    host, _, _ = hydra_lab
+    lab = host.HydraLab(tmp_path / "spray", 1, accounts=["spraylab2", "spraylab1"])
+    accounts = ["spraylab2", "spraylab1"] if complete else ["spraylab2", "spraylab2"]
+    log = "".join(
+        f"Failed password for invalid user {a} from 192.0.2.3 port 4000 ssh2\n" for a in accounts
+    )
+    log += "Failed password for invalid user spraylab1 from 192.0.2.4 port 4000 ssh2\n"
+    monkeypatch.setattr(lab, "call", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", log))
+    if complete:
+        assert lab.server_evidence("server", "192.0.2.3") == (2, 0)
+    else:
+        with pytest.raises(RuntimeError, match="계정별"):
+            lab.server_evidence("server", "192.0.2.3")
+    assert (lab.output / "sshd.log").read_text() == log
+
+
+def test_spray_shell_syntax(bash):
+    script = Path(__file__).resolve().parents[2] / "network/password_spraying.sh"
+    result = subprocess.run([bash, "-n", script.as_posix()], capture_output=True, check=False)
+    assert result.returncode == 0

@@ -14,6 +14,8 @@ Constraints:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from contracts.events import SyslogAuthEvent
 from contracts.incident import IncidentReport
 from detection.rules import evaluate_rules
@@ -22,6 +24,24 @@ _DEFAULT_TARGET_IDENTIFIER = "i-0abcd1234ef567890"
 _DEFAULT_INCIDENT_ID = "INC-SIG-SSH-AUTH-001"
 
 _RULE_METADATA = {
+    "PATH_TRAVERSAL": {
+        "attack_type": "Web Path Traversal",
+        "mitre_id": "T1595.002",
+        "risk_level": "HIGH",
+        "action_required": "BLOCK_WAF",
+    },
+    "SENSITIVE_FILE_PROBING": {
+        "attack_type": "Web Sensitive File Probing",
+        "mitre_id": "T1595.003",
+        "risk_level": "HIGH",
+        "action_required": "BLOCK_WAF",
+    },
+    "WEB_DIRECTORY_SCANNING": {
+        "attack_type": "Web Directory Scanning",
+        "mitre_id": "T1595.003",
+        "risk_level": "HIGH",
+        "action_required": "BLOCK_WAF",
+    },
     "SSH_BRUTE_FORCE": {
         "attack_type": "SSH Brute Force",
         "mitre_id": "T1110.001",
@@ -81,9 +101,9 @@ def map_threat_to_incident(
     is_threat: bool,
     rule_name: str | None,
     source_ip: str,
-    target_accounts: tuple[str, ...],
+    target_accounts: Sequence[str] = (),
     target_identifier: str = _DEFAULT_TARGET_IDENTIFIER,
-    incident_id: str = _DEFAULT_INCIDENT_ID,
+    incident_id: str | None = None,
 ) -> IncidentReport:
     """누적 윈도우 또는 로컬 룰의 위협 판정을 표준 IncidentReport로 변환한다.
 
@@ -93,9 +113,13 @@ def map_threat_to_incident(
         판정 경로와 무관하게 이 함수만 IncidentReport 생성 책임을 갖는다.
 
     Constraints:
-        - ``rule_name``은 ``SSH_BRUTE_FORCE`` 또는 ``SSH_PASSWORD_SPRAYING``이어야 한다.
-        - ``target_accounts``는 최소 한 개의 계정을 포함해야 한다.
+        - ``rule_name``은 기존 SSH 2종 또는 Web L7 3종 시그니처 룰이어야 한다.
+        - ``target_accounts``는 SSH에서는 필수이며 Web에서는 빈 시퀀스를 허용한다.
+          URI를 계정으로 대체하지 않으며 계정 문자열의 입력 순서를 보존한다.
+          문자열 자체는 계정 목록이 아니므로 거부한다. 누적 목록 수집은 호출부가 담당한다.
+        - Password Spraying은 MEDIUM / BLOCK_IP_ONLY이며 EC2 격리를 요청하지 않는다.
         - IP와 EC2 식별자의 최종 형식 검증은 보호된 IncidentReport 계약에 위임한다.
+        - 기본 사고 ID와 타깃 ID는 데모용이며 운영 호출부는 고유 사고 ID와 실제 EC2 ID를 제공한다.
 
     Side-effects / Edge-cases:
         - 외부 API를 호출하지 않으며 입력이 같으면 동일한 보고서를 반환한다.
@@ -107,20 +131,38 @@ def map_threat_to_incident(
     metadata = _RULE_METADATA.get(rule_name)
     if metadata is None:
         raise ValueError(f"지원하지 않는 탐지 룰입니다: {rule_name}")
-    if not target_accounts:
+    if not target_accounts and metadata["action_required"] != "BLOCK_WAF":
         raise ValueError("위협 보고서에는 최소 한 개의 대상 계정이 필요합니다.")
+    if isinstance(target_accounts, (str, bytes)) or any(
+        not isinstance(account, str) or not account.strip() for account in target_accounts
+    ):
+        # 계정 문자열을 문자 단위 목록으로 오인하거나 빈 계정을 증거로 승격하는 것을 방지한다.
+        # 식별자 변형으로 증거가 달라지지 않도록 유효 계정은 정규화 없이 보존한다.
+        raise ValueError("대상 계정은 비어 있지 않은 문자열 목록이어야 합니다.")
 
     unique_target_accounts = tuple(dict.fromkeys(target_accounts))
 
     return IncidentReport(
-        incident_id=incident_id,
+        incident_id=(
+            incident_id
+            if incident_id is not None
+            else (
+                "INC-SIG-WEB-L7-001"
+                if metadata["action_required"] == "BLOCK_WAF"
+                else _DEFAULT_INCIDENT_ID
+            )
+        ),
         attack_type=metadata["attack_type"],
         mitre_id=metadata["mitre_id"],
         risk_level=metadata["risk_level"],
         source_ip=source_ip,
         target_identifier=target_identifier,
         target_accounts=unique_target_accounts,
-        summary_ko=_build_summary(metadata["mitre_id"], source_ip, unique_target_accounts),
+        summary_ko=(
+            _build_web_summary(rule_name, source_ip)
+            if metadata["action_required"] == "BLOCK_WAF"
+            else _build_summary(metadata["mitre_id"], source_ip, unique_target_accounts)
+        ),
         action_required=metadata["action_required"],
         recommendations=_build_recommendations(
             metadata["mitre_id"],
@@ -170,8 +212,18 @@ def _build_recommendations(
     source_ip: str,
     target_identifier: str,
 ) -> tuple[str, ...]:
+    if mitre_id in ("T1595.002", "T1595.003"):
+        # Web 탐색 정황만으로 침해 성공을 단정하지 않고 HTTP 차단과 증거 확인을 권고한다.
+        # WAF IPSet 변경은 플랫폼 계층이 집행하며 이 매퍼는 외부 API를 호출하지 않는다.
+        return (
+            f"출발지 IP {source_ip}/32를 WAF IPSet에 등록하여 HTTP·HTTPS 접근 차단",
+            "Nginx 원문 로그와 WAF 차단 결과를 확인하고 민감 자원 노출 여부 점검",
+            "공유 출구 IP의 정상 사용자 영향 및 오탐 여부 확인",
+        )
     common = (
-        f"AWS WAF IPSet에 {source_ip}/32를 등록해 반복 접근을 차단",
+        # SSH는 WAF의 HTTP 검사 대상이 아니므로 권고를 L4 차단 요구로 표현한다.
+        # 실제 차단 엔진의 BLOCK_IP_ONLY 집행 방식은 플랫폼 담당이 정합화해야 한다.
+        f"출발지 IP {source_ip}/32의 SSH 접근을 차단하는 네트워크 정책 적용",
         "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
     )
     if mitre_id == "T1110.001":
@@ -180,3 +232,16 @@ def _build_recommendations(
             f"타깃 EC2 인스턴스({target_identifier})를 Quarantine 보안 그룹으로 격리",
         )
     return common
+
+
+def _build_web_summary(rule_name: str, source_ip: str) -> str:
+    """탐색 시그니처를 침해 성공으로 오인하지 않도록 Web 정황과 조치 요청을 요약한다."""
+    descriptions = {
+        "PATH_TRAVERSAL": "경로 탈출 시도",
+        "SENSITIVE_FILE_PROBING": "민감 파일 탐색",
+        "WEB_DIRECTORY_SCANNING": "웹 디렉터리 열거",
+    }
+    return (
+        f"관측 출발지 IP {source_ip}에서 {descriptions[rule_name]} 정황이 감지되었습니다. "
+        "WAF IP 차단을 요청하며, 실제 차단 결과와 자원 노출 여부는 별도 확인이 필요합니다."
+    )

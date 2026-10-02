@@ -683,3 +683,31 @@ def test_out_of_order_upper_bound_filter_prevents_false_positive(
     )
     assert is_threat is False
     assert rule is None
+
+
+def test_threat_check_result_detected_accounts(mocked_dynamodb_table: Any) -> None:
+    """Password Spraying 및 Brute Force 시 ThreatCheckResult에 detected_accounts가 보존되는지 검증.
+
+    Why:
+        스프레잉 공격 시 복수의 공격 대상 계정이 누실 없이 전달되어야 IncidentReport의
+        데이터 충실도(Fidelity)가 유지되고 기존 3-튜플 언패킹 하위 호환성이 보장됨을 증빙함.
+    """
+    table_name = "CloudShield-AuthFailure-Window"
+    source_ip = "198.51.100.222"
+    auth_window = AuthFailureWindow(table_name=table_name, window_seconds=300)
+
+    # 1. Password Spraying (root, admin, deploy 3개 계정)
+    auth_window.record_failure(source_ip=source_ip, username="root", timestamp_epoch=100.0)
+    auth_window.record_failure(source_ip=source_ip, username="admin", timestamp_epoch=101.0)
+    auth_window.record_failure(source_ip=source_ip, username="deploy", timestamp_epoch=102.0)
+
+    res = auth_window.check_threat(source_ip=source_ip, username="deploy", timestamp_epoch=103.0)
+    assert res.is_threat is True
+    assert res.rule_name == "SSH_PASSWORD_SPRAYING"
+    assert set(res.detected_accounts) == {"admin", "deploy", "root"}
+
+    # 3-튜플 언패킹 하위 호환성 검증
+    is_threat, rule, key = res
+    assert is_threat is True
+    assert rule == "SSH_PASSWORD_SPRAYING"
+    assert key.startswith("SPRAY#198.51.100.222#")

@@ -13,6 +13,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 
+from hydra_worker import validate_spray
 from run import LABEL, ROOT, Lab
 
 IMAGE = "cloudshield-network-hydra-lab:local"
@@ -24,13 +25,22 @@ def limits(candidates, seconds, tasks, port):
 
 
 class HydraLab(Lab):
-    def __init__(self, output, candidates=6, seconds=30):
+    def __init__(
+        self, output, candidates=6, seconds=30, *, accounts=None, interval=1, max_attempts=10
+    ):
         limits(candidates, seconds, 1, 2222)
+        if accounts is not None:
+            validate_spray(accounts, interval, max_attempts, seconds)
+            if candidates != 1:
+                raise ValueError("스프레이는 후보 하나만 허용")
         super().__init__(output)
         self.output.chmod(0o700)
         self.candidates = candidates
         self.seconds = seconds
         self.image_id = None
+        self.accounts = accounts
+        self.interval = interval
+        self.max_attempts = max_attempts
 
     def preserve(self, client):
         super().preserve(client)
@@ -128,18 +138,30 @@ class HydraLab(Lab):
             raise RuntimeError("실제 서버 로그 확보 실패")
         text = logs.stdout + logs.stderr
         (self.output / "sshd.log").write_text(text, encoding="utf-8")
-        failed = re.findall(
-            r"Failed password for hydralab from " + re.escape(client_ip) + r" port (\d+) ssh2", text
+        accounts = self.accounts or ["hydralab"]
+        matches = re.findall(
+            r"Failed password for (?:invalid user )?("
+            + "|".join(re.escape(a) for a in accounts)
+            + r") from "
+            + re.escape(client_ip)
+            + r" port (\d+) ssh2",
+            text,
         )
+        failed = [port for _, port in matches]
         accepted = re.findall(r"Accepted \S+ for ", text)
         self.events.append(
             {
                 "server_failed_password_count": len(failed),
                 "server_failure_source_ports": failed,
+                "server_failed_accounts": sorted({account for account, _ in matches}),
                 "server_accepted_count": len(accepted),
                 "log_sink": "sshd stderr",
             }
         )
+        # Hydra 종료 성공만으로 모든 계정 실패를 주장하지 않는다. 소유 서버 원문에서
+        # 요청한 계정 모두의 관측을 요구하며, 누락되면 증거를 남긴 채 실행 실패로 처리한다.
+        if self.accounts and {account for account, _ in matches} != set(self.accounts):
+            raise RuntimeError("스프레이 계정별 서버 실패 로그 미확인")
         return len(failed), len(accepted)
 
     def capture_hydra(self, server, client, target, client_ip, interface):
@@ -188,6 +210,13 @@ class HydraLab(Lab):
                     "seconds": self.seconds,
                     "run_id": self.run_id,
                 }
+                if self.accounts is not None:
+                    spec.update(
+                        accounts=self.accounts,
+                        interval=self.interval,
+                        max_attempts=self.max_attempts,
+                    )
+                self.events.append({"hydra_plan": spec})
                 result = self.call(
                     "exec",
                     "-i",
@@ -213,7 +242,11 @@ class HydraLab(Lab):
                     raise RuntimeError("예상하지 못한 인증 성공: 실험 중단, 서버 로그 확인 필요")
                 if code not in (0, 124):
                     raise RuntimeError("캡처 실행 오류")
-                if hydra["state"] != "exhausted_without_success" or not failures:
+                if (
+                    result.returncode
+                    or hydra["state"] != "exhausted_without_success"
+                    or not failures
+                ):
                     raise RuntimeError("인증 실패 재현 미확인: Hydra 상태와 서버 로그 확인")
             finally:
                 # 자체 타이머의 flush를 기다린다. CLI 강제 종료 시 보존은 미보장이다.
@@ -306,12 +339,33 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", nargs="?", choices=["plan", "build", "run"], default="plan")
     parser.add_argument("--execute", action="store_true")
-    parser.add_argument("--candidates", type=int, default=6)
+    parser.add_argument("--candidates", type=int)
+    parser.add_argument(
+        "--mode", choices=["brute-force", "password-spraying"], default="brute-force"
+    )
+    parser.add_argument("--target", choices=["owned-docker"], default="owned-docker")
+    parser.add_argument("--accounts", nargs="+")
+    parser.add_argument("--interval", type=int)
+    parser.add_argument("--max-attempts", type=int)
     parser.add_argument("--seconds", type=int, default=30)
     parser.add_argument("--tasks", type=int, default=1)
     parser.add_argument("--port", type=int, default=2222)
     args = parser.parse_args(argv)
     try:
+        if args.mode == "password-spraying":
+            if args.candidates is not None:
+                raise ValueError("스프레이에서 --candidates 지정 불가: 동일 후보 하나 고정")
+            args.accounts = (
+                args.accounts if args.accounts is not None else ["spraylab1", "spraylab2"]
+            )
+            args.interval = args.interval if args.interval is not None else 1
+            args.max_attempts = args.max_attempts if args.max_attempts is not None else 10
+            validate_spray(args.accounts, args.interval, args.max_attempts, args.seconds)
+            args.candidates = 1
+        else:
+            if any(v is not None for v in (args.accounts, args.interval, args.max_attempts)):
+                raise ValueError("계정 목록/간격/실행 한도는 password-spraying 모드 전용")
+            args.candidates = args.candidates if args.candidates is not None else 6
         limits(args.candidates, args.seconds, args.tasks, args.port)
     except ValueError as exc:
         parser.error(str(exc))
@@ -320,13 +374,25 @@ def main(argv=None):
             f"DRY RUN: 로컬 Docker 전용 서버, 2222, 후보 {args.candidates}, 동시성 1, "
             f"Hydra {args.seconds}초; 실제 실행은 run --execute"
         )
+        if args.accounts:
+            print(
+                f"Password Spraying: 합성 미존재 계정 {len(args.accounts)}개 순차, "
+                f"간격 {args.interval}초, 한도 {args.max_attempts}회"
+            )
         return 0
     output = (
         ROOT
         / "network/lab/runs"
         / (datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-hydra-") + uuid.uuid4().hex[:8])
     )
-    lab = HydraLab(output, args.candidates, args.seconds)
+    lab = HydraLab(
+        output,
+        args.candidates,
+        args.seconds,
+        accounts=args.accounts,
+        interval=args.interval or 1,
+        max_attempts=args.max_attempts or 10,
+    )
     status, error = 1, None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
