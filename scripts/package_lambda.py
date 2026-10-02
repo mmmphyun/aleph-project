@@ -64,8 +64,11 @@ def fetch_linux_dependencies(
     except FileNotFoundError:
         pass
 
-    # 2순위: pip install --platform manylinux2014_x86_64 (표준 pip fallback)
+    # 2순위: pip install (표준 pip fallback)
     try:
+        pip_platform = (
+            "manylinux2014_x86_64" if platform == "x86_64-unknown-linux-gnu" else platform
+        )
         cmd_pip = [
             sys.executable,
             "-m",
@@ -74,7 +77,7 @@ def fetch_linux_dependencies(
             "--target",
             str(target_dir),
             "--platform",
-            "manylinux2014_x86_64",
+            pip_platform,
             "--python-version",
             python_version,
             "--only-binary=:all:",
