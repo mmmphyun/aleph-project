@@ -3,6 +3,7 @@
 
 from collector.cw_processor import (
     LOG_GROUP_STREAM_MAPPING,
+    NGINX_FAILURE_STATUS_CODES,
     NGINX_SUBSCRIPTION_FILTER_SPEC,
     SUBSCRIPTION_FILTER_SPEC,
     SUBSCRIPTION_FILTER_SPECS,
@@ -16,6 +17,7 @@ from collector.cw_processor import (
 __all__ = [
     "LOG_GROUP_STREAM_MAPPING",
     "NGINX_SUBSCRIPTION_FILTER_SPEC",
+    "NGINX_FAILURE_STATUS_CODES",
     "SUBSCRIPTION_FILTER_SPEC",
     "SUBSCRIPTION_FILTER_SPECS",
     "decode_cw_logs",
