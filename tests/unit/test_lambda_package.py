@@ -27,6 +27,7 @@ if str(root_dir) not in sys.path:
 from scripts.package_lambda import (  # noqa: E402
     RUNTIME_DEPENDENCIES,
     build_lambda_bundle,
+    fetch_linux_dependencies,
     validate_linux_native_binaries,
 )
 
@@ -215,3 +216,55 @@ def test_build_lambda_bundle_fails_closed_on_invalid_platform(tmp_path: Path) ->
             output_dir=out_dir,
             target_platform="invalid-non-existent-platform",
         )
+
+
+def test_fetch_linux_dependencies_pip_fallback_forwards_custom_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv 실패 후 pip fallback 시 임의/무효 플랫폼이 하드코딩되지 않고 그대로 전달되는지 검증."""
+    captured_commands: list[list[str]] = []
+
+    def mock_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_commands.append(cmd)
+        # uv와 pip 모두 실패 시뮬레이션
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="mock error")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    success = fetch_linux_dependencies(
+        target_dir=tmp_path,
+        platform="invalid-non-existent-platform",
+    )
+    assert not success
+    assert len(captured_commands) == 2
+
+    # 1순위 uv: --python-platform 에 입력 플랫폼 전달
+    uv_cmd = captured_commands[0]
+    assert uv_cmd[uv_cmd.index("--python-platform") + 1] == "invalid-non-existent-platform"
+
+    # 2순위 pip: --platform 에 입력 플랫폼 전달 (manylinux 하드코딩 방지)
+    pip_cmd = captured_commands[1]
+    assert pip_cmd[pip_cmd.index("--platform") + 1] == "invalid-non-existent-platform"
+
+
+def test_fetch_linux_dependencies_pip_fallback_maps_default_linux_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """기본 Linux 타깃(x86_64-unknown-linux-gnu)일 때 manylinux2014_x86_64로 매핑되는지 검증."""
+    captured_commands: list[list[str]] = []
+
+    def mock_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_commands.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="mock error")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    success = fetch_linux_dependencies(
+        target_dir=tmp_path,
+        platform="x86_64-unknown-linux-gnu",
+    )
+    assert not success
+    assert len(captured_commands) == 2
+
+    pip_cmd = captured_commands[1]
+    assert pip_cmd[pip_cmd.index("--platform") + 1] == "manylinux2014_x86_64"

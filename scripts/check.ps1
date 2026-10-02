@@ -41,9 +41,15 @@ if ($wrongTests) {
 
 Write-Host "[2/5] Ruff Lint 검사 실행 중..." -ForegroundColor Cyan
 Run-Tool "ruff" @("check", ".")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
 
 Write-Host "[3/5] Ruff Format 검사 실행 중..." -ForegroundColor Cyan
 Run-Tool "ruff" @("format", "--check", ".")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
 
 Write-Host "[4/5] Pytest 단위 및 계약 테스트 실행 중..." -ForegroundColor Cyan
 if ($hasUv) {
@@ -52,6 +58,9 @@ if ($hasUv) {
     & ".\.venv\Scripts\python.exe" -m pytest -v
 } else {
     python -m pytest -v
+}
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
 }
 
 Write-Host "`n[성공] 모든 로컬 품질 및 계약 검증을 통과했습니다." -ForegroundColor Green
