@@ -105,8 +105,8 @@ def build_slack_payload(
     # 사후 권고 조치 목록 포맷팅
     # Why: recommendations가 없을 때 고정 문구 "대응 완료"를 표시하면,
     #      BLOCK_IP_ONLY 등 WAF 차단 실패 시 현황 섹션의 ❌와 모순되는 상태를 노출함.
-    #      remediation_result가 전달된 경우에는 실제 WAF 차단 결과를 참조하여
-    #      관제 채널에 일관성 있는 권고 문구를 동적으로 매핑함.
+    #      지시된 모든 계층의 결과를 확인해야 부분 성공을 전체 완료로 오인하지 않는다.
+    # Constraints / Edge-cases: 결과 키 누락은 미완료이며 결과 미전달은 성공 근거가 아니다.
     if report.recommendations:
         rec_lines = [f"{idx + 1}. {rec}" for idx, rec in enumerate(report.recommendations)]
         recommendations_text = "\n".join(rec_lines)
@@ -116,13 +116,23 @@ def build_slack_payload(
             "BLOCK_WAF",
             "BLOCK_IP_ONLY",
         )
+        failed_actions = []
         if req_waf and not bool(remediation_result.get("waf_blocked", False)):
-            # WAF 차단이 지시되었으나 실패한 경우 — "대응 완료" 문구 오표시 방지
-            recommendations_text = "수동 WAF IPSet 차단 및 인프라 점검 권고 (차단 실패)"
+            failed_actions.append("수동 WAF IPSet 차단 및 인프라 점검 권고 (차단 실패)")
+        if report.action_required in ("BLOCK_AND_QUARANTINE", "QUARANTINE_EC2") and not bool(
+            remediation_result.get("quarantine_applied", False)
+        ):
+            failed_actions.append("수동 EC2 네트워크 격리 및 보안 그룹 점검 권고 (격리 미완료)")
+        if report.action_required == "REVOKE_IAM_SESSION" and not bool(
+            remediation_result.get("iam_revoked", False)
+        ):
+            failed_actions.append("수동 IAM 세션 무효화 및 권한 점검 권고 (세션 무효화 미완료)")
+        if failed_actions:
+            recommendations_text = "\n".join(failed_actions)
         else:
             recommendations_text = "별도 권고 조치 없음 (대응 완료)"
     else:
-        recommendations_text = "별도 권고 조치 없음 (대응 완료)"
+        recommendations_text = "별도 권고 조치 없음 (대응 결과 미확인)"
 
     # 라벨 및 마크다운을 포함한 최종 표시 문자열 상한 적용 (Slack 규격 및 프로젝트 500자 기준 준수)
     header_text = truncate_text(
