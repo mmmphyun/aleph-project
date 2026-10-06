@@ -386,7 +386,11 @@ def build_waf_slack_payload(
     )
 
     waf_target_name = ipset_name or DEFAULT_WAF_IPSET_NAME
-    if remediation_result is not None:
+    # 강제 카드 선택은 표시 형식만 변경하며, 미지시된 WAF 집행을 실패로 판정하지 않는다.
+    req_waf = report.action_required in ("BLOCK_WAF", "BLOCK_IP_ONLY", "BLOCK_AND_QUARANTINE")
+    if not req_waf:
+        waf_status = f"ℹ️ AWS WAFv2 IPSet `{waf_target_name}` 차단 미대상"
+    elif remediation_result is not None:
         waf_blocked = bool(remediation_result.get("waf_blocked", False))
         if waf_blocked:
             waf_status = f"✅ AWS WAFv2 IPSet `{waf_target_name}` /32 등록 차단 집행 완료"
@@ -414,6 +418,8 @@ def build_waf_slack_payload(
     if report.recommendations:
         rec_lines = [f"{idx + 1}. {rec}" for idx, rec in enumerate(report.recommendations)]
         recommendations_text = "\n".join(rec_lines)
+    elif not req_waf:
+        recommendations_text = "별도 WAF 권고 조치 없음 (차단 미대상)"
     elif remediation_result is not None:
         waf_blocked = bool(remediation_result.get("waf_blocked", False))
         if waf_blocked:
@@ -568,9 +574,8 @@ def send_slack_alert(
         return False
 
     try:
-        is_waf = (
-            use_waf_card if use_waf_card is not None else (report.action_required == "BLOCK_WAF")
-        )
+        # BLOCK_IP_ONLY는 SSH 대응이므로 웹 전용 카드는 BLOCK_WAF에만 자동 선택한다.
+        is_waf = use_waf_card if use_waf_card is not None else report.action_required == "BLOCK_WAF"
         if is_waf:
             payload = build_waf_slack_payload(
                 report, remediation_result=remediation_result, ipset_name=ipset_name
