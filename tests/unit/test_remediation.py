@@ -1014,3 +1014,226 @@ def test_threat_orchestrator_slack_env_var_fallback(
         assert res["slack_notified"] is True
         mock_send_slack.assert_called_once()
         assert mock_send_slack.call_args.kwargs["webhook_url"] == env_webhook
+
+
+def _make_cw_nginx_event(
+    log_messages: list[str],
+    instance_id: str,
+    base_timestamp_ms: int = 1727524320000,
+) -> dict[str, Any]:
+    """Web L7 오케스트레이터 파이프라인 검증용 CloudWatch Logs Nginx 페이로드 생성 헬퍼."""
+    events = [
+        CloudWatchLogEvent(
+            id=f"evt-nginx-{idx}",
+            timestamp=base_timestamp_ms + (idx * 1000),
+            message=msg,
+        )
+        for idx, msg in enumerate(log_messages)
+    ]
+    payload = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream=instance_id,
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=events,
+    )
+    return {"awslogs": {"data": payload.to_awslogs_data()}}
+
+
+def test_threat_orchestrator_web_path_traversal(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """Nginx L7 경로 탈출(PATH_TRAVERSAL) 공격 시 WAF IPSet 원자적 차단 및 Slack 전파 검증."""
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.201"
+    messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:00 +0000] "GET /../etc/passwd HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+    ]
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True) as mock_send_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res["processed_events"] == 1
+        assert res["threats_detected"] == ["PATH_TRAVERSAL"]
+        assert len(res["remediation_results"]) == 1
+        assert res["remediation_results"][0]["waf_blocked"] is True
+        assert res["remediation_results"][0]["quarantine_applied"] is False
+        assert res["slack_notified"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+        mock_send_slack.assert_called_once()
+        sent_report = mock_send_slack.call_args.kwargs["report"]
+        assert sent_report.action_required == "BLOCK_WAF"
+        assert sent_report.attack_type == "Web Path Traversal"
+
+
+def test_threat_orchestrator_web_sensitive_file_probing(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """Nginx L7 민감 파일 탐색(SENSITIVE_FILE_PROBING) 공격 시 WAF IPSet 원자적 차단 검증."""
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.202"
+    messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:00 +0000] "GET /.env HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+    ]
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res["processed_events"] == 1
+        assert res["threats_detected"] == ["SENSITIVE_FILE_PROBING"]
+        assert res["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_threat_orchestrator_web_directory_scanning(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """Nginx L7 디렉터리 스캔(WEB_DIRECTORY_SCANNING) 공격 시 WAF 차단 검증."""
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.203"
+    paths = ["/admin", "/login", "/dashboard", "/api", "/private"]
+    statuses = [401, 403, 404, 200, 302]
+    messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{idx} +0000] "GET {path} HTTP/1.1" '
+            f'{status} 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, (path, status) in enumerate(zip(paths, statuses, strict=True))
+    ]
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res["processed_events"] == 5
+        assert res["threats_detected"] == ["WEB_DIRECTORY_SCANNING"]
+        assert res["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_threat_orchestrator_web_normal_traffic_no_threat(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """정상 웹 트래픽 인입 시 위협 미탐지 및 차단 생략 검증."""
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    client_ip = "198.51.100.204"
+    messages = [
+        (
+            f'{client_ip} - - [28/Sep/2026:11:52:00 +0000] "GET /health HTTP/1.1" '
+            '200 15 "-" "curl/8.0" 0.001 "-"'
+        ),
+        (
+            f'{client_ip} - - [28/Sep/2026:11:52:01 +0000] "GET /index.html HTTP/1.1" '
+            '200 1024 "-" "curl/8.0" 0.002 "-"'
+        ),
+    ]
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert") as mock_send_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res["processed_events"] == 2
+        assert res["threats_detected"] == []
+        assert res["remediation_results"] == []
+        assert res["slack_notified"] is False
+        mock_send_slack.assert_not_called()
+
+
+def test_threat_orchestrator_web_slack_fault_isolation(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """Web L7 WAF 차단 성공 후 Slack Webhook 예외 발생 시 결함 격리(차단 유지) 검증."""
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.205"
+    messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:00 +0000] "GET /.env HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+    ]
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch(
+        "remediation.orchestrator.send_slack_alert",
+        side_effect=RuntimeError("Slack API timeout"),
+    ):
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/FAIL",
+        )
+
+        assert res["threats_detected"] == ["SENSITIVE_FILE_PROBING"]
+        assert res["remediation_results"][0]["waf_blocked"] is True
+        assert res["slack_notified"] is False
+
+        # WAF IPSet에는 정상 차단 유지
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]

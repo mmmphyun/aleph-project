@@ -19,10 +19,17 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import defaultdict
 from typing import Any
 
-from contracts.events import CloudWatchLogsPayload, SyslogAuthEvent
+from collector.cw_processor import LOG_GROUP_STREAM_MAPPING
+from contracts.events import (
+    CloudWatchLogsPayload,
+    NginxAccessLogEvent,
+    SyslogAuthEvent,
+)
 from detection.incident_mapper import map_threat_to_incident
+from detection.rules import evaluate_web_rules
 from remediation.auth_window import AuthFailureWindow
 from remediation.remediation import RemediationResult, apply_remediation
 from reporter.slack_notifier import send_slack_alert
@@ -117,6 +124,100 @@ def threat_orchestrator_handler(
         else os.getenv("TARGET_INSTANCE_ID", DEFAULT_FALLBACK_INSTANCE_ID)
     )
 
+    # 스트림 유형 식별 (auth vs nginx)
+    stream_type = LOG_GROUP_STREAM_MAPPING.get(payload.logGroup)
+    if stream_type is None:
+        for log_ev in payload.logEvents:
+            if SyslogAuthEvent.parse_line(log_ev.message) is not None:
+                stream_type = "auth"
+                break
+            if NginxAccessLogEvent.parse_line(log_ev.message) is not None:
+                stream_type = "nginx"
+                break
+        if stream_type is None:
+            stream_type = "auth"
+
+    # -------------------------------------------------------------------------
+    # 분기 1: Nginx L7 웹 접근 로그 처리 파이프라인
+    # -------------------------------------------------------------------------
+    if stream_type == "nginx":
+        nginx_events_by_ip: dict[str, list[NginxAccessLogEvent]] = defaultdict(list)
+        for log_event in payload.logEvents:
+            parsed_nginx = NginxAccessLogEvent.parse_line(log_event.message)
+            if not parsed_nginx:
+                continue
+            response["processed_events"] += 1
+            nginx_events_by_ip[parsed_nginx.source_ip].append(parsed_nginx)
+
+        slack_notification_results: list[bool] = []
+        for source_ip, ip_logs in nginx_events_by_ip.items():
+            is_threat, rule_name = evaluate_web_rules(ip_logs)
+            if not is_threat or not rule_name:
+                continue
+
+            response["threats_detected"].append(rule_name)
+
+            incident_id = f"INC-{int(time.time())}-{source_ip.replace('.', '')[-4:]}"
+            report = map_threat_to_incident(
+                is_threat=True,
+                rule_name=rule_name,
+                source_ip=source_ip,
+                target_accounts=(),
+                target_identifier=target_instance_id,
+                incident_id=incident_id,
+            )
+            response["incidents"].append(report.model_dump())
+
+            # WAF IPSet 차단 실행 (L7 원자적 차단)
+            remediation_result = apply_remediation(
+                report=report,
+                ec2_client=ec2_client,
+                waf_client=waf_client,
+            )
+            response["remediation_results"].append(remediation_result)
+
+            if is_remediation_successful(report.action_required, remediation_result):
+                logger.info(
+                    "Web L7 위협 대응 완료: %s -> %s (결과: %s)",
+                    rule_name,
+                    source_ip,
+                    remediation_result,
+                )
+            else:
+                logger.warning(
+                    "Web L7 위협 대응 필수 조치 미완료: %s -> %s (결과: %s)",
+                    rule_name,
+                    source_ip,
+                    remediation_result,
+                )
+
+            # Slack 알림 전파 (완전 결함 격리)
+            target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+            slack_success = False
+            if target_webhook:
+                try:
+                    slack_success = send_slack_alert(
+                        report=report,
+                        webhook_url=target_webhook,
+                        remediation_result=remediation_result,
+                    )
+                except Exception as exc:
+                    logger.error("Slack 알림 전파 중 예외 발생 격리 (차단 유지): %s", exc)
+                    slack_success = False
+            else:
+                logger.warning("SLACK_WEBHOOK_URL이 설정되지 않아 알림 발송을 생략합니다.")
+            slack_notification_results.append(slack_success)
+
+        if slack_notification_results:
+            response["slack_notified"] = all(slack_notification_results)
+        else:
+            response["slack_notified"] = False
+
+        return response
+
+    # -------------------------------------------------------------------------
+    # 분기 2: Syslog SSH 인증 실패 로그 처리 파이프라인
+    # -------------------------------------------------------------------------
     if auth_window is None:
         auth_window = AuthFailureWindow()
 
