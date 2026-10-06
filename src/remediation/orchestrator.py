@@ -31,7 +31,7 @@ from detection.incident_mapper import map_threat_to_incident
 from detection.rules import evaluate_web_rules
 from remediation.auth_window import AuthFailureWindow
 from remediation.remediation import RemediationResult, apply_remediation
-from remediation.web_window import WebAttackWindow, parse_nginx_timestamp
+from remediation.web_window import PersistenceError, WebAttackWindow, parse_nginx_timestamp
 from reporter.slack_notifier import send_slack_alert
 
 logger = logging.getLogger(__name__)
@@ -181,19 +181,24 @@ def threat_orchestrator_handler(
             if source_ip in blocked_ips:
                 continue
 
-            added = web_window.add_event(
-                target_identifier=target_instance_id,
-                source_ip=source_ip,
-                event_id=event_id,
-                timestamp_epoch=ts_epoch,
-                event=parsed_nginx,
-            )
-            if not added:
-                logger.warning(
-                    "웹 이벤트 윈도우 등록 실패 또는 중복 ID 격리 (IP=%s, EventID=%s)",
+            try:
+                added = web_window.add_event(
+                    target_identifier=target_instance_id,
+                    source_ip=source_ip,
+                    event_id=event_id,
+                    timestamp_epoch=ts_epoch,
+                    event=parsed_nginx,
+                )
+                if not added:
+                    logger.info("중복 웹 이벤트 스킵 (IP=%s, EventID=%s)", source_ip, event_id)
+            except PersistenceError as exc:
+                logger.error(
+                    "웹 이벤트 윈도우 영속화 실패 격리 (IP=%s, EventID=%s): %s",
                     source_ip,
                     event_id,
+                    exc,
                 )
+                response.setdefault("persistence_errors", []).append(f"{source_ip}:{event_id}")
 
             active_events = web_window.get_active_events(
                 target_identifier=target_instance_id,

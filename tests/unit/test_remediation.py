@@ -1867,3 +1867,141 @@ def test_web_attack_window_expired_history_does_not_block_new_split_batch_attack
             Id=mocked_waf_ipset.ipset_id,
         )
         assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_web_attack_window_current_bucket_saturation_overflow_slot_detection(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+) -> None:
+    """동일 10초 버킷 내 슬롯 0이 400 KB 상한으로 포화되더라도 슬롯 오버플로 청킹을 통해
+    독립 런타임 간 3+2 분할 공격이 정상 탐지/차단되는지 검증.
+
+    Why:
+        동일 시간 버킷 내 대량의 비위협 요청 인입으로 단일 항목 400 KB 상한(ValidationException)에
+        도달하더라도, 슬롯 1로 오버플로 분할 저장되어 후속 공격이 영속화 및 차단됨을 보장함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.231"
+    base_ts = 1727524320.0
+
+    # 1. 4KB 크기 더미 요청으로 현재 버킷(0초) 슬롯 0을 실제로 400 KB 상한까지 포화
+    pad = "a" * 3800
+    prep_window = WebAttackWindow()
+    for idx in range(110):
+        filler_msg = (
+            f"{attacker_ip} - - [28/Sep/2026:11:52:00 +0000] "
+            f'"GET /health?pad={pad}&id={idx} HTTP/1.1" 404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        parsed = NginxAccessLogEvent.parse_line(filler_msg)
+        assert parsed is not None
+        prep_window.add_event(
+            target_identifier=mocked_ec2_target.instance_id,
+            source_ip=attacker_ip,
+            event_id=f"fill-{idx}",
+            timestamp_epoch=base_ts,
+            event=parsed,
+        )
+
+    # 2. 동일 버킷 내 4~8초 시점에 3+2 분할 디렉터리 스캔 공격 인입
+    paths = ["admin", "login", "dashboard", "api", "private"]
+    attack_messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{4 + idx} +0000] "GET /{path} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, path in enumerate(paths)
+    ]
+
+    runtime_window_1 = WebAttackWindow()
+    runtime_window_2 = WebAttackWindow()
+
+    # 1차 배치 (3개) -> 1번 런타임
+    event_batch1 = _make_cw_nginx_event(
+        attack_messages[:3],
+        instance_id=mocked_ec2_target.instance_id,
+        base_timestamp_ms=int((base_ts + 4.0) * 1000),
+        start_idx=200,
+    )
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res1 = threat_orchestrator_handler(
+            event=event_batch1,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=runtime_window_1,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res1["processed_events"] == 3
+        assert res1["threats_detected"] == []
+
+        # 2차 배치 (2개) -> 2번 런타임 (슬롯 0+1 병합으로 3+2 합산되어 차단 집행)
+        event_batch2 = _make_cw_nginx_event(
+            attack_messages[3:],
+            instance_id=mocked_ec2_target.instance_id,
+            base_timestamp_ms=int((base_ts + 7.0) * 1000),
+            start_idx=203,
+        )
+        res2 = threat_orchestrator_handler(
+            event=event_batch2,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=runtime_window_2,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res2["processed_events"] == 2
+        assert res2["threats_detected"] == ["WEB_DIRECTORY_SCANNING"]
+        assert len(res2["remediation_results"]) == 1
+        assert res2["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_web_attack_window_persistence_error_reported_on_total_exhaustion(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+) -> None:
+    """모든 슬롯이 고갈되거나 치명적 영속화 오류 시 PersistenceError가 격리 기록되는지 검증.
+
+    Why:
+        영속화 실패가 중복 이벤트와 혼동되어 무시되지 않고 핸들러 응답의 persistence_errors에
+        격리 기록되어 상위 재처리/DLQ 경로로 안전하게 전달됨을 보장함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.232"
+    messages = [
+        (
+            f"{attacker_ip} - - [28/Sep/2026:11:52:00 +0000] "
+            '"GET /admin HTTP/1.1" 404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+    ]
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    failing_window = WebAttackWindow()
+    from botocore.exceptions import ClientError
+
+    with patch.object(
+        failing_window._table,
+        "update_item",
+        side_effect=ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "Access Denied"}},
+            "UpdateItem",
+        ),
+    ):
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=failing_window,
+        )
+        assert "persistence_errors" in res
+        assert any(attacker_ip in err for err in res["persistence_errors"])
