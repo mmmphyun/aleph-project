@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections import defaultdict
 from typing import Any
 
 from collector.cw_processor import LOG_GROUP_STREAM_MAPPING
@@ -32,11 +31,13 @@ from detection.incident_mapper import map_threat_to_incident
 from detection.rules import evaluate_web_rules
 from remediation.auth_window import AuthFailureWindow
 from remediation.remediation import RemediationResult, apply_remediation
+from remediation.web_window import WebAttackWindow, parse_nginx_timestamp
 from reporter.slack_notifier import send_slack_alert
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_FALLBACK_INSTANCE_ID = "i-0abcd1234ef567890"
+_GLOBAL_WEB_WINDOW = WebAttackWindow()
 
 
 def is_remediation_successful(action_required: str, result: RemediationResult) -> bool:
@@ -72,6 +73,7 @@ def threat_orchestrator_handler(
     ec2_client: Any = None,
     waf_client: Any = None,
     slack_webhook_url: str | None = None,
+    web_window: WebAttackWindow | None = None,
 ) -> dict[str, Any]:
     """CloudWatch Logs 이벤트를 수신하여 위협 집계, 다중 계층 차단, Slack 전파를 수행하는 진입점.
 
@@ -141,17 +143,58 @@ def threat_orchestrator_handler(
     # 분기 1: Nginx L7 웹 접근 로그 처리 파이프라인
     # -------------------------------------------------------------------------
     if stream_type == "nginx":
-        nginx_events_by_ip: dict[str, list[NginxAccessLogEvent]] = defaultdict(list)
+        if web_window is None:
+            web_window = _GLOBAL_WEB_WINDOW
+
+        inspected_ips: list[str] = []
         for log_event in payload.logEvents:
             parsed_nginx = NginxAccessLogEvent.parse_line(log_event.message)
             if not parsed_nginx:
                 continue
             response["processed_events"] += 1
-            nginx_events_by_ip[parsed_nginx.source_ip].append(parsed_nginx)
+
+            # 과대 URI 레코드 개별 격리 (4,096자 초과 시 정규화 계약의 ValueError 방지)
+            if len(parsed_nginx.uri) > 4096:
+                logger.warning(
+                    "과대 URI 레코드 격리 (길이 초과): IP=%s 길이=%d",
+                    parsed_nginx.source_ip,
+                    len(parsed_nginx.uri),
+                )
+                continue
+
+            ts_epoch = parse_nginx_timestamp(parsed_nginx.timestamp_str)
+            if ts_epoch is None:
+                ts_epoch = log_event.timestamp / 1000.0
+
+            web_window.add_event(
+                target_identifier=target_instance_id,
+                source_ip=parsed_nginx.source_ip,
+                event_id=log_event.id,
+                timestamp_epoch=ts_epoch,
+                event=parsed_nginx,
+            )
+            if parsed_nginx.source_ip not in inspected_ips:
+                inspected_ips.append(parsed_nginx.source_ip)
 
         slack_notification_results: list[bool] = []
-        for source_ip, ip_logs in nginx_events_by_ip.items():
-            is_threat, rule_name = evaluate_web_rules(ip_logs)
+        for source_ip in inspected_ips:
+            active_events = web_window.get_active_events(
+                target_identifier=target_instance_id,
+                source_ip=source_ip,
+            )
+            if not active_events:
+                continue
+
+            try:
+                is_threat, rule_name = evaluate_web_rules(active_events)
+            except ValueError as exc:
+                logger.error(
+                    "Web 룰 평가 중 예외 발생 격리 (IP=%s): %s",
+                    source_ip,
+                    exc,
+                )
+                continue
+
             if not is_threat or not rule_name:
                 continue
 
@@ -177,6 +220,7 @@ def threat_orchestrator_handler(
             response["remediation_results"].append(remediation_result)
 
             if is_remediation_successful(report.action_required, remediation_result):
+                web_window.clear_ip(target_instance_id, source_ip)
                 logger.info(
                     "Web L7 위협 대응 완료: %s -> %s (결과: %s)",
                     rule_name,

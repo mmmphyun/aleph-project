@@ -9,10 +9,12 @@ from remediation.remediation import (
     block_ip_wafv2,
     quarantine_ec2_instance,
 )
+from remediation.web_window import WebAttackWindow
 
 __all__ = [
     "AuthFailureWindow",
     "RemediationResult",
+    "WebAttackWindow",
     "apply_remediation",
     "block_ip_wafv2",
     "quarantine_ec2_instance",

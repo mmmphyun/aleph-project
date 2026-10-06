@@ -23,6 +23,7 @@ from remediation.remediation import (
     quarantine_ec2_instance,
     validate_quarantine_security_group,
 )
+from remediation.web_window import WebAttackWindow
 
 
 def test_apply_remediation_interface(sample_incident_report: IncidentReport) -> None:
@@ -1020,11 +1021,12 @@ def _make_cw_nginx_event(
     log_messages: list[str],
     instance_id: str,
     base_timestamp_ms: int = 1727524320000,
+    start_idx: int = 0,
 ) -> dict[str, Any]:
     """Web L7 오케스트레이터 파이프라인 검증용 CloudWatch Logs Nginx 페이로드 생성 헬퍼."""
     events = [
         CloudWatchLogEvent(
-            id=f"evt-nginx-{idx}",
+            id=f"evt-nginx-{start_idx + idx}",
             timestamp=base_timestamp_ms + (idx * 1000),
             message=msg,
         )
@@ -1237,3 +1239,253 @@ def test_threat_orchestrator_web_slack_fault_isolation(
             Id=mocked_waf_ipset.ipset_id,
         )
         assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_threat_orchestrator_web_split_batch_window_accumulates(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """분할 배치(3+2)로 인입된 동일 IP 디렉터리 스캔 공격의 슬라이딩 윈도우 관통 차단 검증.
+
+    Why:
+        CloudWatch Logs 버퍼링으로 인해 짧은 시간(4초) 내 발생한 스캔 요청이
+        복수 Lambda 호출(3개, 2개)로 분할 인입되더라도, 플랫폼 WebAttackWindow를 통해
+        호출 간 10초 이력이 누적되어 2차 호출 시점에 원자적 WAF 차단이 정상 집행되는지 검증함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    web_window = WebAttackWindow()
+
+    attacker_ip = "198.51.100.210"
+    paths = ["/admin", "/login", "/dashboard", "/api", "/private"]
+    statuses = [401, 403, 404, 200, 302]
+    all_messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{idx} +0000] "GET {path} HTTP/1.1" '
+            f'{status} 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, (path, status) in enumerate(zip(paths, statuses, strict=True))
+    ]
+
+    # 배치 1: 앞선 3개 요청 인입 (임계치 미달로 미차단)
+    event_batch1 = _make_cw_nginx_event(
+        all_messages[:3],
+        instance_id=mocked_ec2_target.instance_id,
+        base_timestamp_ms=1727524320000,
+        start_idx=0,
+    )
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res1 = threat_orchestrator_handler(
+            event=event_batch1,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=web_window,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res1["processed_events"] == 3
+        assert res1["threats_detected"] == []
+        assert res1["remediation_results"] == []
+
+        ip_set_1 = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" not in ip_set_1["IPSet"]["Addresses"]
+
+        # 배치 2: 후속 2개 요청 인입 (4초 이내 인입되어 3+2 누적 임계치 충족 -> 차단 집행)
+        event_batch2 = _make_cw_nginx_event(
+            all_messages[3:],
+            instance_id=mocked_ec2_target.instance_id,
+            base_timestamp_ms=1727524323000,
+            start_idx=3,
+        )
+        res2 = threat_orchestrator_handler(
+            event=event_batch2,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=web_window,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res2["processed_events"] == 2
+        assert res2["threats_detected"] == ["WEB_DIRECTORY_SCANNING"]
+        assert len(res2["remediation_results"]) == 1
+        assert res2["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set_2 = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set_2["IPSet"]["Addresses"]
+
+
+def test_threat_orchestrator_web_split_batch_window_expiry_outside_window(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """10초 시간창을 벗어난 요청이 인입될 경우 과거 요청이 만료되어 합산되지 않는지 검증.
+
+    Why:
+        10초 이상 간격을 두고 산발적으로 발생하는 정상/비인가 접근이 누적되어
+        오탐(False Positive) 및 차단으로 이어지는 문제를 방지하기 위함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    web_window = WebAttackWindow()
+
+    attacker_ip = "198.51.100.211"
+    batch1_messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{idx} +0000] "GET /{path} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, path in enumerate(["admin", "login", "dashboard"])
+    ]
+    # 15초 뒤의 2개 요청 (10초 윈도우 초과)
+    batch2_messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:{15 + idx} +0000] "GET /{path} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, path in enumerate(["api", "private"])
+    ]
+
+    event_batch1 = _make_cw_nginx_event(
+        batch1_messages,
+        instance_id=mocked_ec2_target.instance_id,
+        base_timestamp_ms=1727524320000,
+        start_idx=0,
+    )
+    threat_orchestrator_handler(
+        event=event_batch1,
+        ec2_client=ec2_client,
+        waf_client=waf_client,
+        web_window=web_window,
+    )
+
+    event_batch2 = _make_cw_nginx_event(
+        batch2_messages,
+        instance_id=mocked_ec2_target.instance_id,
+        base_timestamp_ms=1727524335000,
+        start_idx=3,
+    )
+    res2 = threat_orchestrator_handler(
+        event=event_batch2,
+        ec2_client=ec2_client,
+        waf_client=waf_client,
+        web_window=web_window,
+    )
+
+    # 1차 3개 요청이 만료되어 합산 2개에 불과하므로 임계치 미달로 탐지/차단 미수행
+    assert res2["processed_events"] == 2
+    assert res2["threats_detected"] == []
+    assert res2["remediation_results"] == []
+
+    ip_set = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{attacker_ip}/32" not in ip_set["IPSet"]["Addresses"]
+
+
+def test_threat_orchestrator_web_oversized_uri_mixed_with_valid_attack_same_ip(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """동일 IP에서 과대 URI(4,096자 초과)와 유효 공격이 혼합 인입될 때 개별 격리 및 차단 검증.
+
+    Why:
+        과대 URI에 대한 정규화 예외(ValueError)가 전체 파이프라인을 중단시키지 않고
+        개별 격리되어 동일 IP 내 존재하는 다른 유효 공격이 정상 탐지/차단되는지 회귀 검증함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.212"
+    oversized_uri = "/test?" + ("a" * 4100)
+    messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:00 +0000] "GET {oversized_uri} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        ),
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:01 +0000] "GET /.env HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        ),
+    ]
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res["processed_events"] == 2
+        assert res["threats_detected"] == ["SENSITIVE_FILE_PROBING"]
+        assert len(res["remediation_results"]) == 1
+        assert res["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_threat_orchestrator_web_oversized_uri_isolation_preserves_subsequent_ip_threat(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """선행 IP의 과대 URI 오류가 후행 IP의 유효 공격 차단을 중단시키지 않는지 격리 검증.
+
+    Why:
+        공격자가 비정상 과대 URI를 고의 주입하여 전체 로그 배치의 차단 엔진을 DoS 시키려는
+        시도를 차단하고, 각 출발지 IP별 분석 및 차단 독립성을 보장함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    ip_malformed = "198.51.100.213"
+    ip_attacker = "198.51.100.214"
+    oversized_uri = "/malformed?" + ("x" * 4100)
+
+    messages = [
+        (
+            f'{ip_malformed} - - [28/Sep/2026:11:52:00 +0000] "GET {oversized_uri} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        ),
+        (
+            f'{ip_attacker} - - [28/Sep/2026:11:52:01 +0000] "GET /.env HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        ),
+    ]
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res["processed_events"] == 2
+        assert res["threats_detected"] == ["SENSITIVE_FILE_PROBING"]
+        assert len(res["remediation_results"]) == 1
+        assert res["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{ip_attacker}/32" in ip_set["IPSet"]["Addresses"]
+        assert f"{ip_malformed}/32" not in ip_set["IPSet"]["Addresses"]
