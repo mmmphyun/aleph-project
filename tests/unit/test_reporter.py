@@ -1044,7 +1044,7 @@ def test_build_waf_slack_payload_truncation() -> None:
 
 
 def test_send_slack_alert_auto_waf_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    """send_slack_alert 실행 시 BLOCK_WAF 조치에 대해 자동으로 WAF 카드가 선택 발송되는지 검증."""
+    """BLOCK_WAF 조치가 WAF 전용 카드로 발송되는지 검증."""
     dummy_webhook = "https://hooks.slack.com/services/T000/B000/VALID_WAF"
 
     mock_response = MagicMock()
@@ -1426,3 +1426,69 @@ def test_empty_recommendations_confirm_all_requested_actions_completed(
         if "*SecOps 권고 조치:*" in block.get("text", {}).get("text", "")
     )
     assert "별도 권고 조치 없음 (대응 완료)" in text
+
+
+@pytest.mark.parametrize(
+    ("action", "auto_waf"),
+    [
+        ("BLOCK_WAF", True),
+        ("BLOCK_IP_ONLY", False),
+        ("BLOCK_AND_QUARANTINE", False),
+        ("QUARANTINE_EC2", False),
+        ("REVOKE_IAM_SESSION", False),
+        ("ALERT_ONLY", False),
+        ("NONE", False),
+    ],
+)
+@pytest.mark.parametrize("override", [None, True, False])
+@pytest.mark.parametrize("waf_blocked", [None, True, False])
+def test_send_slack_alert_card_selection_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_incident_data: dict[str, Any],
+    action: str,
+    auto_waf: bool,
+    override: bool | None,
+    waf_blocked: bool | None,
+) -> None:
+    """전체 조치의 카드 선택이 성공 여부와 독립적이며 명시적 선택을 우선하는지 검증."""
+    data = dict(sample_incident_data, action_required=action, recommendations=[])
+    report = IncidentReport(**data)
+    result = (
+        None
+        if waf_blocked is None
+        else {
+            "waf_blocked": waf_blocked,
+            "quarantine_applied": action == "BLOCK_AND_QUARANTINE",
+            "iam_revoked": False,
+        }
+    )
+    response = MagicMock()
+    response.status = 200
+    response.__enter__.return_value = response
+    urlopen = MagicMock(return_value=response)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert send_slack_alert(
+        report,
+        webhook_url="https://hooks.slack.com/services/T000/B000/MATRIX",
+        remediation_result=result,
+        use_waf_card=override,
+    )
+    payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+    expected_waf = auto_waf if override is None else override
+    assert payload.get("is_waf_card", False) is expected_waf
+    assert payload["remediation_action"] == action
+    assert payload["incident_id"] == report.incident_id
+    assert payload["rule_name"] == report.attack_type
+    assert payload["source_ip"] == report.source_ip
+    if action == "BLOCK_AND_QUARANTINE" and not expected_waf and result is not None:
+        block_text = json.dumps(payload["blocks"], ensure_ascii=False)
+        assert "L4 EC2 네트워크 격리" in block_text
+        assert "L7 WAFv2 IP 차단" in block_text
+
+    if expected_waf and action not in ("BLOCK_WAF", "BLOCK_IP_ONLY", "BLOCK_AND_QUARANTINE"):
+        block_text = json.dumps(payload["blocks"], ensure_ascii=False)
+        assert "차단 미대상" in block_text
+        assert "차단 실패" not in block_text
+        assert "차단 집행 진행 중" not in block_text
+        assert "별도 WAF 권고 조치 없음 (차단 미대상)" in block_text
