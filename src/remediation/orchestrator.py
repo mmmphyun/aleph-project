@@ -181,13 +181,19 @@ def threat_orchestrator_handler(
             if source_ip in blocked_ips:
                 continue
 
-            web_window.add_event(
+            added = web_window.add_event(
                 target_identifier=target_instance_id,
                 source_ip=source_ip,
                 event_id=event_id,
                 timestamp_epoch=ts_epoch,
                 event=parsed_nginx,
             )
+            if not added:
+                logger.warning(
+                    "웹 이벤트 윈도우 등록 실패 또는 중복 ID 격리 (IP=%s, EventID=%s)",
+                    source_ip,
+                    event_id,
+                )
 
             active_events = web_window.get_active_events(
                 target_identifier=target_instance_id,
@@ -232,7 +238,7 @@ def threat_orchestrator_handler(
             response["remediation_results"].append(remediation_result)
 
             if is_remediation_successful(report.action_required, remediation_result):
-                web_window.clear_ip(target_instance_id, source_ip)
+                web_window.clear_ip(target_instance_id, source_ip, reference_time=ts_epoch)
                 blocked_ips.add(source_ip)
                 logger.info(
                     "Web L7 위협 대응 완료: %s -> %s (결과: %s)",

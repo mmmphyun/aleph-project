@@ -11,7 +11,7 @@ import boto3
 import pytest
 
 from conftest import MockEc2Target, MockWafTarget
-from contracts.events import CloudWatchLogEvent, CloudWatchLogsPayload
+from contracts.events import CloudWatchLogEvent, CloudWatchLogsPayload, NginxAccessLogEvent
 from contracts.incident import IncidentReport
 from remediation.auth_window import AuthFailureWindow
 from remediation.orchestrator import threat_orchestrator_handler
@@ -1632,9 +1632,12 @@ def test_web_attack_window_consistent_read_enforced(mocked_dynamodb_table: Any) 
     assert window._table is not None
 
     with patch.object(window._table, "get_item", wraps=window._table.get_item) as mock_get_item:
-        window.get_active_events("i-1234567890abcdef0", "198.51.100.220")
-        mock_get_item.assert_called_once()
-        assert mock_get_item.call_args.kwargs.get("ConsistentRead") is True
+        window.get_active_events(
+            "i-1234567890abcdef0", "198.51.100.220", reference_time=1727524320.0
+        )
+        assert mock_get_item.call_count >= 1
+        for call_args in mock_get_item.call_args_list:
+            assert call_args.kwargs.get("ConsistentRead") is True
 
 
 def test_web_attack_window_init_does_not_call_describe_table(mocked_dynamodb_table: Any) -> None:
@@ -1767,3 +1770,100 @@ def test_terraform_lambda_dynamodb_iam_policy_includes_describe_table() -> None:
     assert "dynamodb:PutItem" in content
     assert "dynamodb:UpdateItem" in content
     assert "dynamodb:DeleteItem" in content
+
+
+def test_web_attack_window_expired_history_does_not_block_new_split_batch_attack(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+) -> None:
+    """과거 만료 이력이 누적되어 있더라도 2-버킷 격리로 단일 항목 용량 초과 없이
+    신규 3+2 분할 공격이 독립 런타임에서 정상 탐지/차단되는지 검증.
+
+    Why:
+        단일 항목에 모든 이벤트를 무제한 append할 경우 400 KB 상한(ValidationException)에
+        도달하여 후속 공격 이벤트가 저장 실패 및 미탐지되는 결함을 방지하기 위해,
+        10초 시간 버킷 파티셔닝을 통해 만료 이력을 격리하고 신규 공격이
+        독립 런타임 간 정상 누적/차단됨을 검증함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.230"
+    base_ts = 1727524320.0  # 28/Sep/2026:11:52:00 +0000
+
+    # 1. 34초 전(만료 시간창 밖) 대량의 정상/비인가 요청을 사전 인입
+    old_window = WebAttackWindow()
+    for idx in range(30):
+        sec = 26 + (idx % 30)
+        old_msg = (
+            f"{attacker_ip} - - [28/Sep/2026:11:51:{sec:02d} +0000] "
+            '"GET /health HTTP/1.1" 404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        parsed = NginxAccessLogEvent.parse_line(old_msg)
+        assert parsed is not None
+        added = old_window.add_event(
+            target_identifier=mocked_ec2_target.instance_id,
+            source_ip=attacker_ip,
+            event_id=f"old-evt-{idx}",
+            timestamp_epoch=base_ts - 34.0 + (idx * 0.1),
+            event=parsed,
+        )
+        assert added is True
+
+    # 2. 현재 공격 시간창(0~4초)에 동일 IP의 3+2 분할 디렉터리 스캔 공격 인입
+    paths = ["admin", "login", "dashboard", "api", "private"]
+    attack_messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{idx} +0000] "GET /{path} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, path in enumerate(paths)
+    ]
+
+    runtime_window_1 = WebAttackWindow()
+    runtime_window_2 = WebAttackWindow()
+
+    # 1차 배치 (3개) -> 1번 런타임 (임계치 미달로 미차단)
+    event_batch1 = _make_cw_nginx_event(
+        attack_messages[:3],
+        instance_id=mocked_ec2_target.instance_id,
+        base_timestamp_ms=int(base_ts * 1000),
+        start_idx=0,
+    )
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res1 = threat_orchestrator_handler(
+            event=event_batch1,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=runtime_window_1,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res1["processed_events"] == 3
+        assert res1["threats_detected"] == []
+
+        # 2차 배치 (2개) -> 2번 런타임 (2-버킷 모델을 통해 3+2 합산되어 차단 집행)
+        event_batch2 = _make_cw_nginx_event(
+            attack_messages[3:],
+            instance_id=mocked_ec2_target.instance_id,
+            base_timestamp_ms=int((base_ts + 3.0) * 1000),
+            start_idx=3,
+        )
+        res2 = threat_orchestrator_handler(
+            event=event_batch2,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=runtime_window_2,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res2["processed_events"] == 2
+        assert res2["threats_detected"] == ["WEB_DIRECTORY_SCANNING"]
+        assert len(res2["remediation_results"]) == 1
+        assert res2["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
