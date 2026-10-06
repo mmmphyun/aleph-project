@@ -247,7 +247,7 @@ def test_build_slack_payload_empty_targets_and_recommendations(
         for b in blocks
         if b.get("type") == "section" and "*SecOps 권고 조치:*" in b.get("text", {}).get("text", "")
     )
-    assert "별도 권고 조치 없음 (대응 완료)" in rec_block["text"]["text"]
+    assert "별도 권고 조치 없음 (대응 결과 미확인)" in rec_block["text"]["text"]
 
 
 @pytest.mark.parametrize(
@@ -1369,3 +1369,60 @@ def test_send_slack_alert_routing_block_ip_only(
         "BLOCK_IP_ONLY에서 웹 전용 헤더 문구가 발송되면 관제 채널에 혼선 발생"
     )
     assert "침해사고 긴급 탐지 및 자동 대응 알림" in header_text
+
+
+@pytest.mark.parametrize(
+    ("action", "result", "expected"),
+    [
+        ("QUARANTINE_EC2", {}, ("격리 미완료",)),
+        ("REVOKE_IAM_SESSION", {"iam_revoked": False}, ("세션 무효화 미완료",)),
+        (
+            "BLOCK_AND_QUARANTINE",
+            {"waf_blocked": True, "quarantine_applied": False},
+            ("격리 미완료",),
+        ),
+        (
+            "BLOCK_AND_QUARANTINE",
+            {"waf_blocked": False, "quarantine_applied": True},
+            ("차단 실패",),
+        ),
+        ("BLOCK_AND_QUARANTINE", {}, ("차단 실패", "격리 미완료")),
+    ],
+)
+def test_empty_recommendations_do_not_hide_incomplete_remediation(
+    sample_incident_data: dict[str, Any],
+    action: str,
+    result: dict[str, Any],
+    expected: tuple[str, ...],
+) -> None:
+    """부분 성공과 누락된 결과가 빈 권고 목록에서 전체 완료로 표시되는 회귀를 방지한다."""
+    data = {**sample_incident_data, "action_required": action, "recommendations": []}
+    payload = build_slack_payload(IncidentReport.model_validate(data), remediation_result=result)
+    text = next(
+        block["text"]["text"]
+        for block in payload["blocks"]
+        if "*SecOps 권고 조치:*" in block.get("text", {}).get("text", "")
+    )
+    assert "대응 완료" not in text
+    assert all(message in text for message in expected)
+
+
+def test_empty_recommendations_confirm_all_requested_actions_completed(
+    sample_incident_data: dict[str, Any],
+) -> None:
+    """복합 조치의 모든 필수 결과가 성공한 경우 완료 안내를 유지한다."""
+    data = {
+        **sample_incident_data,
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [],
+    }
+    payload = build_slack_payload(
+        IncidentReport.model_validate(data),
+        remediation_result={"waf_blocked": True, "quarantine_applied": True},
+    )
+    text = next(
+        block["text"]["text"]
+        for block in payload["blocks"]
+        if "*SecOps 권고 조치:*" in block.get("text", {}).get("text", "")
+    )
+    assert "별도 권고 조치 없음 (대응 완료)" in text

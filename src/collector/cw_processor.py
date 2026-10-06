@@ -47,13 +47,17 @@ SUBSCRIPTION_FILTER_SPEC: dict[str, Any] = {
 # Why: nginx.conf의 cloudshield_combined 일반 텍스트 포맷
 #      ('$remote_addr - $remote_user [$time_local] "$request" $status ...')에 맞춰
 #      CloudWatch Logs 공백 구분 필터(Space-delimited)로 401/403/404 상태 코드를 선별 구독함.
+# Why: 보안 룰 엔진이 실패 경로 집계 대상으로 사용하는 상태 코드만 수집해야
+#      정상 응답과 서버 내부 오류를 Lambda로 불필요하게 전달하지 않는다.
+NGINX_FAILURE_STATUS_CODES: tuple[int, ...] = (401, 403, 404)
+_NGINX_STATUS_CONDITIONS = " || ".join(
+    f"status_code = {status_code}" for status_code in NGINX_FAILURE_STATUS_CODES
+)
+
 NGINX_SUBSCRIPTION_FILTER_SPEC: dict[str, Any] = {
     "filter_name": "CloudShield-Nginx-Access-Filter",
     "log_group_name": "/cloudshield/target/nginx-access-log",
-    "filter_pattern": (
-        "[ip, ident, user, timestamp, request, "
-        "status_code = 401 || status_code = 403 || status_code = 404, ...]"
-    ),
+    "filter_pattern": (f"[ip, ident, user, timestamp, request, {_NGINX_STATUS_CONDITIONS}, ...]"),
     "destination_type": "lambda",
     "destination_arn": "${aws_lambda_function.threat_orchestrator.arn}",
 }

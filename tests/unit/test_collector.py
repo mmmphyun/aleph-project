@@ -14,6 +14,7 @@ import pytest
 
 from collector.cw_processor import (
     LOG_GROUP_STREAM_MAPPING,
+    NGINX_FAILURE_STATUS_CODES,
     NGINX_SUBSCRIPTION_FILTER_SPEC,
     SUBSCRIPTION_FILTER_SPEC,
     SUBSCRIPTION_FILTER_SPECS,
@@ -800,6 +801,7 @@ def test_nginx_subscription_filter_spec() -> None:
     assert "status_code = 403" in pattern
     assert "status_code = 404" in pattern
     assert NGINX_SUBSCRIPTION_FILTER_SPEC["destination_type"] == "lambda"
+    assert NGINX_FAILURE_STATUS_CODES == (401, 403, 404)
 
     assert "auth" in SUBSCRIPTION_FILTER_SPECS
     assert "nginx" in SUBSCRIPTION_FILTER_SPECS
@@ -857,6 +859,13 @@ def test_nginx_subscription_filter_matches_access_log() -> None:
         '"POST /api/v1/checkout HTTP/1.1" 500 512 "-" "Mozilla/5.0" 0.120 "-"'
     )
     assert matches_subscription_filter(log_500, pattern=pattern) is False
+
+    # 상태 코드와 같은 숫자가 URI에만 포함된 경우에는 상태 필드 조건으로 매칭하면 안 됨.
+    log_uri_contains_status = (
+        "198.51.100.77 - - [28/Sep/2026:11:52:43 +0000] "
+        '"GET /archive/404/report HTTP/1.1" 200 150 "-" "curl/7.81.0" 0.002 "-"'
+    )
+    assert matches_subscription_filter(log_uri_contains_status, pattern=pattern) is False
 
 
 def test_nginx_subscription_filter_regression_against_json_pattern() -> None:
