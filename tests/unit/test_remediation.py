@@ -1618,3 +1618,152 @@ def test_threat_orchestrator_web_attack_followed_by_delayed_request_in_single_ba
             Id=mocked_waf_ipset.ipset_id,
         )
         assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_web_attack_window_consistent_read_enforced(mocked_dynamodb_table: Any) -> None:
+    """공유 저장소 조회 시 Strongly Consistent Read(ConsistentRead=True)가 호출되는지 검증.
+
+    Why:
+        DynamoDB get_item은 기본적으로 Eventual Consistency(최종 일관성)를 사용하므로,
+        선행 Lambda 런타임이 기록한 최신 공격 이력이 후속 런타임 조회에 반영되지 않아
+        분할 배치가 미탐지로 누락되는 결함을 방지하기 위해 ConsistentRead=True를 강제함.
+    """
+    window = WebAttackWindow()
+    assert window._table is not None
+
+    with patch.object(window._table, "get_item", wraps=window._table.get_item) as mock_get_item:
+        window.get_active_events("i-1234567890abcdef0", "198.51.100.220")
+        mock_get_item.assert_called_once()
+        assert mock_get_item.call_args.kwargs.get("ConsistentRead") is True
+
+
+def test_web_attack_window_init_does_not_call_describe_table(mocked_dynamodb_table: Any) -> None:
+    """초기화 시 Table.load()(DescribeTable)를 호출하지 않고 DynamoDB를 즉시 바인딩하는지 검증.
+
+    Why:
+        Boto3 Table 리소스는 Lazy 객체이므로 GetItem/UpdateItem 실행 전 사전 메타데이터 로드가
+        불필요함. DescribeTable 권한이 없는 IAM 환경에서도 broad except로 인한 조용한
+        인메모리 폴백 전이를 차단하고 _use_dynamodb=True가 유지됨을 보장함.
+    """
+    from botocore.exceptions import ClientError
+
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+
+    with patch.object(
+        dynamodb.meta.client,
+        "describe_table",
+        side_effect=ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": "User is not authorized to perform DescribeTable",
+                }
+            },
+            "DescribeTable",
+        ),
+    ):
+        window = WebAttackWindow(dynamodb_resource=dynamodb)
+        assert window._use_dynamodb is True
+        assert window._table is not None
+
+
+def test_web_attack_window_split_batch_independent_runtime_with_describe_table_denied(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+) -> None:
+    """DescribeTable 거부 환경에서도 독립 런타임 간 3+2 분할 배치가 정상 누적 탐지/차단되는지 검증.
+
+    Why:
+        실제 배포 IAM 역할에 dynamodb:DescribeTable 권한이 없더라도 사전 Table.load() 호출이
+        제거되어 인메모리 폴백으로 퇴행하지 않고, 두 번째 Lambda 런타임이 첫 번째 런타임의
+        선행 3개 이력을 DynamoDB로부터 강한 일관성으로 읽어내어 관통 차단함을 증명함.
+    """
+    from botocore.exceptions import ClientError
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.222"
+    paths = ["admin", "login", "dashboard", "api", "private"]
+    all_messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{idx} +0000] "GET /{path} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, path in enumerate(paths)
+    ]
+
+    with patch.object(
+        dynamodb.meta.client,
+        "describe_table",
+        side_effect=ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": "Access Denied on DescribeTable",
+                }
+            },
+            "DescribeTable",
+        ),
+    ):
+        runtime_window_1 = WebAttackWindow(dynamodb_resource=dynamodb)
+        runtime_window_2 = WebAttackWindow(dynamodb_resource=dynamodb)
+
+        assert runtime_window_1._use_dynamodb is True
+        assert runtime_window_2._use_dynamodb is True
+
+        event_batch1 = _make_cw_nginx_event(
+            all_messages[:3],
+            instance_id=mocked_ec2_target.instance_id,
+            base_timestamp_ms=1727524320000,
+            start_idx=0,
+        )
+        with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+            res1 = threat_orchestrator_handler(
+                event=event_batch1,
+                ec2_client=ec2_client,
+                waf_client=waf_client,
+                web_window=runtime_window_1,
+                slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+            )
+            assert res1["processed_events"] == 3
+            assert res1["threats_detected"] == []
+
+            event_batch2 = _make_cw_nginx_event(
+                all_messages[3:],
+                instance_id=mocked_ec2_target.instance_id,
+                base_timestamp_ms=1727524323000,
+                start_idx=3,
+            )
+            res2 = threat_orchestrator_handler(
+                event=event_batch2,
+                ec2_client=ec2_client,
+                waf_client=waf_client,
+                web_window=runtime_window_2,
+                slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+            )
+            assert res2["processed_events"] == 2
+            assert res2["threats_detected"] == ["WEB_DIRECTORY_SCANNING"]
+            assert len(res2["remediation_results"]) == 1
+            assert res2["remediation_results"][0]["waf_blocked"] is True
+
+
+def test_terraform_lambda_dynamodb_iam_policy_includes_describe_table() -> None:
+    """Terraform Lambda IAM 최소 권한 정책에 dynamodb:DescribeTable이 포함되어 있는지 정적 검증.
+
+    Why:
+        배포 IAM 정책과 실제 Boto3 SDK 모델 간의 정합성을 보장하여,
+        향후 관리 도구나 SDK 호출에서 테이블 상태 조회가 필요할 때 권한 부족 결함이
+        발생하지 않도록 방어함.
+    """
+    from pathlib import Path
+
+    tf_path = Path(__file__).resolve().parents[2] / "infra/terraform/modules/lambda/main.tf"
+    content = tf_path.read_text(encoding="utf-8")
+    assert "dynamodb:DescribeTable" in content
+    assert "dynamodb:GetItem" in content
+    assert "dynamodb:PutItem" in content
+    assert "dynamodb:UpdateItem" in content
+    assert "dynamodb:DeleteItem" in content

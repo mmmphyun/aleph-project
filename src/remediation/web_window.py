@@ -93,14 +93,13 @@ class WebAttackWindow:
                 self._dynamodb = None
 
         if self._dynamodb is not None:
-            try:
-                table = self._dynamodb.Table(self.table_name)
-                table.load()
-                self._table = table
-                self._use_dynamodb = True
-            except Exception:
-                self._table = None
-                self._use_dynamodb = False
+            # Why:
+            #   Boto3 Table 리소스는 지연 생성(Lazy) 객체이므로 load()(DescribeTable) 호출
+            #   없이 get_item/update_item을 즉시 실행할 수 있음.
+            #   불필요한 사전 DescribeTable 호출을 배제하여 IAM 권한 누락으로 인한
+            #   조용한 인메모리 폴백 전환을 방지하고 콜드스타트 지연을 제거함.
+            self._table = self._dynamodb.Table(self.table_name)
+            self._use_dynamodb = True
 
         # 인메모리 폴백 저장소
         self._entries: dict[tuple[str, str], list[_WebLogEntry]] = defaultdict(list)
@@ -190,7 +189,13 @@ class WebAttackWindow:
         if self._use_dynamodb and self._table is not None:
             target_key = self._get_target_key(target_identifier, source_ip)
             try:
-                res = self._table.get_item(Key={"target_key": target_key})
+                # Why:
+                #   분산 Lambda 환경에서 앞선 배치가 기록한 최신 이벤트를 stale read 없이
+                #   즉시 조회할 수 있도록 Strongly Consistent Read(ConsistentRead=True)를 강제함.
+                res = self._table.get_item(
+                    Key={"target_key": target_key},
+                    ConsistentRead=True,
+                )
                 item = res.get("Item", {})
                 raw_events = item.get("events", [])
                 for d in raw_events:
