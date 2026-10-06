@@ -144,9 +144,10 @@ def threat_orchestrator_handler(
     # -------------------------------------------------------------------------
     if stream_type == "nginx":
         if web_window is None:
-            web_window = _GLOBAL_WEB_WINDOW
+            web_window = WebAttackWindow()
 
-        inspected_ips: list[str] = []
+        # 1. 개별 로그 이벤트 파싱 및 과대 URI 개별 격리
+        parsed_records: list[tuple[NginxAccessLogEvent, float, str]] = []
         for log_event in payload.logEvents:
             parsed_nginx = NginxAccessLogEvent.parse_line(log_event.message)
             if not parsed_nginx:
@@ -166,21 +167,32 @@ def threat_orchestrator_handler(
             if ts_epoch is None:
                 ts_epoch = log_event.timestamp / 1000.0
 
+            parsed_records.append((parsed_nginx, ts_epoch, log_event.id))
+
+        # 2. 타임스탬프 오름차순 정렬 (실시간 공격 타임라인 재생)
+        parsed_records.sort(key=lambda r: r[1])
+
+        blocked_ips: set[str] = set()
+        slack_notification_results: list[bool] = []
+
+        # 3. 시간순 윈도우 누적 및 실시간 위협 판정
+        for parsed_nginx, ts_epoch, event_id in parsed_records:
+            source_ip = parsed_nginx.source_ip
+            if source_ip in blocked_ips:
+                continue
+
             web_window.add_event(
                 target_identifier=target_instance_id,
-                source_ip=parsed_nginx.source_ip,
-                event_id=log_event.id,
+                source_ip=source_ip,
+                event_id=event_id,
                 timestamp_epoch=ts_epoch,
                 event=parsed_nginx,
             )
-            if parsed_nginx.source_ip not in inspected_ips:
-                inspected_ips.append(parsed_nginx.source_ip)
 
-        slack_notification_results: list[bool] = []
-        for source_ip in inspected_ips:
             active_events = web_window.get_active_events(
                 target_identifier=target_instance_id,
                 source_ip=source_ip,
+                reference_time=ts_epoch,
             )
             if not active_events:
                 continue
@@ -221,6 +233,7 @@ def threat_orchestrator_handler(
 
             if is_remediation_successful(report.action_required, remediation_result):
                 web_window.clear_ip(target_instance_id, source_ip)
+                blocked_ips.add(source_ip)
                 logger.info(
                     "Web L7 위협 대응 완료: %s -> %s (결과: %s)",
                     rule_name,

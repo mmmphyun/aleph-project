@@ -1489,3 +1489,132 @@ def test_threat_orchestrator_web_oversized_uri_isolation_preserves_subsequent_ip
         )
         assert f"{ip_attacker}/32" in ip_set["IPSet"]["Addresses"]
         assert f"{ip_malformed}/32" not in ip_set["IPSet"]["Addresses"]
+
+
+def test_threat_orchestrator_web_split_batch_independent_runtime_shared_dynamodb(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+) -> None:
+    """독립된 2개의 WebAttackWindow 런타임 인스턴스가 공용 DynamoDB를 통해
+    3+2 분할 배치를 관통 차단하는지 검증.
+
+    Why:
+        복수의 Lambda 동시 실행 환경이나 콜드스타트 환경에서도 개별 인메모리에 의존하지 않고,
+        DynamoDB 공유 저장소를 통해 타깃/IP별 10초 이력이 안전하게 영속 집계되어
+        2차 배치 수신 런타임에서 원자적 WAF 차단이 정상 집행되는지 회귀 검증함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.220"
+    paths = ["admin", "login", "dashboard", "api", "private"]
+    all_messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{idx} +0000] "GET /{path} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, path in enumerate(paths)
+    ]
+
+    # 서로 다른 실행 환경(인스턴스) 모의
+    runtime_window_1 = WebAttackWindow()
+    runtime_window_2 = WebAttackWindow()
+
+    # 1차 배치: 앞선 3개 요청을 1번 런타임에서 처리 (임계치 미달로 미차단)
+    event_batch1 = _make_cw_nginx_event(
+        all_messages[:3],
+        instance_id=mocked_ec2_target.instance_id,
+        base_timestamp_ms=1727524320000,
+        start_idx=0,
+    )
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res1 = threat_orchestrator_handler(
+            event=event_batch1,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=runtime_window_1,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res1["processed_events"] == 3
+        assert res1["threats_detected"] == []
+        assert res1["remediation_results"] == []
+
+        # 2차 배치: 후속 2개 요청을 완전히 분리된 2번 런타임에서 처리
+        event_batch2 = _make_cw_nginx_event(
+            all_messages[3:],
+            instance_id=mocked_ec2_target.instance_id,
+            base_timestamp_ms=1727524323000,
+            start_idx=3,
+        )
+        res2 = threat_orchestrator_handler(
+            event=event_batch2,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=runtime_window_2,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res2["processed_events"] == 2
+        assert res2["threats_detected"] == ["WEB_DIRECTORY_SCANNING"]
+        assert len(res2["remediation_results"]) == 1
+        assert res2["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_threat_orchestrator_web_attack_followed_by_delayed_request_in_single_batch(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+) -> None:
+    """공격 구간(0~4초) 뒤에 시간창 밖 지연 요청(30초)이 혼합 인입되더라도 선행 공격이
+    정상 탐지/차단되는지 검증.
+
+    Why:
+        배치 내 최신 이벤트 시각 기준으로 유효 시간창 이전 데이터를 평가 전에 일괄 삭제해버리면
+        배치 전반부에 발생한 유효한 공격 시퀀스가 유실되는 결함을 방지하고,
+        시간순 윈도우 순회 평가를 통해 선행 공격 구간이 정상 차단됨을 보장함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.221"
+    # 0~4초에 5개의 404 스캔 요청 + 30초에 1개의 404 요청
+    messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{idx} +0000] "GET /{path} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, path in enumerate(["admin", "login", "dashboard", "api", "private"])
+    ]
+    messages.append(
+        f'{attacker_ip} - - [28/Sep/2026:11:52:30 +0000] "GET /old HTTP/1.1" '
+        '404 150 "-" "curl/8.0" 0.002 "-"'
+    )
+
+    event = _make_cw_nginx_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+
+        assert res["processed_events"] == 6
+        assert res["threats_detected"] == ["WEB_DIRECTORY_SCANNING"]
+        assert len(res["remediation_results"]) == 1
+        assert res["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
