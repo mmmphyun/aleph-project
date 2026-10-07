@@ -297,14 +297,14 @@ class WebAttackWindow:
                 seen_ids.add(entry.event_id)
                 merged_entries.append(entry)
 
-        if not merged_entries:
-            return []
-
-        # 저장된 이력 및 현재 참조 시각 중 최신 시각을 기준(anchor)으로 10초 윈도우 평가
-        latest_epoch = max(e.timestamp_epoch for e in merged_entries)
-        anchor_time = max(ref_time, latest_epoch)
-        cutoff = anchor_time - self.window_seconds
-        active_entries = [e for e in merged_entries if cutoff <= e.timestamp_epoch <= anchor_time]
+        # 참조 시각(ref_time)을 포함할 수 있는 유효 구간 [ref_time - 10s, ref_time + 10s] 평가
+        # Why:
+        #   후속 정상 트래픽(예: 15초 /health)이 선행 저장되어 있더라도, 지연 도착한 이벤트(0초)가
+        #   참조 시각 기준 10초 윈도우 밖으로 잘려나가지 않고 단일 시그니처 및 유효 공격 구간이
+        #   100% 탐지되도록 보장함.
+        low_bound = ref_time - self.window_seconds
+        high_bound = ref_time + self.window_seconds
+        active_entries = [e for e in merged_entries if low_bound <= e.timestamp_epoch <= high_bound]
         active_entries.sort(key=lambda e: e.timestamp_epoch)
         return [e.event for e in active_entries]
 

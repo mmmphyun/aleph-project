@@ -2347,3 +2347,160 @@ def test_web_orchestrator_out_of_order_batches_bucket_boundary_detected_and_bloc
             Id=mocked_waf_ipset.ipset_id,
         )
         assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_web_orchestrator_delayed_batch_with_subsequent_normal_request_detected_and_blocked(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+) -> None:
+    """후속 정상 요청(15초)이 선행 저장되어 있더라도 지연 도착한 선행 공격(0~1초)이
+    유효 10초 구간으로 정상 평가되어 누적 차단되는지 검증.
+
+    Why:
+        최신 정상 요청 시각 기준으로 단일 10초 윈도우를 잘라버릴 경우,
+        과거에 발생한 유효 공격 시퀀스가 평가 대상에서 누락되는 미탐지 결함을 차단함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.246"
+    base_ts = parse_nginx_timestamp("28/Sep/2026:11:52:00 +0000")
+
+    paths = ["admin", "login", "dashboard", "api", "private"]
+    # 0~4초 스캔 5개 메시지
+    scan_messages = [
+        (
+            f'{attacker_ip} - - [28/Sep/2026:11:52:0{idx} +0000] "GET /{path} HTTP/1.1" '
+            '404 150 "-" "curl/8.0" 0.002 "-"'
+        )
+        for idx, path in enumerate(paths)
+    ]
+    # 15초 정상 요청 메시지
+    normal_message = (
+        f'{attacker_ip} - - [28/Sep/2026:11:52:15 +0000] "GET /health HTTP/1.1" '
+        '200 150 "-" "curl/8.0" 0.002 "-"'
+    )
+
+    # 1차 호출: 2~4초 스캔 3건 + 15초 정상 요청 1건 먼저 처리
+    first_batch_messages = scan_messages[2:] + [normal_message]
+    batch1 = _make_cw_nginx_event(
+        first_batch_messages,
+        instance_id=mocked_ec2_target.instance_id,
+        base_timestamp_ms=int((base_ts + 2.0) * 1000),
+        start_idx=10,
+    )
+    window_1 = WebAttackWindow()
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res1 = threat_orchestrator_handler(
+            event=batch1,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=window_1,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res1["processed_events"] == 4
+        assert res1["threats_detected"] == []
+
+        # 2차 호출: 0~1초 스캔 2건 지연 인입 -> 15초 정상 요청이 있어도 0~4초 5건 누적 탐지
+        batch2 = _make_cw_nginx_event(
+            scan_messages[:2],
+            instance_id=mocked_ec2_target.instance_id,
+            base_timestamp_ms=int(base_ts * 1000),
+            start_idx=0,
+        )
+        window_2 = WebAttackWindow()
+        res2 = threat_orchestrator_handler(
+            event=batch2,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=window_2,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res2["processed_events"] == 2
+        assert res2["threats_detected"] == ["WEB_DIRECTORY_SCANNING"]
+        assert len(res2["remediation_results"]) == 1
+        assert res2["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+
+def test_web_orchestrator_delayed_single_signature_with_normal_request_blocked(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+) -> None:
+    """후속 정상 요청(15초)이 선행 저장되어 있더라도 지연 도착한 단일 시그니처(0초)가
+    누락 없이 탐지 및 WAF 차단되는지 검증.
+
+    Why:
+        후행 트래픽의 타임스탬프와 관계없이 단일 요청 자체로 위협인 시그니처 이벤트가
+        시간 윈도우 필터에 의해 배제되지 않음을 보장함.
+    """
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    attacker_ip = "198.51.100.247"
+    base_ts = parse_nginx_timestamp("28/Sep/2026:11:52:00 +0000")
+
+    # 15초 정상 요청 메시지
+    normal_message = (
+        f'{attacker_ip} - - [28/Sep/2026:11:52:15 +0000] "GET /health HTTP/1.1" '
+        '200 150 "-" "curl/8.0" 0.002 "-"'
+    )
+    # 0초 단일 시그니처 공격 메시지
+    sensitive_message = (
+        f'{attacker_ip} - - [28/Sep/2026:11:52:00 +0000] "GET /.env HTTP/1.1" '
+        '404 150 "-" "curl/8.0" 0.002 "-"'
+    )
+
+    # 1차 호출: 15초 정상 요청 먼저 처리
+    batch1 = _make_cw_nginx_event(
+        [normal_message],
+        instance_id=mocked_ec2_target.instance_id,
+        base_timestamp_ms=int((base_ts + 15.0) * 1000),
+        start_idx=10,
+    )
+    window_1 = WebAttackWindow()
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res1 = threat_orchestrator_handler(
+            event=batch1,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=window_1,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res1["processed_events"] == 1
+        assert res1["threats_detected"] == []
+
+        # 2차 호출: 0초 민감 파일 탐색 지연 인입 -> 15초 정상 요청과 무관하게 탐지/차단
+        batch2 = _make_cw_nginx_event(
+            [sensitive_message],
+            instance_id=mocked_ec2_target.instance_id,
+            base_timestamp_ms=int(base_ts * 1000),
+            start_idx=0,
+        )
+        window_2 = WebAttackWindow()
+        res2 = threat_orchestrator_handler(
+            event=batch2,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=window_2,
+            slack_webhook_url="https://hooks.slack.com/services/TEST/WAF/ALERT",
+        )
+        assert res2["processed_events"] == 1
+        assert res2["threats_detected"] == ["SENSITIVE_FILE_PROBING"]
+        assert len(res2["remediation_results"]) == 1
+        assert res2["remediation_results"][0]["waf_blocked"] is True
+
+        ip_set = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
