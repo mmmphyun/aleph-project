@@ -1,12 +1,13 @@
 # CloudShield 시나리오 2 통합 E2E 관통 테스트 슈트
 # 소유자: 클라우드 A (플랫폼 전담)
-"""시나리오 2 (Web L7 공격) 유형별 E2E 파이프라인 관통 및 10초 자동 대응 검증.
+"""시나리오 2 (Web L7 공격) 유형별 E2E 파이프라인 관통 및 자동 대응 기능 검증.
 
 Why:
     CloudWatch Logs Subscription Filter를 통해 비동기 인입되는 Nginx 접근 로그 페이로드 디코딩부터
     DynamoDB 기반 2-버킷 슬라이딩 윈도우(WebAttackWindow) 누적, 보안 룰 평가(evaluate_web_rules),
     IncidentReport 변환, WAFv2 IPSet L7 원자적 차단, Slack Block Kit 상황 전파까지
-    Web 공격 자동 방어 파이프라인의 종단 간(E2E) 무결성을 단일 체인으로 검증함.
+    Web 공격 자동 방어 파이프라인의 종단 간(E2E) 무결성을 단일 체인으로 기능 검증함.
+    (주: 실제 인프라의 10초 미만 SLA 측정은 Phase 4 실기기 실측 마일스톤에서 증빙함)
 
 Constraints:
     - Pytest 환경의 --disable-socket 제약 준수를 위해 외부 통신은 moto 및 Mock으로 완전 격리함.
@@ -65,11 +66,11 @@ def test_e2e_scenario2_web_path_traversal_pipeline(
     mocked_ec2_target: MockEc2Target,
     mocked_waf_ipset: MockWafTarget,
 ) -> None:
-    """[시나리오 2-A] Web L7 즉시 차단 위협(Path Traversal) E2E 관통 대응 검증.
+    """[시나리오 2-A] Web L7 즉시 차단 위협(Path Traversal) E2E 관통 대응 기능 검증.
 
     Why:
         Path Traversal과 같은 즉시 차단 위협 인입 시, 타깃 EC2 인스턴스의 L4 가용성을 유지하면서
-        10초 내에 WAFv2 IPSet에 공격자 IP가 L7 차단 등록되고 Slack 전파가 집행됨을 보장함.
+        WAFv2 IPSet에 공격자 IP가 L7 차단 등록되고 Slack 전파가 집행됨을 보장함.
     """
     ec2_client = boto3.client("ec2", region_name="us-east-1")
     waf_client = boto3.client("wafv2", region_name="us-east-1")
@@ -141,7 +142,10 @@ def test_e2e_scenario2_web_directory_scanning_split_batch_pipeline(
     """
     ec2_client = boto3.client("ec2", region_name="us-east-1")
     waf_client = boto3.client("wafv2", region_name="us-east-1")
-    web_window = WebAttackWindow()
+    # 무상태 Lambda 런타임 간 인메모리 프로세스 공유를 배제하고
+    # 오직 DynamoDB 영속화 계층을 통해서만 슬라이딩 윈도우가 복원·누적됨을 검증
+    runtime_window_1 = WebAttackWindow()
+    runtime_window_2 = WebAttackWindow()
 
     attacker_ip = "198.51.100.221"
     instance_id = mocked_ec2_target.instance_id
@@ -170,7 +174,7 @@ def test_e2e_scenario2_web_directory_scanning_split_batch_pipeline(
             event=event_batch1,
             ec2_client=ec2_client,
             waf_client=waf_client,
-            web_window=web_window,
+            web_window=runtime_window_1,
             slack_webhook_url=webhook_url,
         )
 
@@ -187,7 +191,7 @@ def test_e2e_scenario2_web_directory_scanning_split_batch_pipeline(
         )
         assert f"{attacker_ip}/32" not in ip_set_1["IPSet"]["Addresses"]
 
-        # 배치 2: 후속 2개 요청 인입 (동일 10초 윈도우 내 총 5개 누적 도달 -> 차단 집행)
+        # 배치 2: 후속 2개 요청 인입 (독립 런타임 객체 주입 -> DynamoDB 누적 기반 차단 집행)
         event_batch2 = _create_cw_nginx_payload(
             all_messages[3:],
             instance_id=instance_id,
@@ -199,7 +203,7 @@ def test_e2e_scenario2_web_directory_scanning_split_batch_pipeline(
             event=event_batch2,
             ec2_client=ec2_client,
             waf_client=waf_client,
-            web_window=web_window,
+            web_window=runtime_window_2,
             slack_webhook_url=webhook_url,
         )
 
