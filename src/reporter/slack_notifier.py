@@ -43,6 +43,28 @@ MAX_FIELD_LENGTH = 500
 MAX_HEADER_LENGTH = 150
 
 
+def escape_slack_text(text: str) -> str:
+    """Slack mrkdwn 제어 문자(&, <, >)를 안전한 HTML 엔티티로 이스케이프.
+
+    Why:
+        Slack Block Kit의 mrkdwn 텍스트 블록은 `<`, `>`, `&`를 특수 제어 문법
+        (예: <!channel> 브로드캐스트, URL 링크, 사용자 멘션)으로 해석함.
+        공격 페이로드(XSS 스크립트, 경로 순회 등)나 외부 입력에 포함된 특수문자를
+        사전에 이스케이프하지 않으면 원치 않는 채널 멘션 전파나 메시지 파싱 깨짐이 발생함.
+
+    Constraints:
+        - 반드시 `&`를 먼저 `&amp;`로 치환한 후, `<`를 `&lt;`, `>`를 `&gt;`로 순차 치환해야 함
+          (이중 인코딩 방지).
+        - Slack 규격(https://docs.slack.dev/messaging/formatting-message-text/#escaping-text)상
+          오직 &, <, > 세 문자만 엔티티 변환 대상임.
+
+    Side-effects / Edge-cases:
+        - 빈 문자열 인입 시 빈 문자열 반환.
+        - 순수 텍스트 변환으로 런타임 예외가 발생하지 않음.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def truncate_text(text: str, max_length: int = MAX_FIELD_LENGTH) -> str:
     """텍스트가 제한 길이를 초과할 경우 말줄임표(...)를 붙여 안전하게 자름.
 
@@ -98,7 +120,7 @@ def build_slack_payload(
 
     # 공격 대상 계정 포맷팅
     if report.target_accounts:
-        accounts_text = ", ".join(report.target_accounts)
+        accounts_text = ", ".join(escape_slack_text(acc) for acc in report.target_accounts)
     else:
         accounts_text = "없음 (단일 호스트 스캔)"
 
@@ -108,7 +130,9 @@ def build_slack_payload(
     #      지시된 모든 계층의 결과를 확인해야 부분 성공을 전체 완료로 오인하지 않는다.
     # Constraints / Edge-cases: 결과 키 누락은 미완료이며 결과 미전달은 성공 근거가 아니다.
     if report.recommendations:
-        rec_lines = [f"{idx + 1}. {rec}" for idx, rec in enumerate(report.recommendations)]
+        rec_lines = [
+            f"{idx + 1}. {escape_slack_text(rec)}" for idx, rec in enumerate(report.recommendations)
+        ]
         recommendations_text = "\n".join(rec_lines)
     elif remediation_result is not None:
         req_waf = report.action_required in (
@@ -138,7 +162,9 @@ def build_slack_payload(
     header_text = truncate_text(
         f"{emoji} [CloudShield] 침해사고 긴급 탐지 및 자동 대응 알림", MAX_HEADER_LENGTH
     )
-    summary_text = truncate_text(f"*사고 요약:*\n{report.summary_ko}", MAX_FIELD_LENGTH)
+    summary_text = truncate_text(
+        f"*사고 요약:*\n{escape_slack_text(report.summary_ko)}", MAX_FIELD_LENGTH
+    )
     accounts_block_text = truncate_text(f"*공격 대상 계정:*\n{accounts_text}", MAX_FIELD_LENGTH)
     recommendations_block_text = truncate_text(
         f"*SecOps 권고 조치:*\n{recommendations_text}", MAX_FIELD_LENGTH
@@ -150,22 +176,23 @@ def build_slack_payload(
 
     # fields 섹션 내 6개 필드 최종 표시 문자열 500자 상한 적용
     field_incident_id = truncate_text(
-        f"*사건 ID (incident_id):*\n`{report.incident_id}`", MAX_FIELD_LENGTH
+        f"*사건 ID (incident_id):*\n`{escape_slack_text(report.incident_id)}`", MAX_FIELD_LENGTH
     )
     field_attack_type = truncate_text(
-        f"*공격 유형 (rule_name):*\n{report.attack_type}", MAX_FIELD_LENGTH
+        f"*공격 유형 (rule_name):*\n{escape_slack_text(report.attack_type)}", MAX_FIELD_LENGTH
     )
     field_source_ip = truncate_text(
-        f"*출발지 IP (source_ip):*\n`{report.source_ip}`", MAX_FIELD_LENGTH
+        f"*출발지 IP (source_ip):*\n`{escape_slack_text(report.source_ip)}`", MAX_FIELD_LENGTH
     )
     field_risk_level = truncate_text(
-        f"*위험도 (risk_level):*\n*{report.risk_level}*", MAX_FIELD_LENGTH
+        f"*위험도 (risk_level):*\n*{escape_slack_text(report.risk_level)}*", MAX_FIELD_LENGTH
     )
     field_target_id = truncate_text(
-        f"*타깃 식별자:*\n`{report.target_identifier}`", MAX_FIELD_LENGTH
+        f"*타깃 식별자:*\n`{escape_slack_text(report.target_identifier)}`", MAX_FIELD_LENGTH
     )
     field_remediation = truncate_text(
-        f"*대응 조치 (remediation_action):*\n*{report.action_required}*", MAX_FIELD_LENGTH
+        f"*대응 조치 (remediation_action):*\n*{escape_slack_text(report.action_required)}*",
+        MAX_FIELD_LENGTH,
     )
 
     blocks: list[dict[str, Any]] = [
@@ -307,7 +334,8 @@ def build_slack_payload(
     )
 
     fallback_text = truncate_text(
-        f"[{report.risk_level}] CloudShield 보안 경보 - {report.incident_id}: {report.attack_type}",
+        f"[{report.risk_level}] CloudShield 보안 경보 - "
+        f"{escape_slack_text(report.incident_id)}: {escape_slack_text(report.attack_type)}",
         MAX_FIELD_LENGTH,
     )
 
@@ -364,25 +392,28 @@ def build_waf_slack_payload(
     header_text = truncate_text(
         f"{emoji} [CloudShield] L7 WAF 웹 침해사고 탐지 및 차단 알림", MAX_HEADER_LENGTH
     )
-    summary_text = truncate_text(f"*L7 웹 위협 요약:*\n{report.summary_ko}", MAX_FIELD_LENGTH)
+    summary_text = truncate_text(
+        f"*L7 웹 위협 요약:*\n{escape_slack_text(report.summary_ko)}", MAX_FIELD_LENGTH
+    )
 
     field_incident_id = truncate_text(
-        f"*사건 ID (incident_id):*\n`{report.incident_id}`", MAX_FIELD_LENGTH
+        f"*사건 ID (incident_id):*\n`{escape_slack_text(report.incident_id)}`", MAX_FIELD_LENGTH
     )
     field_attack_type = truncate_text(
-        f"*공격 유형 (rule_name):*\n{report.attack_type}", MAX_FIELD_LENGTH
+        f"*공격 유형 (rule_name):*\n{escape_slack_text(report.attack_type)}", MAX_FIELD_LENGTH
     )
     field_source_ip = truncate_text(
-        f"*차단 IP (source_ip):*\n`{report.source_ip}`", MAX_FIELD_LENGTH
+        f"*차단 IP (source_ip):*\n`{escape_slack_text(report.source_ip)}`", MAX_FIELD_LENGTH
     )
     field_risk_level = truncate_text(
-        f"*위험도 (risk_level):*\n*{report.risk_level}*", MAX_FIELD_LENGTH
+        f"*위험도 (risk_level):*\n*{escape_slack_text(report.risk_level)}*", MAX_FIELD_LENGTH
     )
     field_target_id = truncate_text(
-        f"*타깃 인스턴스:*\n`{report.target_identifier}`", MAX_FIELD_LENGTH
+        f"*타깃 인스턴스:*\n`{escape_slack_text(report.target_identifier)}`", MAX_FIELD_LENGTH
     )
     field_remediation = truncate_text(
-        f"*대응 조치 (remediation_action):*\n*{report.action_required}*", MAX_FIELD_LENGTH
+        f"*대응 조치 (remediation_action):*\n*{escape_slack_text(report.action_required)}*",
+        MAX_FIELD_LENGTH,
     )
 
     waf_target_name = ipset_name or DEFAULT_WAF_IPSET_NAME
@@ -408,7 +439,7 @@ def build_waf_slack_payload(
     )
 
     if report.target_accounts:
-        accounts_text = ", ".join(report.target_accounts)
+        accounts_text = ", ".join(escape_slack_text(acc) for acc in report.target_accounts)
     else:
         accounts_text = "지정 계정 없음 (웹 엔드포인트 URL/디렉토리 스캐닝)"
     accounts_block_text = truncate_text(
@@ -416,7 +447,9 @@ def build_waf_slack_payload(
     )
 
     if report.recommendations:
-        rec_lines = [f"{idx + 1}. {rec}" for idx, rec in enumerate(report.recommendations)]
+        rec_lines = [
+            f"{idx + 1}. {escape_slack_text(rec)}" for idx, rec in enumerate(report.recommendations)
+        ]
         recommendations_text = "\n".join(rec_lines)
     elif not req_waf:
         recommendations_text = "별도 WAF 권고 조치 없음 (차단 미대상)"
@@ -501,7 +534,7 @@ def build_waf_slack_payload(
 
     fallback_text = truncate_text(
         f"[{report.risk_level}] CloudShield L7 WAF 차단 - "
-        f"{report.incident_id}: {report.attack_type}",
+        f"{escape_slack_text(report.incident_id)}: {escape_slack_text(report.attack_type)}",
         MAX_FIELD_LENGTH,
     )
 
