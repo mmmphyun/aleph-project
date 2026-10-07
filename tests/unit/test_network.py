@@ -7,9 +7,166 @@ import shutil
 import subprocess
 import tempfile
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def waf_timeline():
+    path = Path(__file__).resolve().parents[2] / "network/waf_packet_timeline.py"
+    spec = importlib.util.spec_from_file_location("waf_packet_timeline", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def waf_csv(module, rows):
+    return ",".join(module.FIELDS) + "\n" + "\n".join(",".join(map(str, row)) for row in rows)
+
+
+def waf_packet(epoch="10.000000001", stream="0", flags=("0", "1", "0", "0")):
+    return [epoch, stream, "192.0.2.1", "40000", "192.0.2.2", "443", *flags]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [("0", "1", "0", "0"), ("0", "1", "1", "0"), ("0", "1", "0", "1"), ("0", "1", "1", "1")],
+)
+def test_waf_timeline_flags_never_infer_http_or_waf(waf_timeline, flags):
+    report = waf_timeline.analyze_csv(
+        waf_csv(waf_timeline, [waf_packet(flags=flags)]), start="10", end="11"
+    )
+    connection = report["streams"]["0"]
+    assert connection["fin_observed"] == (flags[2] == "1")
+    assert connection["rst_observed"] == (flags[3] == "1")
+    assert connection["packets"][0]["source"] == "192.0.2.1:40000"
+    assert report["waf_cause"] == "미확정"
+    assert "판정 불가" in report["http_status"]
+    if flags[2:] == ("0", "0"):
+        assert "관측 구간 내 종료 없음" in connection["observation"]
+
+
+def test_waf_timeline_keeps_reverse_direction_retransmissions_and_decimal_time(waf_timeline):
+    syn = waf_packet(epoch="10", flags=("1", "0", "0", "0"))
+    reply = waf_packet(epoch="10.000000001", flags=("1", "1", "0", "0"))
+    reply[2:6] = ["192.0.2.2", "443", "192.0.2.1", "40000"]
+    report = waf_timeline.analyze_csv(
+        waf_csv(waf_timeline, [reply, syn, syn]), start="10", end="11"
+    )
+    stream = report["streams"]["0"]
+    assert stream["input_out_of_order"]
+    assert len(stream["packets"]) == 3
+    assert stream["packets"][2]["offset_seconds"] == "0.000000001"
+    assert Decimal(stream["packets"][2]["epoch"]) - Decimal(
+        stream["packets"][0]["epoch"]
+    ) == Decimal("0.000000001")
+    assert "자동 확정하지 않음" in report["handshake"]
+
+
+def test_waf_timeline_new_connection_not_reuse_and_missing_packets(waf_timeline):
+    first, second = waf_packet(), waf_packet(stream="1")
+    second[3] = "40001"
+    report = waf_timeline.analyze_csv(waf_csv(waf_timeline, [first, second]), start="10", end="11")
+    assert len(report["streams"]) == 2
+    empty = waf_timeline.analyze_csv(waf_csv(waf_timeline, []), start="10", end="11")
+    assert empty["packet_count"] == 0 and empty["streams"] == {}
+    assert empty["waf_cause"] == "미확정"
+
+
+@pytest.mark.parametrize(
+    "index,value",
+    [
+        (0, "NaN"),
+        (0, "9"),
+        (0, "12"),
+        (0, "1e1"),
+        (1, "-1"),
+        (2, "2001:db8::1"),
+        (2, "secret-token"),
+        (3, "0"),
+        (3, "65536"),
+        (3, "0443"),
+        (6, "2"),
+    ],
+)
+def test_waf_timeline_rejects_bad_fields_without_echo(waf_timeline, index, value):
+    packet = waf_packet()
+    packet[index] = value
+    with pytest.raises(ValueError) as error:
+        waf_timeline.analyze_csv(waf_csv(waf_timeline, [packet]), start="10", end="11")
+    assert "secret-token" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "violation",
+    [
+        "extra_column",
+        "short_row",
+        "extra_row_field",
+        "changed_tuple",
+        "backward_window",
+        "oversize",
+        "rows",
+    ],
+)
+def test_waf_timeline_rejects_ambiguous_or_unbounded_evidence(waf_timeline, violation):
+    raw = waf_csv(waf_timeline, [waf_packet()])
+    start, end = "10", "11"
+    if violation == "extra_column":
+        raw = raw.replace("tcp.flags.reset\n", "tcp.flags.reset,Authorization\n")
+    elif violation == "short_row":
+        raw = ",".join(waf_timeline.FIELDS) + "\n10,0"
+    elif violation == "extra_row_field":
+        raw += ",secret-token"
+    elif violation == "changed_tuple":
+        changed = waf_packet()
+        changed[3] = "40001"
+        raw = waf_csv(waf_timeline, [waf_packet(), changed])
+    elif violation == "backward_window":
+        end = start
+    elif violation == "oversize":
+        raw = "x" * (waf_timeline.MAX_BYTES + 1)
+    else:
+        raw = waf_csv(waf_timeline, [waf_packet()] * (waf_timeline.MAX_ROWS + 1))
+    with pytest.raises(ValueError):
+        waf_timeline.analyze_csv(raw, start=start, end=end)
+
+
+def test_waf_timeline_writer_preserves_existing_and_invalid_input_has_no_output(
+    waf_timeline, tmp_path
+):
+    source, output = tmp_path / "tcp.csv", tmp_path / "report.json"
+    source.write_text(waf_csv(waf_timeline, [waf_packet()]))
+    output.write_text("existing")
+    with pytest.raises(FileExistsError):
+        waf_timeline.write_report(source, output, start="10", end="11")
+    assert output.read_text() == "existing"
+    fresh = tmp_path / "fresh.json"
+    source.write_text("Authorization,secret-token")
+    with pytest.raises(ValueError):
+        waf_timeline.write_report(source, fresh, start="10", end="11")
+    assert not fresh.exists()
+    source.write_text(waf_csv(waf_timeline, [waf_packet()]))
+    waf_timeline.write_report(source, fresh, start="10", end="11")
+    assert json.loads(fresh.read_text(encoding="utf-8"))["packet_count"] == 1
+
+
+def test_waf_timeline_cli_failure_does_not_echo_raw_or_invoke_tools(
+    waf_timeline, tmp_path, monkeypatch, capsys
+):
+    source = tmp_path / "secret-token.csv"
+    source.write_text("Authorization,secret-token")
+    output = tmp_path / "fresh.json"
+    monkeypatch.setattr(
+        "sys.argv", ["timeline", str(source), str(output), "--start", "10", "--end", "11"]
+    )
+    with pytest.raises(SystemExit) as error:
+        waf_timeline.main()
+    assert error.value.code == 2
+    assert "secret-token" not in capsys.readouterr().err
+    assert not output.exists()
 
 
 @pytest.fixture
