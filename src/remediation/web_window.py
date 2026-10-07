@@ -208,6 +208,10 @@ class WebAttackWindow:
                     break
 
             if not persisted:
+                # 롤백: 영속화 실패 시 인메모리 캐시에서도 제거하여 차기 재시도 허용
+                self._seen_event_ids[key].discard(event_id)
+                if self._entries[key] and self._entries[key][-1].event_id == event_id:
+                    self._entries[key].pop()
                 err_detail = (
                     str(last_client_error)
                     if last_client_error
@@ -226,8 +230,11 @@ class WebAttackWindow:
         """지정된 타깃/IP의 10초 슬라이딩 윈도우 내 유효 이벤트를 반환한다.
 
         Why:
-            2-버킷의 모든 슬롯(기본 및 오버플로)을 Strongly Consistent Read로 조회하여
-            버킷 포화 상태에서도 분할 저장된 이벤트를 누락 없이 병합함.
+            분할 배치가 네트워크 지연이나 동시성으로 인해 역순 인입되더라도
+            인접 3-버킷(직전, 현재, 차기) 및 모든 슬롯을 Strongly Consistent Read로 조회하고,
+            저장 이력의 최신 타임스탬프(anchor_time)를 기준으로 10초 윈도우를 평가하여
+            배치 처리 순서 역전 시의 미탐지를 방지함.
+            GetItem 실패 시 PersistenceError를 발생시켜 조용한 실패를 차단함.
         """
         key = (target_identifier, source_ip)
         merged_entries: list[_WebLogEntry] = []
@@ -243,11 +250,10 @@ class WebAttackWindow:
                 else time.time()
             )
 
-        # 1. DynamoDB 2-버킷(직전 버킷, 현재 버킷) 및 슬롯에서 이벤트 로드
+        # 1. DynamoDB 3-버킷(직전, 현재, 차기) 및 슬롯에서 이벤트 로드
         if self._use_dynamodb and self._table is not None:
             cur_bucket = self._get_bucket_id(ref_time)
-            prev_bucket = cur_bucket - 1
-            for b_id in (prev_bucket, cur_bucket):
+            for b_id in (cur_bucket - 1, cur_bucket, cur_bucket + 1):
                 for slot in range(MAX_SLOTS_PER_BUCKET):
                     target_key = self._get_target_key(target_identifier, source_ip, b_id, slot=slot)
                     try:
@@ -281,6 +287,9 @@ class WebAttackWindow:
                         logger.error(
                             "DynamoDB 웹 공격 이력 조회 실패 (key=%s): %s", target_key, exc
                         )
+                        raise PersistenceError(
+                            f"DynamoDB 웹 공격 이력 조회 실패 (key={target_key}): {exc}"
+                        ) from exc
 
         # 2. 로컬 인메모리 엔트리 병합
         for entry in self._entries.get(key, []):
@@ -291,8 +300,11 @@ class WebAttackWindow:
         if not merged_entries:
             return []
 
-        cutoff = ref_time - self.window_seconds
-        active_entries = [e for e in merged_entries if cutoff <= e.timestamp_epoch <= ref_time]
+        # 저장된 이력 및 현재 참조 시각 중 최신 시각을 기준(anchor)으로 10초 윈도우 평가
+        latest_epoch = max(e.timestamp_epoch for e in merged_entries)
+        anchor_time = max(ref_time, latest_epoch)
+        cutoff = anchor_time - self.window_seconds
+        active_entries = [e for e in merged_entries if cutoff <= e.timestamp_epoch <= anchor_time]
         active_entries.sort(key=lambda e: e.timestamp_epoch)
         return [e.event for e in active_entries]
 
@@ -310,7 +322,7 @@ class WebAttackWindow:
         if self._use_dynamodb and self._table is not None:
             now = reference_time if reference_time is not None else time.time()
             cur_bucket = self._get_bucket_id(now)
-            for offset in (-2, -1, 0, 1):
+            for offset in (-2, -1, 0, 1, 2):
                 b_id = cur_bucket + offset
                 for slot in range(MAX_SLOTS_PER_BUCKET):
                     target_key = self._get_target_key(target_identifier, source_ip, b_id, slot=slot)

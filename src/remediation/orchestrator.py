@@ -199,12 +199,24 @@ def threat_orchestrator_handler(
                     exc,
                 )
                 response.setdefault("persistence_errors", []).append(f"{source_ip}:{event_id}")
+                continue
 
-            active_events = web_window.get_active_events(
-                target_identifier=target_instance_id,
-                source_ip=source_ip,
-                reference_time=ts_epoch,
-            )
+            try:
+                active_events = web_window.get_active_events(
+                    target_identifier=target_instance_id,
+                    source_ip=source_ip,
+                    reference_time=ts_epoch,
+                )
+            except PersistenceError as exc:
+                logger.error(
+                    "웹 이벤트 윈도우 이력 조회 실패 격리 (IP=%s, EventID=%s): %s",
+                    source_ip,
+                    event_id,
+                    exc,
+                )
+                response.setdefault("persistence_errors", []).append(f"{source_ip}:{event_id}")
+                continue
+
             if not active_events:
                 continue
 
@@ -280,6 +292,12 @@ def threat_orchestrator_handler(
             response["slack_notified"] = all(slack_notification_results)
         else:
             response["slack_notified"] = False
+
+        if response.get("persistence_errors"):
+            failed_keys = ", ".join(response["persistence_errors"])
+            raise PersistenceError(
+                f"DynamoDB 윈도우 영속화/조회 실패로 Lambda 재처리 신호 전달: [{failed_keys}]"
+            )
 
         return response
 
