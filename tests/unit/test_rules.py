@@ -9,6 +9,9 @@ Why:
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -627,3 +630,274 @@ def test_brute_force_has_priority_over_spraying() -> None:
 
     assert is_detected is True
     assert rule_name == "SSH_BRUTE_FORCE"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "/admin-help",
+        "/login-guide",
+        "/apiary",
+        "/configurator",
+        "/.../guide",
+        "/docs/a..b",
+        "/.environment",
+        "/database.sql.txt",
+    ],
+)
+def test_web_normal_path_lookalikes_do_not_trigger(uri: str) -> None:
+    """관리 경로·탈출 토큰·민감 확장자의 부분 문자열로 정상 자원을 오판하지 않는다."""
+    events = [_make_nginx_event(second=index, uri=uri) for index in range(10)]
+    assert evaluate_web_rules(events) == (False, None)
+
+
+@pytest.mark.parametrize("query", ["next=/../docs", "file=/.env", "name=backup.sql", "q=%2e%2e%2f"])
+def test_web_query_only_signature_is_not_path_evidence(query: str) -> None:
+    """현재 경로 전용 정책을 고정하며 쿼리 기반 공격 탐지 범위로 확대하지 않는다."""
+    assert evaluate_web_rules([_make_nginx_event(second=0, uri=f"/search?{query}")]) == (
+        False,
+        None,
+    )
+
+
+@pytest.mark.parametrize("status", [400, 405, 408, 429, 500, 502, 503])
+def test_web_non_policy_errors_do_not_count_as_scan_failures(status: int) -> None:
+    """서버 장애·요청 제한을 접근 실패 401/403/404와 혼합해 자동 차단하지 않는다."""
+    events = [
+        _make_nginx_event(second=index, uri=path, status_code=status)
+        for index, path in enumerate(["/admin", "/login", "/dashboard", "/api", "/private"])
+    ]
+    assert evaluate_web_rules(events) == (False, None)
+
+
+@pytest.mark.parametrize("status", [200, 201, 204, 301, 302, 304])
+def test_web_normal_management_browsing_does_not_trigger(status: int) -> None:
+    """관리 페이지 다섯 개를 정상적으로 조회해도 경로 다양성만으로 차단하지 않는다."""
+    events = [
+        _make_nginx_event(second=index, uri=path, status_code=status)
+        for index, path in enumerate(["/admin", "/login", "/dashboard", "/api", "/private"])
+    ]
+    assert evaluate_web_rules(events) == (False, None)
+
+
+def test_web_repeated_failure_does_not_inflate_failed_path_diversity() -> None:
+    """고유 경로가 충분해도 한 경로의 반복 실패를 세 실패 경로로 세지 않는다."""
+    events = [_make_nginx_event(second=index, uri="/admin") for index in range(3)]
+    events += [
+        _make_nginx_event(second=3 + index, uri=path, status_code=200)
+        for index, path in enumerate(["/login", "/dashboard", "/api", "/private"])
+    ]
+    assert evaluate_web_rules(events) == (False, None)
+
+
+def test_web_query_variations_do_not_create_distinct_paths() -> None:
+    """캐시·페이지 쿼리만 다른 동일 관리 경로는 스캔 다양성을 늘리지 않는다."""
+    events = [_make_nginx_event(second=index, uri=f"/admin?page={index}") for index in range(10)]
+    assert evaluate_web_rules(events) == (False, None)
+
+
+def test_web_expired_failure_is_not_retained_by_new_success_on_same_path() -> None:
+    """과거 실패 경로가 새 성공 요청과 겹쳐도 실패 카운트는 별도로 만료되어야 한다."""
+    events = [_make_nginx_event(second=0, uri="/admin")]
+    paths = ["/admin", "/login", "/dashboard", "/api", "/private"]
+    statuses = [200, 403, 404, 200, 200]
+    events += [
+        _make_nginx_event(second=11 + index, uri=path, status_code=status)
+        for index, (path, status) in enumerate(zip(paths, statuses, strict=True))
+    ]
+    assert evaluate_web_rules(events) == (False, None)
+
+
+def test_web_expired_failed_paths_are_removed_from_active_window() -> None:
+    """시간창 밖 실패 세 건과 이후 정상 조회를 결합해 허위 스캔을 만들지 않는다."""
+    events = [
+        _make_nginx_event(second=index, uri=path)
+        for index, path in enumerate(["/admin", "/login", "/dashboard"])
+    ]
+    events += [
+        _make_nginx_event(second=20 + index, uri=path, status_code=200)
+        for index, path in enumerate(["/api", "/private", "/internal", "/debug", "/metrics"])
+    ]
+    assert evaluate_web_rules(events) == (False, None)
+
+
+@pytest.mark.parametrize("order", [(4, 3, 2, 1, 0), (2, 0, 4, 1, 3), (0, 4, 1, 3, 2)])
+def test_web_out_of_order_batch_preserves_scan_decision(order: tuple[int, ...]) -> None:
+    """배치 내 역순 인입은 발생 시각 정렬로 같은 판정을 유지한다; 배치 간 누적은 별도다."""
+    events = [
+        _make_nginx_event(second=index, uri=path)
+        for index, path in enumerate(["/admin", "/login", "/dashboard", "/api", "/private"])
+    ]
+    assert evaluate_web_rules([events[index] for index in order]) == (
+        True,
+        "WEB_DIRECTORY_SCANNING",
+    )
+
+
+def test_web_late_old_event_does_not_extend_window() -> None:
+    """마지막에 도착한 오래된 실패를 최신 시각으로 취급하지 않는다."""
+    events = [
+        _make_nginx_event(second=20 + index, uri=path)
+        for index, path in enumerate(["/admin", "/login", "/dashboard", "/api"])
+    ]
+    events.append(_make_nginx_event(second=0, uri="/private"))
+    assert evaluate_web_rules(events) == (False, None)
+
+
+def test_web_rule_calls_do_not_share_hidden_state() -> None:
+    """Lambda의 분할 배치 누적을 룰 내부 메모리에 숨기지 않고 플랫폼에 위임한다."""
+    events = [
+        _make_nginx_event(second=index, uri=path)
+        for index, path in enumerate(["/admin", "/login", "/dashboard", "/api", "/private"])
+    ]
+    assert evaluate_web_rules(events[:3]) == (False, None)
+    assert evaluate_web_rules(events[3:]) == (False, None)
+    assert evaluate_web_rules(events) == (True, "WEB_DIRECTORY_SCANNING")
+    assert evaluate_web_rules(events[:3]) == (False, None)
+
+
+@pytest.mark.parametrize("position", [0, 3, 6])
+def test_web_traversal_priority_is_independent_of_event_position(position: int) -> None:
+    """스캔·민감 파일과 혼재해도 경로 탈출이 전역 우선순위를 유지한다."""
+    events = [
+        _make_nginx_event(second=index, uri=path)
+        for index, path in enumerate(
+            ["/admin", "/login", "/dashboard", "/api", "/private", "/.env"]
+        )
+    ]
+    events.insert(position, _make_nginx_event(second=7, uri="/../etc/passwd"))
+    assert evaluate_web_rules(events) == (True, "PATH_TRAVERSAL")
+
+
+@pytest.mark.parametrize("position", [0, 5])
+def test_web_sensitive_file_has_priority_over_directory_scan(position: int) -> None:
+    """디렉터리 열거 임계치를 먼저 충족해도 더 구체적인 파일 탐색 룰을 반환한다."""
+    events = [
+        _make_nginx_event(second=index, uri=path)
+        for index, path in enumerate(["/admin", "/login", "/dashboard", "/api", "/private"])
+    ]
+    events.insert(position, _make_nginx_event(second=6, uri="/.git/config"))
+    assert evaluate_web_rules(events) == (True, "SENSITIVE_FILE_PROBING")
+
+
+def test_web_evaluation_preserves_event_order_and_evidence() -> None:
+    """탐지를 위한 정렬·디코딩이 수집 원문이나 호출자 이벤트 순서를 변조하지 않는다."""
+    events = [
+        _make_nginx_event(second=4 - index, uri=path)
+        for index, path in enumerate(["/admin", "/login", "/dashboard", "/api", "/private"])
+    ]
+    before = [event.model_dump() for event in events]
+    assert evaluate_web_rules(events) == (True, "WEB_DIRECTORY_SCANNING")
+    assert [event.model_dump() for event in events] == before
+
+
+@pytest.mark.parametrize("uri", ["/문서/안내", "/café/menu", "/assets/画像.png"])
+def test_web_unicode_normal_paths_are_not_scan_evidence(uri: str) -> None:
+    """UTF-8 정상 자원을 실패 응답이나 비ASCII 문자만으로 공격에 포함하지 않는다."""
+    assert evaluate_web_rules([_make_nginx_event(second=0, uri=uri)]) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "uri", ["/../etc/passwd", "/%2e%2e%2fetc/passwd", "/%252e%252e%252fetc/passwd"]
+)
+def test_web_raw_nginx_encoding_variants_reach_same_traversal_rule(uri: str) -> None:
+    """실제 원문 계약 파싱 1회와 룰 정규화 1회를 연결해 단일·이중 인코딩을 검증한다."""
+    event = NginxAccessLogEvent.parse_line(
+        "198.51.100.77 - - [28/Sep/2026:11:52:00 +0000] "
+        f'"GET {uri} HTTP/1.1" 404 150 "-" "curl/8.0" 0.002 "-"'
+    )
+    assert event is not None
+    assert evaluate_web_rules([event]) == (True, "PATH_TRAVERSAL")
+
+
+@pytest.mark.parametrize("uri", ["/docs/%ZZ", "/docs/%2", "/docs/%", "/docs/%FF"])
+def test_web_malformed_percent_sequences_do_not_become_attack_tokens(uri: str) -> None:
+    """불완전한 이스케이프·UTF-8 바이트가 예외나 가짜 탈출 토큰을 만들지 않는다."""
+    assert evaluate_web_rules([_make_nginx_event(second=0, uri=uri)]) == (False, None)
+
+
+def test_web_exact_uri_limit_accepts_benign_path() -> None:
+    """4096자는 유효한 상한이며 4097자 거부 정책과 혼동하지 않는다."""
+    event = _make_nginx_event(second=0, uri="/" + "a" * (MAX_URL_VALUE_LENGTH - 1))
+    assert evaluate_web_rules([event]) == (False, None)
+
+
+def test_web_oversized_uri_raises_before_any_signature_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """과대 입력의 ValueError를 숨기지 않으며 정규식 실행 전에 경계를 검사한다."""
+
+    class UnexpectedSearch:
+        def search(self, value: str) -> None:
+            raise AssertionError("과대 URI가 정규식까지 도달했습니다.")
+
+    monkeypatch.setattr("detection.rules.PATH_TRAVERSAL_PATTERN", UnexpectedSearch())
+    event = _make_nginx_event(second=0, uri="/" + "a" * MAX_URL_VALUE_LENGTH)
+    with pytest.raises(ValueError, match="4096"):
+        evaluate_web_rules([event])
+
+
+def test_web_longest_allowed_path_keeps_traversal_suffix_evidence() -> None:
+    """길이 제한을 맞춘 마지막 공격 토큰을 잘라내지 않고 검사한다."""
+    suffix = "/../etc/passwd"
+    uri = "/" + "a" * (MAX_URL_VALUE_LENGTH - 1 - len(suffix)) + suffix
+    assert len(uri) == MAX_URL_VALUE_LENGTH
+    assert evaluate_web_rules([_make_nginx_event(second=0, uri=uri)]) == (True, "PATH_TRAVERSAL")
+
+
+@pytest.mark.parametrize("fragment", ["/..x", "/...", ".sqx", "%ZZ"])
+@pytest.mark.parametrize("length", [256, 1024, MAX_URL_VALUE_LENGTH])
+def test_web_adversarial_near_miss_paths_remain_non_threat(fragment: str, length: int) -> None:
+    """매칭에 실패하는 반복 입력을 늘려도 탐지 정책과 입력 상한을 유지한다."""
+    uri = (fragment * (length // len(fragment) + 1))[:length]
+    assert evaluate_web_rules([_make_nginx_event(second=0, uri=uri)]) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "pattern_name,fragment",
+    [
+        ("PATH_TRAVERSAL_PATTERN", "/..x"),
+        ("PATH_TRAVERSAL_PATTERN", "/..."),
+        ("SENSITIVE_FILE_EXTENSION_PATTERN", ".sqx"),
+        ("SENSITIVE_FILE_EXTENSION_PATTERN", "..."),
+    ],
+)
+def test_web_regex_near_miss_cost_growth_is_bounded(pattern_name: str, fragment: str) -> None:
+    """격리 프로세스에서 길이별 비용과 15초 제한으로 ReDoS 회귀를 감시한다.
+
+    Constraints:
+        256·1024·4096자 실패 매칭의 5회 중앙값을 비교하며 문자당 비용에 4배 여유를 둔다.
+        짧은 측정의 잡음을 위한 호출당 1µs 하한을 적용한다. 이는 O(n)의 수학적 증명이 아니다.
+    Side-effects / Edge-cases:
+        정규식이 멈추면 자식 프로세스를 종료해 pytest 전체가 매칭에 갇히는 것을 방지한다.
+        네트워크·AWS 호출 없이 실제 룰의 컴파일된 패턴만 측정한다.
+    """
+    script = """
+import json
+import statistics
+import sys
+import timeit
+from detection import rules
+pattern = getattr(rules, sys.argv[1])
+fragment = sys.argv[2]
+measurements = []
+for length in (256, 1024, 4096):
+    value = (fragment * (length // len(fragment) + 1))[:length]
+    assert pattern.search(value) is None
+    count = max(100, 1_000_000 // length)
+    samples = timeit.repeat(lambda: pattern.search(value), repeat=5, number=count)
+    measurements.append([length, statistics.median(samples) / count])
+print(json.dumps(measurements))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, pattern_name, fragment],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    measurements = json.loads(result.stdout)
+    base_length, base_seconds = measurements[0]
+    for length, seconds in measurements[1:]:
+        assert seconds / length <= 4 * max(base_seconds, 1e-6) / base_length, measurements

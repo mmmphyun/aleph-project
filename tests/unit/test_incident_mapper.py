@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
+from pydantic import ValidationError
 
 from contracts.incident import IncidentReport
 from detection.incident_mapper import analyze_incident, map_threat_to_incident
@@ -247,3 +250,97 @@ def test_web_mapper_rejects_non_threat_and_uses_web_default_id(rule: str) -> Non
         map_threat_to_incident(is_threat=False, rule_name=rule, source_ip="198.51.100.77")
     report = map_threat_to_incident(is_threat=True, rule_name=rule, source_ip="198.51.100.77")
     assert report.incident_id == "INC-SIG-WEB-L7-001"
+
+
+@pytest.mark.parametrize(
+    "rule,attack_type,mitre_id",
+    [
+        ("PATH_TRAVERSAL", "Web Path Traversal", "T1595.002"),
+        ("SENSITIVE_FILE_PROBING", "Web Sensitive File Probing", "T1595.003"),
+        ("WEB_DIRECTORY_SCANNING", "Web Directory Scanning", "T1595.003"),
+    ],
+)
+def test_web_mapper_json_output_preserves_exact_contract_fields(
+    rule: str, attack_type: str, mitre_id: str
+) -> None:
+    """세 Web 룰 모두 플랫폼이 소비하는 필드 집합·JSON 타입·WAF 정책을 유지한다.
+
+    Why:
+        보호된 계약을 수정하지 않고 보안 매퍼 출력에서 필드 누락이나 추가를 감시한다.
+    Side-effects / Edge-cases:
+        직렬화 시 튜플은 JSON 배열이 되며 역직렬화 후에도 같은 불변 보고서가 복원되어야 한다.
+    """
+    report = map_threat_to_incident(
+        is_threat=True,
+        rule_name=rule,
+        source_ip="198.51.100.77",
+        target_identifier="i-0123456789abcdef0",
+        incident_id="INC-WEB-CONTRACT-001",
+    )
+    payload = json.loads(report.model_dump_json())
+    assert set(payload) == {
+        "incident_id",
+        "attack_type",
+        "mitre_id",
+        "risk_level",
+        "source_ip",
+        "target_identifier",
+        "target_accounts",
+        "summary_ko",
+        "action_required",
+        "recommendations",
+    }
+    assert payload["incident_id"] == "INC-WEB-CONTRACT-001"
+    assert payload["attack_type"] == attack_type
+    assert payload["mitre_id"] == mitre_id
+    assert payload["risk_level"] == "HIGH"
+    assert payload["source_ip"] == "198.51.100.77"
+    assert payload["target_identifier"] == "i-0123456789abcdef0"
+    assert payload["target_accounts"] == []
+    assert payload["action_required"] == "BLOCK_WAF"
+    assert isinstance(payload["summary_ko"], str) and payload["summary_ko"]
+    assert isinstance(payload["recommendations"], list) and payload["recommendations"]
+    assert all(isinstance(item, str) and item for item in payload["recommendations"])
+    assert IncidentReport.model_validate_json(report.model_dump_json()) == report
+
+
+@pytest.mark.parametrize(
+    "rule", ["PATH_TRAVERSAL", "SENSITIVE_FILE_PROBING", "WEB_DIRECTORY_SCANNING"]
+)
+def test_web_mapper_output_cannot_be_mutated_to_another_action(rule: str) -> None:
+    """후속 소비자가 보안 매퍼의 불변 조치 요청을 현장에서 변조할 수 없다."""
+    report = map_threat_to_incident(is_threat=True, rule_name=rule, source_ip="198.51.100.77")
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        report.action_required = "NONE"
+    assert report.action_required == "BLOCK_WAF"
+
+
+def test_web_mapper_preserves_caller_evidence_and_is_deterministic() -> None:
+    """중복 증거 제거는 출력에서만 적용하며 재호출이나 입력 목록을 변조하지 않는다."""
+    accounts = ["admin", "root", "admin"]
+    kwargs = {
+        "is_threat": True,
+        "rule_name": "PATH_TRAVERSAL",
+        "source_ip": "198.51.100.77",
+        "target_accounts": accounts,
+        "incident_id": "INC-WEB-EVIDENCE-001",
+    }
+    first = map_threat_to_incident(**kwargs)
+    second = map_threat_to_incident(**kwargs)
+    assert first == second
+    assert accounts == ["admin", "root", "admin"]
+    assert first.target_accounts == ("admin", "root")
+
+
+@pytest.mark.parametrize("source_ip", ["2001:db8::1", "198.51.100.77/32", "198.51.100.77:443"])
+def test_web_mapper_propagates_source_contract_errors(source_ip: str) -> None:
+    """잘못된 출발지를 임의 보정하지 않고 계약 예외를 호출부로 전파한다."""
+    with pytest.raises(ValidationError, match="source_ip"):
+        map_threat_to_incident(is_threat=True, rule_name="PATH_TRAVERSAL", source_ip=source_ip)
+
+
+@pytest.mark.parametrize("rule", [None, "path_traversal", "UNKNOWN_WEB_RULE"])
+def test_web_mapper_does_not_fallback_on_missing_or_unknown_rule(rule: str | None) -> None:
+    """누락되거나 미지원인 판정을 WAF 조치로 임의 승격하지 않고 명시적으로 거부한다."""
+    with pytest.raises(ValueError):
+        map_threat_to_incident(is_threat=True, rule_name=rule, source_ip="198.51.100.77")
