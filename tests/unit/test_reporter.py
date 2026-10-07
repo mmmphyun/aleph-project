@@ -25,6 +25,7 @@ from reporter.slack_notifier import (
     MAX_HEADER_LENGTH,
     build_slack_payload,
     build_waf_slack_payload,
+    escape_slack_text,
     send_slack_alert,
     truncate_text,
 )
@@ -1091,6 +1092,7 @@ def test_reporter_package_exports() -> None:
     assert hasattr(reporter, "build_waf_slack_payload")
     assert hasattr(reporter, "send_slack_alert")
     assert hasattr(reporter, "truncate_text")
+    assert hasattr(reporter, "escape_slack_text")
     assert hasattr(reporter, "MAX_FIELD_LENGTH")
     assert hasattr(reporter, "MAX_HEADER_LENGTH")
 
@@ -1492,3 +1494,157 @@ def test_send_slack_alert_card_selection_matrix(
         assert "차단 실패" not in block_text
         assert "차단 집행 진행 중" not in block_text
         assert "별도 WAF 권고 조치 없음 (차단 미대상)" in block_text
+
+
+def test_escape_slack_text() -> None:
+    """Slack mrkdwn 특수문자(&, <, >) 이스케이프 및 제어 문법 무력화 단위 테스트.
+
+    Why:
+        Slack Block Kit mrkdwn은 &, <, >를 특수 제어 문법으로 파싱하므로,
+        공격 페이로드의 HTML/XSS 태그 및 <!channel> 브로드캐스트를 일반 텍스트로 무력화해야 함.
+    """
+    # 1. 단일 특수문자 치환
+    assert escape_slack_text("Tom & Jerry") == "Tom &amp; Jerry"
+    assert escape_slack_text("<script>") == "&lt;script&gt;"
+    assert escape_slack_text("x > y") == "x &gt; y"
+
+    # 2. Slack 브로드캐스트/멘션 제어 문법 일반 텍스트화
+    assert escape_slack_text("<!channel>") == "&lt;!channel&gt;"
+    assert escape_slack_text("<!here>") == "&lt;!here&gt;"
+    assert escape_slack_text("<!subteam^ID123>") == "&lt;!subteam^ID123&gt;"
+    assert escape_slack_text("<@U123456>") == "&lt;@U123456&gt;"
+
+    # 3. 복합 공격 페이로드 및 이중 인코딩 방지 검증
+    #    (& 변환 후 &lt;의 &가 &amp;lt;로 재치환되지 않음)
+    payload = "<script>alert('xss');</script> & <!channel> path=/test?a=1&b=2"
+    escaped = escape_slack_text(payload)
+    expected = (
+        "&lt;script&gt;alert('xss');&lt;/script&gt; &amp; &lt;!channel&gt; path=/test?a=1&amp;b=2"
+    )
+    assert escaped == expected
+    assert "&amp;lt;" not in escaped
+    assert "&amp;gt;" not in escaped
+
+
+def test_build_waf_slack_payload_extreme_truncation_and_escaping() -> None:
+    """초장문 요약문 및 Slack 특수문자(<, >, &) 인입 시 Block Kit 글자 수 상한 및 포맷 안전성 검증.
+
+    Why:
+        Slack Block Kit API는 섹션 필드가 2,000자 또는 블록 텍스트가 3,000자를 초과할 경우
+        HTTP 400(invalid_payload)을 반환하며 알림을 거부함.
+        프로젝트 헌법(5.1) 및 전파 규격에 따라 모든 최종 표시 문자열은 500자(헤더 150자) 이내로
+        안전하게 절삭되어야 하며, 공격 페이로드의 <script>, <!channel>, & 등 mrkdwn 제어 문법이
+        &lt;, &gt;, &amp;로 이스케이프되어 비의도적 멘션 폭탄 및 XSS 서식 깨짐을 원천 방어해야 함.
+    """
+    long_summary = (
+        "공격자가 L7 웹 취약점 스캐닝을 시도하였습니다. "
+        "<script>alert('xss');</script> & <!channel> path=/../../etc/passwd?admin=1 "
+    ) * 30  # > 2,000 chars
+
+    report = IncidentReport(
+        incident_id="INC-20261007-EXTREME-01",
+        attack_type="Web L7 Directory Scan & Injection",
+        mitre_id="T1083",
+        risk_level="HIGH",
+        source_ip="198.51.100.222",
+        target_identifier="i-0abcd1234ef56789a",
+        target_accounts=["app_admin", "db_admin", "<script>bad_user</script>"],
+        summary_ko=long_summary,
+        action_required="BLOCK_WAF",
+        recommendations=[f"권고 조치 사항 #{i}: 즉각적인 조치 필요 & <!here>" for i in range(25)],
+    )
+
+    payload = build_waf_slack_payload(report, remediation_result={"waf_blocked": True})
+    blocks = payload["blocks"]
+    assert len(blocks) >= 6
+
+    # 1. 헤더 블록 글자 수 상한 검증 (MAX_HEADER_LENGTH = 150)
+    header_block = next(b for b in blocks if b.get("type") == "header")
+    header_text = header_block["text"]["text"]
+    assert len(header_text) <= MAX_HEADER_LENGTH
+
+    # 2. 모든 section 블록 단일 텍스트의 500자 상한 검증
+    #    (Slack 3,000자 및 프로젝트 500자 상한 엄격 단언)
+    for block in blocks:
+        if block.get("type") == "section" and "text" in block:
+            section_text = block["text"]["text"]
+            assert len(section_text) <= MAX_FIELD_LENGTH
+            assert len(section_text) <= 3000
+
+    # 3. fields 섹션 내 6대 필드 각각 500자 상한 검증 (Slack 2,000자 및 프로젝트 500자 상한)
+    fields_block = next(b for b in blocks if "fields" in b)
+    for field in fields_block["fields"]:
+        field_text = field.get("text", "")
+        assert len(field_text) <= MAX_FIELD_LENGTH
+        assert len(field_text) <= 2000
+
+    # 4. context 엘리먼트 500자 상한 검증
+    context_block = next(b for b in blocks if b.get("type") == "context")
+    for elem in context_block["elements"]:
+        elem_text = elem.get("text", "")
+        assert len(elem_text) <= MAX_FIELD_LENGTH
+
+    # 5. 최상위 fallback text 500자 상한 검증
+    assert len(payload["text"]) <= MAX_FIELD_LENGTH
+
+    # 6. 요약 블록 및 권고 블록의 MAX_FIELD_LENGTH(500자) 이하 및 말줄임표(...) 종료 검증
+    summary_block = next(
+        b for b in blocks if "*L7 웹 위협 요약:*" in b.get("text", {}).get("text", "")
+    )
+    summary_text = summary_block["text"]["text"]
+    assert len(summary_text) <= MAX_FIELD_LENGTH
+    assert summary_text.endswith("...")
+
+    recommendations_block = next(
+        b for b in blocks if "*SecOps 웹 방어 권고 조치:*" in b.get("text", {}).get("text", "")
+    )
+    rec_text = recommendations_block["text"]["text"]
+    assert len(rec_text) <= MAX_FIELD_LENGTH
+    assert rec_text.endswith("...")
+
+    # 7. Slack 특수문자(<, >, &) 엔티티 치환 검증 (&lt;, &gt;, &amp;)
+    assert "&lt;script&gt;" in summary_text
+    assert "&lt;/script&gt;" in summary_text
+    assert "&amp;" in summary_text
+    assert "&lt;!channel&gt;" in summary_text
+
+    # 8. raw HTML 태그 및 raw Slack 제어 문법(<!channel>) 잔존 배제 검증
+    assert "<script>" not in summary_text
+    assert "</script>" not in summary_text
+    assert "<!channel>" not in summary_text
+
+    # 9. 권고 조치 및 대상 계정 블록 내 특수문자 이스케이프 검증
+    accounts_block = next(
+        b for b in blocks if "*공격 대상 엔드포인트/계정:*" in b.get("text", {}).get("text", "")
+    )
+    accounts_text = accounts_block["text"]["text"]
+    assert "&lt;script&gt;bad_user&lt;/script&gt;" in accounts_text
+    assert "<script>" not in accounts_text
+
+    assert "&amp;" in rec_text
+    assert "&lt;!here&gt;" in rec_text
+    assert "<!here>" not in rec_text
+
+
+def test_send_slack_alert_network_failure_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_incident_data: dict[str, Any],
+) -> None:
+    """Slack Webhook 호출 중 타임아웃/소켓 장애 발생 시 무음 격리(Failure Isolation) 검증.
+
+    Why:
+        알림 전송 장애가 Lambda 오케스트레이터의 인프라 차단 프로세스에 영향을 주지 않도록
+        네트워크 에러(URLError, TimeoutError) 발생 시 예외를 상위로 던지지 않고
+        안전하게 False를 반환하며 로깅되는지 단언함.
+    """
+    data = dict(sample_incident_data, action_required="BLOCK_WAF")
+    report = IncidentReport.model_validate(data)
+
+    def mock_urlopen_error(*args: Any, **kwargs: Any) -> Any:
+        raise urllib.error.URLError("Connection refused by Slack webhook")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen_error)
+
+    # 예외 전파 없이 False 반환 확인
+    success = send_slack_alert(report, webhook_url="https://hooks.slack.com/services/FAIL")
+    assert success is False

@@ -1211,3 +1211,85 @@ def test_route_cw_logs_deployed_and_compat_paths() -> None:
     assert routed_compat["stream_type"] == "nginx"
     assert len(routed_compat["parsed_events"]) == 1
     assert routed_compat["parsed_events"][0].source_ip == "198.51.100.99"
+
+
+def test_decode_nginx_cw_logs_complex_uri_and_methods() -> None:
+    """다양한 HTTP 메서드(HEAD, OPTIONS, DELETE, PUT) 및 복합 쿼리스트링 URI 디코딩 정합성 검증.
+
+    Why:
+        L7 웹 공격 페이로드는 다양한 HTTP 메서드와 복합 인코딩 쿼리 파라미터를 수반함.
+        디코더가 토큰화 과정에서 이러한 복합 URI를 손상 없이 NginxAccessLogEvent로 매핑하는지 확인.
+    """
+    sample_lines = [
+        (
+            "198.51.100.10 - - [28/Sep/2026:14:10:00 +0000] "
+            '"HEAD /admin?debug=1&token=xyz HTTP/1.1" 401 0 "-" "curl/7.81.0" 0.001 "-"'
+        ),
+        (
+            "198.51.100.20 - - [28/Sep/2026:14:10:01 +0000] "
+            '"OPTIONS /api/v1/users HTTP/1.1" 403 12 "-" "scanner/1.0" 0.002 "-"'
+        ),
+        (
+            "198.51.100.30 - - [28/Sep/2026:14:10:02 +0000] "
+            '"PUT /uploads/shell.php HTTP/1.1" 404 150 "-" "python-requests/2.31.0" 0.005 "-"'
+        ),
+        (
+            "198.51.100.40 - - [28/Sep/2026:14:10:03 +0000] "
+            '"DELETE /api/v1/items/42?force=true HTTP/1.1" 403 50 "-" "insomnia/2023.5.8" 0.003 "-"'
+        ),
+    ]
+    payload_model = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-complex-test",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(id=f"ev-{i}", timestamp=1788500000000 + i * 1000, message=line)
+            for i, line in enumerate(sample_lines)
+        ],
+    )
+    events = decode_nginx_cw_logs({"awslogs": {"data": payload_model.to_awslogs_data()}})
+    assert len(events) == 4
+    assert [e.method for e in events] == ["HEAD", "OPTIONS", "PUT", "DELETE"]
+    assert events[0].uri == "/admin?debug=1&token=xyz"
+    assert events[3].uri == "/api/v1/items/42?force=true"
+
+
+def test_decode_nginx_cw_logs_large_batch_with_fuzzed_noise() -> None:
+    """대량 배치 내 퍼징된 손상 라인, 바이너리 노이즈 혼입 시 안전 필터링 및 복원력 검증.
+
+    Why:
+        실제 운영 환경에서 악성 트래픽 및 버퍼 손상으로 인해 비정상 포맷의 로그가 다량 혼입되더라도
+        예외 발생(Crash) 없이 유효한 Nginx 접근 로그만 정확히 선별 디코딩함을 단언함.
+    """
+    valid_line = (
+        "198.51.100.88 - - [28/Sep/2026:14:20:00 +0000] "
+        '"GET /wp-admin HTTP/1.1" 404 120 "-" "Mozilla/5.0" 0.002 "-"'
+    )
+    noise_lines = [
+        "",
+        "   \t  ",
+        "GARBAGE_NON_LOG_DATA_1234567890",
+        "HTTP/1.1 200 OK Content-Length: 0",
+        "Failed password for root from 10.0.0.1 port 22 ssh2",
+        "{\x00\x01\x02\x03\xff\xfe}",
+    ] * 10  # 60 noise lines
+
+    all_lines = noise_lines[:30] + [valid_line] + noise_lines[30:]
+    payload_model = CloudWatchLogsPayload(
+        messageType="DATA_MESSAGE",
+        owner="123456789012",
+        logGroup="/cloudshield/target/nginx-access-log",
+        logStream="i-noise-test",
+        subscriptionFilters=["CloudShield-Nginx-Access-Filter"],
+        logEvents=[
+            CloudWatchLogEvent(id=f"noise-{i}", timestamp=1788500000000 + i, message=line)
+            for i, line in enumerate(all_lines)
+        ],
+    )
+    events = decode_nginx_cw_logs({"awslogs": {"data": payload_model.to_awslogs_data()}})
+    assert len(events) == 1
+    assert events[0].source_ip == "198.51.100.88"
+    assert events[0].uri == "/wp-admin"
+    assert events[0].status_code == 404
