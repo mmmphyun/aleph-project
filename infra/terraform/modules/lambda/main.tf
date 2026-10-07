@@ -44,7 +44,7 @@ data "aws_iam_policy_document" "least_privilege" {
     ]
   }
 
-  # 2. DynamoDB 슬라이딩 윈도우 원자적 카운터 제어 권한
+  # 2. DynamoDB 슬라이딩 윈도우 원자적 카운터 제어 및 테이블 메타데이터 조회 권한
   statement {
     sid    = "DynamoDBWindowAccess"
     effect = "Allow"
@@ -52,7 +52,8 @@ data "aws_iam_policy_document" "least_privilege" {
       "dynamodb:GetItem",
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
-      "dynamodb:DeleteItem"
+      "dynamodb:DeleteItem",
+      "dynamodb:DescribeTable"
     ]
     resources = [
       var.dynamodb_table_arn

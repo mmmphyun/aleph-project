@@ -21,15 +21,23 @@ import os
 import time
 from typing import Any
 
-from contracts.events import CloudWatchLogsPayload, SyslogAuthEvent
+from collector.cw_processor import LOG_GROUP_STREAM_MAPPING
+from contracts.events import (
+    CloudWatchLogsPayload,
+    NginxAccessLogEvent,
+    SyslogAuthEvent,
+)
 from detection.incident_mapper import map_threat_to_incident
+from detection.rules import evaluate_web_rules
 from remediation.auth_window import AuthFailureWindow
 from remediation.remediation import RemediationResult, apply_remediation
+from remediation.web_window import PersistenceError, WebAttackWindow, parse_nginx_timestamp
 from reporter.slack_notifier import send_slack_alert
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_FALLBACK_INSTANCE_ID = "i-0abcd1234ef567890"
+_GLOBAL_WEB_WINDOW = WebAttackWindow()
 
 
 def is_remediation_successful(action_required: str, result: RemediationResult) -> bool:
@@ -65,6 +73,7 @@ def threat_orchestrator_handler(
     ec2_client: Any = None,
     waf_client: Any = None,
     slack_webhook_url: str | None = None,
+    web_window: WebAttackWindow | None = None,
 ) -> dict[str, Any]:
     """CloudWatch Logs 이벤트를 수신하여 위협 집계, 다중 계층 차단, Slack 전파를 수행하는 진입점.
 
@@ -117,6 +126,184 @@ def threat_orchestrator_handler(
         else os.getenv("TARGET_INSTANCE_ID", DEFAULT_FALLBACK_INSTANCE_ID)
     )
 
+    # 스트림 유형 식별 (auth vs nginx)
+    stream_type = LOG_GROUP_STREAM_MAPPING.get(payload.logGroup)
+    if stream_type is None:
+        for log_ev in payload.logEvents:
+            if SyslogAuthEvent.parse_line(log_ev.message) is not None:
+                stream_type = "auth"
+                break
+            if NginxAccessLogEvent.parse_line(log_ev.message) is not None:
+                stream_type = "nginx"
+                break
+        if stream_type is None:
+            stream_type = "auth"
+
+    # -------------------------------------------------------------------------
+    # 분기 1: Nginx L7 웹 접근 로그 처리 파이프라인
+    # -------------------------------------------------------------------------
+    if stream_type == "nginx":
+        if web_window is None:
+            web_window = WebAttackWindow()
+
+        # 1. 개별 로그 이벤트 파싱 및 과대 URI 개별 격리
+        parsed_records: list[tuple[NginxAccessLogEvent, float, str]] = []
+        for log_event in payload.logEvents:
+            parsed_nginx = NginxAccessLogEvent.parse_line(log_event.message)
+            if not parsed_nginx:
+                continue
+            response["processed_events"] += 1
+
+            # 과대 URI 레코드 개별 격리 (4,096자 초과 시 정규화 계약의 ValueError 방지)
+            if len(parsed_nginx.uri) > 4096:
+                logger.warning(
+                    "과대 URI 레코드 격리 (길이 초과): IP=%s 길이=%d",
+                    parsed_nginx.source_ip,
+                    len(parsed_nginx.uri),
+                )
+                continue
+
+            ts_epoch = parse_nginx_timestamp(parsed_nginx.timestamp_str)
+            if ts_epoch is None:
+                ts_epoch = log_event.timestamp / 1000.0
+
+            parsed_records.append((parsed_nginx, ts_epoch, log_event.id))
+
+        # 2. 타임스탬프 오름차순 정렬 (실시간 공격 타임라인 재생)
+        parsed_records.sort(key=lambda r: r[1])
+
+        blocked_ips: set[str] = set()
+        slack_notification_results: list[bool] = []
+
+        # 3. 시간순 윈도우 누적 및 실시간 위협 판정
+        for parsed_nginx, ts_epoch, event_id in parsed_records:
+            source_ip = parsed_nginx.source_ip
+            if source_ip in blocked_ips:
+                continue
+
+            try:
+                added = web_window.add_event(
+                    target_identifier=target_instance_id,
+                    source_ip=source_ip,
+                    event_id=event_id,
+                    timestamp_epoch=ts_epoch,
+                    event=parsed_nginx,
+                )
+                if not added:
+                    logger.info("중복 웹 이벤트 스킵 (IP=%s, EventID=%s)", source_ip, event_id)
+            except PersistenceError as exc:
+                logger.error(
+                    "웹 이벤트 윈도우 영속화 실패 격리 (IP=%s, EventID=%s): %s",
+                    source_ip,
+                    event_id,
+                    exc,
+                )
+                response.setdefault("persistence_errors", []).append(f"{source_ip}:{event_id}")
+                continue
+
+            try:
+                active_events = web_window.get_active_events(
+                    target_identifier=target_instance_id,
+                    source_ip=source_ip,
+                    reference_time=ts_epoch,
+                )
+            except PersistenceError as exc:
+                logger.error(
+                    "웹 이벤트 윈도우 이력 조회 실패 격리 (IP=%s, EventID=%s): %s",
+                    source_ip,
+                    event_id,
+                    exc,
+                )
+                response.setdefault("persistence_errors", []).append(f"{source_ip}:{event_id}")
+                continue
+
+            if not active_events:
+                continue
+
+            try:
+                is_threat, rule_name = evaluate_web_rules(active_events)
+            except ValueError as exc:
+                logger.error(
+                    "Web 룰 평가 중 예외 발생 격리 (IP=%s): %s",
+                    source_ip,
+                    exc,
+                )
+                continue
+
+            if not is_threat or not rule_name:
+                continue
+
+            response["threats_detected"].append(rule_name)
+
+            incident_id = f"INC-{int(time.time())}-{source_ip.replace('.', '')[-4:]}"
+            report = map_threat_to_incident(
+                is_threat=True,
+                rule_name=rule_name,
+                source_ip=source_ip,
+                target_accounts=(),
+                target_identifier=target_instance_id,
+                incident_id=incident_id,
+            )
+            response["incidents"].append(report.model_dump())
+
+            # WAF IPSet 차단 실행 (L7 원자적 차단)
+            remediation_result = apply_remediation(
+                report=report,
+                ec2_client=ec2_client,
+                waf_client=waf_client,
+            )
+            response["remediation_results"].append(remediation_result)
+
+            if is_remediation_successful(report.action_required, remediation_result):
+                web_window.clear_ip(target_instance_id, source_ip, reference_time=ts_epoch)
+                blocked_ips.add(source_ip)
+                logger.info(
+                    "Web L7 위협 대응 완료: %s -> %s (결과: %s)",
+                    rule_name,
+                    source_ip,
+                    remediation_result,
+                )
+            else:
+                logger.warning(
+                    "Web L7 위협 대응 필수 조치 미완료: %s -> %s (결과: %s)",
+                    rule_name,
+                    source_ip,
+                    remediation_result,
+                )
+
+            # Slack 알림 전파 (완전 결함 격리)
+            target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+            slack_success = False
+            if target_webhook:
+                try:
+                    slack_success = send_slack_alert(
+                        report=report,
+                        webhook_url=target_webhook,
+                        remediation_result=remediation_result,
+                    )
+                except Exception as exc:
+                    logger.error("Slack 알림 전파 중 예외 발생 격리 (차단 유지): %s", exc)
+                    slack_success = False
+            else:
+                logger.warning("SLACK_WEBHOOK_URL이 설정되지 않아 알림 발송을 생략합니다.")
+            slack_notification_results.append(slack_success)
+
+        if slack_notification_results:
+            response["slack_notified"] = all(slack_notification_results)
+        else:
+            response["slack_notified"] = False
+
+        if response.get("persistence_errors"):
+            failed_keys = ", ".join(response["persistence_errors"])
+            raise PersistenceError(
+                f"DynamoDB 윈도우 영속화/조회 실패로 Lambda 재처리 신호 전달: [{failed_keys}]"
+            )
+
+        return response
+
+    # -------------------------------------------------------------------------
+    # 분기 2: Syslog SSH 인증 실패 로그 처리 파이프라인
+    # -------------------------------------------------------------------------
     if auth_window is None:
         auth_window = AuthFailureWindow()
 
