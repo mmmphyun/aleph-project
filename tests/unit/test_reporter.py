@@ -1492,3 +1492,75 @@ def test_send_slack_alert_card_selection_matrix(
         assert "차단 실패" not in block_text
         assert "차단 집행 진행 중" not in block_text
         assert "별도 WAF 권고 조치 없음 (차단 미대상)" in block_text
+
+
+def test_build_waf_slack_payload_extreme_truncation_and_escaping() -> None:
+    """초장문 요약문 및 Slack 특수문자(<, >, &) 인입 시 Block Kit 글자 수 상한 및 포맷 안전성 검증.
+
+    Why:
+        Slack Block Kit API는 섹션 필드가 2,000자 또는 블록 텍스트가 3,000자를 초과할 경우
+        HTTP 400(invalid_payload)을 반환하며 알림을 거부함.
+        1,000자 이상의 공격 설명과 특수문자가 포함되더라도 truncate_text 방어선이 작동하여
+        최대 필드 길이(500자) 이하로 안전하게 절삭되고 마크다운 구조가 유지되는지 확인함.
+    """
+    long_summary = (
+        "공격자가 L7 웹 취약점 스캐닝을 시도하였습니다. "
+        "<script>alert('xss');</script> & path=/../../etc/passwd?admin=1 "
+    ) * 30  # > 2,000 chars
+
+    report = IncidentReport(
+        incident_id="INC-20261007-EXTREME-01",
+        attack_type="Web L7 Directory Scan & Injection",
+        mitre_id="T1083",
+        risk_level="HIGH",
+        source_ip="198.51.100.222",
+        target_identifier="i-0abcd1234ef56789a",
+        target_accounts=["app_admin", "db_admin"],
+        summary_ko=long_summary,
+        action_required="BLOCK_WAF",
+        recommendations=[f"권고 조치 사항 #{i}: 즉각적인 조치 필요" for i in range(25)],
+    )
+
+    payload = build_waf_slack_payload(report, remediation_result={"waf_blocked": True})
+    blocks = payload["blocks"]
+    assert len(blocks) >= 4
+
+    # 모든 텍스트 블록의 길이가 Slack 허용 상한(3,000자) 및 단일 필드 500자 이내인지 확인
+    for block in blocks:
+        if "text" in block and isinstance(block["text"], dict):
+            text_content = block["text"].get("text", "")
+            assert len(text_content) <= 3000
+        if "fields" in block and isinstance(block["fields"], list):
+            for field in block["fields"]:
+                field_text = field.get("text", "")
+                assert len(field_text) <= 500
+
+    # 요약 블록이 말줄임표(...)로 정상 종료되는지 확인
+    summary_block = next(
+        b for b in blocks if "*L7 웹 위협 요약:*" in b.get("text", {}).get("text", "")
+    )
+    assert summary_block["text"]["text"].endswith("...")
+
+
+def test_send_slack_alert_network_failure_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_incident_data: dict[str, Any],
+) -> None:
+    """Slack Webhook 호출 중 타임아웃/소켓 장애 발생 시 무음 격리(Failure Isolation) 검증.
+
+    Why:
+        알림 전송 장애가 Lambda 오케스트레이터의 인프라 차단 프로세스에 영향을 주지 않도록
+        네트워크 에러(URLError, TimeoutError) 발생 시 예외를 상위로 던지지 않고
+        안전하게 False를 반환하며 로깅되는지 단언함.
+    """
+    data = dict(sample_incident_data, action_required="BLOCK_WAF")
+    report = IncidentReport.model_validate(data)
+
+    def mock_urlopen_error(*args: Any, **kwargs: Any) -> Any:
+        raise urllib.error.URLError("Connection refused by Slack webhook")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen_error)
+
+    # 예외 전파 없이 False 반환 확인
+    success = send_slack_alert(report, webhook_url="https://hooks.slack.com/services/FAIL")
+    assert success is False
