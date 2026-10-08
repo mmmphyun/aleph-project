@@ -23,16 +23,72 @@ def waf_terraform() -> tuple[str, Path]:
 
     Constraints:
         Terraform 1.7+와 모듈의 사전 init이 필요하다. Python 전용 개발 환경에서는
-        명시적으로 skip하며, WAF PR 검증은 도구를 설치한 환경에서 반드시 실행한다.
+        명시적으로 skip한다. WAF PR 검증은 CLOUDSHIELD_REQUIRE_WAF_TERRAFORM=1로
+        실행해야 하며, 필수 모드에서는 도구 누락·구버전을 실패로 전파한다.
     """
-    terraform = shutil.which("terraform")
     module = Path(__file__).resolve().parents[2] / "infra/terraform/modules/waf"
-    if terraform is None or not (module / ".terraform/providers").is_dir():
-        pytest.skip("WAF IaC 검증에는 Terraform 1.7+ 설치 및 모듈 init이 필요합니다.")
+    return _resolve_waf_terraform(module)
+
+
+def _resolve_waf_terraform(module: Path) -> tuple[str, Path]:
+    """필수 검증이 환경 준비 누락을 통과로 오인하지 않도록 실패 경계를 고정한다.
+
+    Constraints / Side-effects:
+        모드는 미설정/0(일반 Python 검증) 또는 1(필수 IaC 검증)만 허용한다.
+        설치·init·AWS 조회를 수행하지 않으며, 실행 오류는 기존 실행기의 assertion을 전파한다.
+    """
+    mode = os.environ.get("CLOUDSHIELD_REQUIRE_WAF_TERRAFORM", "0")
+    if mode not in {"0", "1"}:
+        pytest.fail("CLOUDSHIELD_REQUIRE_WAF_TERRAFORM은 0 또는 1이어야 합니다.")
+
+    def unavailable(reason: str) -> None:
+        if mode == "1":
+            pytest.fail(f"WAF IaC 필수 검증 준비 실패: {reason}")
+        pytest.skip(reason)
+
+    terraform = shutil.which("terraform")
+    if terraform is None:
+        unavailable("Terraform 1.7+ 실행 파일을 PATH에서 찾을 수 없습니다.")
+    if not (module / ".terraform/providers").is_dir():
+        unavailable("WAF 모듈의 terraform init이 필요합니다.")
     version = json.loads(_run_waf_terraform(terraform, module, "version", "-json").stdout)
     if tuple(int(part) for part in version["terraform_version"].split(".")[:2]) < (1, 7):
-        pytest.skip("Terraform mock provider 검증에는 1.7 이상이 필요합니다.")
+        unavailable("Terraform mock provider 검증에는 1.7 이상이 필요합니다.")
     return terraform, module
+
+
+@pytest.mark.parametrize("mode", [None, "0", "1"])
+@pytest.mark.parametrize("missing", ["executable", "provider", "version"])
+def test_waf_terraform_requirement_rejects_unprepared_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str | None, missing: str
+) -> None:
+    """동일한 준비 누락이 일반 모드에서는 skip, 필수 모드에서는 실패해야 한다."""
+    if mode is None:
+        monkeypatch.delenv("CLOUDSHIELD_REQUIRE_WAF_TERRAFORM", raising=False)
+    else:
+        monkeypatch.setenv("CLOUDSHIELD_REQUIRE_WAF_TERRAFORM", mode)
+    monkeypatch.setattr(shutil, "which", lambda _: None if missing == "executable" else "terraform")
+    if missing != "provider":
+        (tmp_path / ".terraform/providers").mkdir(parents=True)
+
+    def version_result(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], 0, json.dumps({"terraform_version": "1.6.6"}))
+
+    monkeypatch.setitem(_resolve_waf_terraform.__globals__, "_run_waf_terraform", version_result)
+    expected = pytest.fail.Exception if mode == "1" else pytest.skip.Exception
+    message = {"executable": "PATH", "provider": "init", "version": "1.7"}[missing]
+    with pytest.raises(expected, match=message):
+        _resolve_waf_terraform(tmp_path)
+
+
+@pytest.mark.parametrize("mode", ["true", "yes", ""])
+def test_waf_terraform_requirement_rejects_invalid_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    """모드 오타가 필수 검증을 선택적 skip으로 낮추지 못하도록 거부한다."""
+    monkeypatch.setenv("CLOUDSHIELD_REQUIRE_WAF_TERRAFORM", mode)
+    with pytest.raises(pytest.fail.Exception, match="0 또는 1"):
+        _resolve_waf_terraform(tmp_path)
 
 
 def _run_waf_terraform(
