@@ -12,10 +12,10 @@
 # Constraints:
 #   - 타깃 OS: Ubuntu 22.04 / 24.04 LTS (x86_64 / arm64)
 #   - 루트 권한(sudo / root)으로 실행 필수.
-#   - 안전성 플래그(set -euo pipefail) 적용.
+#   - 안전성 플래그(set -Eeuo pipefail) 적용.
 # ==============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
 
 # 1. 색상 및 출력 헬퍼 함수 정의
 RED='\033[0;31m'
@@ -134,6 +134,9 @@ cleanup_sshd_backups() {
     rm -f "${SSHD_MAIN_BAK}" "${SSHD_CUSTOM_BAK}" "${SSHD_LEGACY_BAK}"
 }
 
+# 중간 rsyslog 실패와 SSH 재시작 실패도 원본을 복원한다.
+trap 'rollback_sshd' ERR
+
 # sshd_config 최상단에 Include 구문 보장 (00-*.conf가 다른 모든 설정보다 최우선 로드되도록 정렬)
 if [[ -f "${SSHD_MAIN_CONF}" ]]; then
     # 기존 위치와 관계없이 중복 Include 지침 정리 후 최상단(1라인)에 배치
@@ -182,7 +185,6 @@ if [[ "${EFFECTIVE_PASS_AUTH}" != "yes" ]]; then
     exit 1
 fi
 
-cleanup_sshd_backups
 log_success "SSH PasswordAuthentication 런타임 실측 검증 완료 (status: ${EFFECTIVE_PASS_AUTH})"
 
 # SSH 데몬 서비스 재시작
@@ -194,6 +196,9 @@ else
     systemctl enable --now ssh || systemctl enable --now sshd
 fi
 
+cleanup_sshd_backups
+trap - ERR
+
 log_success "SSH 데몬 설정 및 서비스 재시작 완료 (포트 22 활성화)"
 
 # 5. Nginx 웹 서버 구성 및 테스트 페이지 배포
@@ -202,6 +207,37 @@ log_info "Nginx 웹 서버 설정 및 테스트 페이지 구성 중..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p /etc/nginx
 
+NGINX_CONF_HAD_FILE=false
+NGINX_INDEX_HAD_FILE=false
+NGINX_AUTH_HAD_FILE=false
+if [[ -f /etc/nginx/nginx.conf ]]; then
+    NGINX_CONF_HAD_FILE=true
+fi
+if [[ -f /var/www/html/index.html ]]; then
+    NGINX_INDEX_HAD_FILE=true
+fi
+if [[ -f /etc/nginx/.htpasswd ]]; then
+    NGINX_AUTH_HAD_FILE=true
+fi
+rollback_nginx() {
+    log_error "Nginx 구성 실패: 이전 설정을 복원합니다."
+    if [[ "${NGINX_CONF_HAD_FILE}" == true ]]; then
+        cp "/etc/nginx/nginx.conf.bak.${TIMESTAMP}" /etc/nginx/nginx.conf
+    else
+        rm -f /etc/nginx/nginx.conf
+    fi
+    if [[ -f "/var/www/html/index.html.bak.${TIMESTAMP}" ]]; then
+        cp "/var/www/html/index.html.bak.${TIMESTAMP}" /var/www/html/index.html
+    elif [[ "${NGINX_INDEX_HAD_FILE}" == false ]]; then
+        rm -f /var/www/html/index.html
+    fi
+    if [[ -f "/etc/nginx/.htpasswd.bak.${TIMESTAMP}" ]]; then
+        cp -p "/etc/nginx/.htpasswd.bak.${TIMESTAMP}" /etc/nginx/.htpasswd
+    elif [[ "${NGINX_AUTH_HAD_FILE}" == false ]]; then
+        rm -f /etc/nginx/.htpasswd
+    fi
+}
+
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 
 # 기존 /etc/nginx/nginx.conf 백업 (재실행 시 사용자 설정 유실 방지)
@@ -209,6 +245,12 @@ if [[ -f /etc/nginx/nginx.conf ]]; then
     cp /etc/nginx/nginx.conf "/etc/nginx/nginx.conf.bak.${TIMESTAMP}"
     log_warn "기존 Nginx 설정 백업 완료: /etc/nginx/nginx.conf.bak.${TIMESTAMP}"
 fi
+
+if [[ "${NGINX_AUTH_HAD_FILE}" == true ]]; then
+    cp -p /etc/nginx/.htpasswd "/etc/nginx/.htpasswd.bak.${TIMESTAMP}"
+fi
+
+trap 'rollback_nginx' ERR
 
 if [[ -f "${SCRIPT_DIR}/nginx.conf" ]]; then
     cp "${SCRIPT_DIR}/nginx.conf" /etc/nginx/nginx.conf
@@ -299,14 +341,21 @@ elif grep -q "{PLAIN}" "${HTPASSWD_FILE}" 2>/dev/null || grep -q "cloudshield_de
 fi
 
 if [[ "${NEEDS_HASH}" == true ]]; then
-    PASS_HASH="$(openssl passwd -1 "cloudshield_demo_pass" 2>/dev/null || echo '$1$cloudshield$qH/9JzE2Vd8S7q0M3u5mJ.')"
+    # 해시 생성 실패 시 잘못된 인증 파일을 배포하지 않고 즉시 중단한다.
+    DEMO_PASSWORD="$(openssl rand -hex 24)"
+    PASS_HASH="$(openssl passwd -6 "${DEMO_PASSWORD}")"
+    unset DEMO_PASSWORD
+    if [[ "${PASS_HASH}" != '$6$'* ]]; then
+        log_error "유효한 SHA-512 인증 해시를 생성하지 못했습니다."
+        false
+    fi
     echo "admin:${PASS_HASH}" > "${HTPASSWD_FILE}"
     log_success "Nginx htpasswd 해시 인증 정보 생성/마이그레이션 완료"
 fi
 
 # 파일이 이미 존재하더라도 필요한 소유권 및 최소 권한(640) 항시 보정
 chmod 640 "${HTPASSWD_FILE}"
-chown root:www-data "${HTPASSWD_FILE}" 2>/dev/null || chown root:adm "${HTPASSWD_FILE}" 2>/dev/null || true
+chown root:www-data "${HTPASSWD_FILE}"
 log_success "Nginx htpasswd 파일 권한(640) 및 소유권 보정 완료"
 
 # 기존 index.html 백업 및 테스트 웹 페이지 배포
@@ -352,14 +401,15 @@ EOF
 nginx -t
 systemctl enable nginx
 systemctl restart nginx
+trap - ERR
 
 log_success "Nginx 웹 서버 구성 및 서비스 재시작 완료 (포트 80 활성화)"
 
 # 6. 방화벽(UFW) 포트 개방 설정
 log_info "UFW 방화벽 규칙 점검 및 구성 중..."
 if command -v ufw >/dev/null 2>&1; then
-    ufw allow 22/tcp comment 'CloudShield SSH' || true
-    ufw allow 80/tcp comment 'CloudShield HTTP' || true
+    ufw allow 22/tcp comment 'CloudShield SSH'
+    ufw allow 80/tcp comment 'CloudShield HTTP'
 
     if ufw status 2>/dev/null | grep -qi "Status: active"; then
         log_success "UFW 활성화 상태 감지: 포트 22/tcp, 80/tcp 허용 규칙 적용 완료"
@@ -375,14 +425,14 @@ log_info "CloudWatch Agent 수집 대상 로그 경로 검증 중..."
 if [[ ! -f /var/log/auth.log ]]; then
     touch /var/log/auth.log
     chmod 640 /var/log/auth.log
-    chown syslog:adm /var/log/auth.log || chown root:adm /var/log/auth.log || true
+    chown syslog:adm /var/log/auth.log
 fi
 
 # Nginx log 파일 확인 및 권한 점검
 mkdir -p /var/log/nginx
 touch /var/log/nginx/access.log /var/log/nginx/error.log
 chmod 644 /var/log/nginx/access.log /var/log/nginx/error.log
-chown -R www-data:adm /var/log/nginx || true
+chown www-data:adm /var/log/nginx/access.log /var/log/nginx/error.log
 
 # 8. 최종 구동 상태 및 포트 리스닝 결과 출력
 log_info "============================================================"
@@ -396,6 +446,6 @@ echo -e "\n[2] 수집 대상 로그 파일 상태:"
 ls -lh /var/log/auth.log /var/log/nginx/access.log /var/log/nginx/error.log
 
 echo -e "\n[3] Nginx 헬스체크 로컬 테스트:"
-curl -Is http://127.0.0.1/health | head -n 5 || true
+curl --fail --show-error --silent http://127.0.0.1/health
 
 log_success "1단계: 타깃 EC2 리눅스 환경 구성이 성공적으로 완료되었습니다!"

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+trap 'echo "CloudShield bootstrap failed at line $LINENO" >&2' ERR
+install -d -m 700 /opt/cloudshield
+printf '%s' '${init_script}' | base64 -d | gzip -d > /opt/cloudshield/init_target_server.sh
+printf '%s' '${nginx_config}' | base64 -d | gzip -d > /opt/cloudshield/nginx.conf
+printf '%s' '${agent_config}' | base64 -d | gzip -d > /opt/cloudshield/amazon-cloudwatch-agent.json
+bash /opt/cloudshield/init_target_server.sh
+curl --fail --show-error --location --retry 3 \
+  https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb \
+  --output /opt/cloudshield/amazon-cloudwatch-agent.deb
+dpkg -i /opt/cloudshield/amazon-cloudwatch-agent.deb
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -s -c file:/opt/cloudshield/amazon-cloudwatch-agent.json
+systemctl enable amazon-cloudwatch-agent
+systemctl is-active --quiet amazon-cloudwatch-agent
+curl --fail --show-error http://127.0.0.1/health
