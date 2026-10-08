@@ -198,12 +198,21 @@ sshd() {{
         assert file.read_text(encoding="utf-8") == "original\n", result.stderr
 
 
-@pytest.mark.parametrize("failure", ["syntax", "restart"])
-def test_real_nginx_failure_restores_configuration(tmp_path: Path, failure: str) -> None:
+@pytest.mark.parametrize("was_active", [True, False])
+@pytest.mark.parametrize(
+    "failure", ["syntax", "restart", "rollback_syntax", "rollback_restart", "rollback_inactive"]
+)
+def test_real_nginx_failure_restores_configuration(
+    tmp_path: Path, failure: str, was_active: bool
+) -> None:
     nginx_dir = tmp_path / "nginx"
     nginx_dir.mkdir()
     conf = nginx_dir / "nginx.conf"
     conf.write_text("original\n", encoding="utf-8")
+    auth = nginx_dir / ".htpasswd"
+    auth.write_text("admin:{PLAIN}legacy\n", encoding="utf-8")
+    state = tmp_path / "service-state"
+    calls = tmp_path / "service-calls"
     web_dir = tmp_path / "html"
     web_dir.mkdir()
     index = web_dir / "index.html"
@@ -214,15 +223,49 @@ def test_real_nginx_failure_restores_configuration(tmp_path: Path, failure: str)
     )
     prefix = f"""
 SCRIPT_DIR='{tmp_path.as_posix()}'
+active={"true" if was_active else "false"}
+restarts=0
+trap 'printf "%s" "$active" > "{state.as_posix()}"' EXIT
 log_info() {{ :; }}
+log_error() {{ echo "$*" >&2; }}
 chown() {{ :; }}
-nginx() {{ [[ '{failure}' != syntax ]]; }}
-systemctl() {{ [[ '{failure}' != restart || "$1" != restart ]]; }}
+nginx() {{
+    if [[ "$(cat '{conf.as_posix()}')" != original ]]; then
+        [[ '{failure}' != syntax ]] || return 42
+    elif [[ '{failure}' == rollback_syntax ]]; then
+        return 43
+    fi
+    return 0
+}}
+systemctl() {{
+    echo "$*" >> '{calls.as_posix()}'
+    if [[ "$1" == is-active ]]; then
+        [[ "$active" == true ]]
+    elif [[ "$1" == restart ]]; then
+        restarts=$((restarts + 1))
+        active=false
+        if [[ "$restarts" == 1 && '{failure}' != syntax ]]; then return 42; fi
+        if [[ '{failure}' == rollback_restart ]]; then return 43; fi
+        if [[ '{failure}' != rollback_inactive ]]; then active=true; fi
+    fi
+}}
 """
     result = run_section(section, prefix)
-    assert result.returncode != 0
+    assert result.returncode == 42, result.stderr
     assert conf.read_text(encoding="utf-8") == "original\n"
     assert index.read_text(encoding="utf-8") == "original page\n"
+    assert auth.read_text(encoding="utf-8") == "admin:{PLAIN}legacy\n"
+    restart_count = calls.read_text(encoding="utf-8").count("restart nginx")
+    if was_active:
+        expected_restarts = 1 if failure in {"syntax", "rollback_syntax"} else 2
+        assert restart_count == expected_restarts
+        recovered = failure in {"syntax", "restart"}
+        assert state.read_text(encoding="utf-8") == ("true" if recovered else "false")
+        if not recovered:
+            assert "Nginx 롤백 실패:" in result.stderr
+    else:
+        assert restart_count == (0 if failure == "syntax" else 1)
+        assert state.read_text(encoding="utf-8") == "false"
 
 
 def test_real_firewall_failure_is_not_suppressed() -> None:

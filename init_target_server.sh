@@ -210,6 +210,10 @@ mkdir -p /etc/nginx
 NGINX_CONF_HAD_FILE=false
 NGINX_INDEX_HAD_FILE=false
 NGINX_AUTH_HAD_FILE=false
+NGINX_WAS_ACTIVE=false
+if systemctl is-active --quiet nginx; then
+    NGINX_WAS_ACTIVE=true
+fi
 if [[ -f /etc/nginx/nginx.conf ]]; then
     NGINX_CONF_HAD_FILE=true
 fi
@@ -220,22 +224,41 @@ if [[ -f /etc/nginx/.htpasswd ]]; then
     NGINX_AUTH_HAD_FILE=true
 fi
 rollback_nginx() {
+    local original_status=$1
+    local restore_failed=false
+    # 복구 중 ERR 재진입을 막고 최초 실패 코드를 유지해 cloud-init에 장애를 전달한다.
+    trap - ERR
     log_error "Nginx 구성 실패: 이전 설정을 복원합니다."
     if [[ "${NGINX_CONF_HAD_FILE}" == true ]]; then
-        cp "/etc/nginx/nginx.conf.bak.${TIMESTAMP}" /etc/nginx/nginx.conf
+        cp "/etc/nginx/nginx.conf.bak.${TIMESTAMP}" /etc/nginx/nginx.conf || restore_failed=true
     else
-        rm -f /etc/nginx/nginx.conf
+        rm -f /etc/nginx/nginx.conf || restore_failed=true
     fi
     if [[ -f "/var/www/html/index.html.bak.${TIMESTAMP}" ]]; then
-        cp "/var/www/html/index.html.bak.${TIMESTAMP}" /var/www/html/index.html
+        cp "/var/www/html/index.html.bak.${TIMESTAMP}" /var/www/html/index.html || restore_failed=true
     elif [[ "${NGINX_INDEX_HAD_FILE}" == false ]]; then
-        rm -f /var/www/html/index.html
+        rm -f /var/www/html/index.html || restore_failed=true
     fi
     if [[ -f "/etc/nginx/.htpasswd.bak.${TIMESTAMP}" ]]; then
-        cp -p "/etc/nginx/.htpasswd.bak.${TIMESTAMP}" /etc/nginx/.htpasswd
+        cp -p "/etc/nginx/.htpasswd.bak.${TIMESTAMP}" /etc/nginx/.htpasswd || restore_failed=true
     elif [[ "${NGINX_AUTH_HAD_FILE}" == false ]]; then
-        rm -f /etc/nginx/.htpasswd
+        rm -f /etc/nginx/.htpasswd || restore_failed=true
     fi
+    # restart가 기존 프로세스를 정지한 뒤 실패할 수 있어 파일과 실행 상태를 함께 복원한다.
+    if [[ "${restore_failed}" == true ]]; then
+        log_error "Nginx 롤백 실패: 이전 파일 복원 실패"
+    elif [[ "${NGINX_WAS_ACTIVE}" == true ]]; then
+        if ! nginx -t; then
+            log_error "Nginx 롤백 실패: 복원된 설정 검증 실패"
+        elif ! systemctl restart nginx; then
+            log_error "Nginx 롤백 실패: 이전 서비스 재기동 실패"
+        elif ! systemctl is-active --quiet nginx; then
+            log_error "Nginx 롤백 실패: 재기동 후 서비스 비활성"
+        else
+            log_success "Nginx 이전 설정 및 서비스 활성 상태 복원 완료"
+        fi
+    fi
+    exit "${original_status}"
 }
 
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
@@ -250,7 +273,7 @@ if [[ "${NGINX_AUTH_HAD_FILE}" == true ]]; then
     cp -p /etc/nginx/.htpasswd "/etc/nginx/.htpasswd.bak.${TIMESTAMP}"
 fi
 
-trap 'rollback_nginx' ERR
+trap 'rollback_nginx "$?"' ERR
 
 if [[ -f "${SCRIPT_DIR}/nginx.conf" ]]; then
     cp "${SCRIPT_DIR}/nginx.conf" /etc/nginx/nginx.conf
