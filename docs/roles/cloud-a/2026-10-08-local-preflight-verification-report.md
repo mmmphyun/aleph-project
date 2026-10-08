@@ -11,7 +11,7 @@
 
 | 단계 | 세부 작업 | 최종 상태 | 실측 결과 요약 |
 | :---: | :--- | :---: | :--- |
-| **1-A** | Lambda 배포 패키지(`orchestrator.zip`) 생성 및 구조 점검 | **완료 (PASS)** | `manylinux2014_x86_64` 휠 번들링 (2.60MB) |
+| **1-A** | Lambda 배포 패키지(`orchestrator.zip`) 생성 및 구조 점검 | **완료 (PASS)** | `x86_64-unknown-linux-gnu` 기본 빌드 (2.60MB) |
 | **1-B** | Docker 공식 Lambda Linux 런타임 C-Extension 로드 검증 | **완료 (PASS)** | `public.ecr.aws/lambda/python:3.12` 내 핸들러 임포트 성공 |
 | **2-A** | 시나리오 1 (SSH) Raw `auth.log` 역주입 매트릭스 검증 | **완료 (PASS)** | `mock_auth.log` 전수 파싱, Spraying 탐지, 오탐 0건 |
 | **2-B** | 시나리오 2 (Web) Raw `nginx-access.log` 역주입 매트릭스 검증 | **완료 (PASS)** | 3종 Web 공격(PT, Probing, Scan) 탐지, 오탐 0건 |
@@ -23,8 +23,8 @@
 ## 1단계 상세 실측 결과: Lambda 아티팩트 ABI 및 Linux 런타임 호환성
 
 ### 1-A. 아티팩트 빌드 무결성
-- **명령**: `uv run python scripts/package_lambda.py --platform manylinux2014_x86_64`
-- **산출물**: `infra/terraform/modules/lambda/build/orchestrator.zip` (2,603,646 bytes)
+- **명령**: `uv run python scripts/package_lambda.py` (기본 타깃 플랫폼: `x86_64-unknown-linux-gnu`)
+- **산출물**: `infra/terraform/modules/lambda/build/orchestrator.zip` (2,603,646 bytes, Linux 64-bit 휠 포함)
 - **Git 무오염 여부**: `.gitignore` 등록 경로로 `git status` 변경점 0건 유지.
 
 ### 1-B. Linux 컨테이너 내부 실행 검증
@@ -47,7 +47,7 @@
 - **검증 대상**: `tests/mock_data/mock_auth.log`, `tests/mock_data/mock_auth_noisy.log`
 - **실측 결과**:
   - `mock_auth.log`: 5개 원시 라인 파싱 $\rightarrow$ 다중 계정 분산 공격 감지 $\rightarrow$ `SSH_PASSWORD_SPRAYING` 판정 $\rightarrow$ `BLOCK_IP_ONLY` (MITRE `T1110.003`) 정확 매핑.
-  - `mock_auth_noisy.log`: 총 13개 라인 중 SSH 실패 6건 정확 파싱, 정상 sudo 명령 및 `session opened/closed` 7건 완벽 무시 (오탐 0건).
+  - `mock_auth_noisy.log`: 총 13개 라인 중 SSH 실패 6건 정확 파싱, 비실패 라인 7건(Accepted publickey, New session, sudo, Connection closed, Accepted password, Received disconnect, Disconnected) 완벽 무시 (오탐 0건). 추가로 `session opened/closed` 라인에 대해서도 개별 assert로 무시 여부 검증 완료.
 - **판정 (PASS)**: 정규식 파서와 룰 엔진의 오탐/미탐 무결성 확인.
 
 ### 2-B. 시나리오 2 (Web) Raw Nginx Log 전수 검증
@@ -70,6 +70,8 @@
 - **수정 조치**:
   - 133행 참조를 `aws_iam_policy.lambda_least_privilege.arn`으로 교체.
   - `terraform fmt -recursive` 적용.
+  - `terraform providers lock -platform=windows_amd64 -platform=linux_amd64` 실행하여 크로스 플랫폼 락 확보.
+  - 회귀 방지용 pytest 테스트(`test_terraform_lambda_iam_policy_attachment_references_declared_policy`) 신설.
 - **재검증 결과**:
   ```text
   Success! The configuration is valid.
@@ -81,8 +83,10 @@
   - CRITICAL: 0건
   - HIGH: 0건
   - MEDIUM: 0건
-  - LOW: 2건 (AWS-0025 DynamoDB 기본 KMS 키, AWS-0017 CloudWatch Log Group 기본 암호화)
-- **판정 (PASS)**: 데모 환경 비용 절감을 위해 AWS 관리형 기본 키를 채택한 기설계 사항과 일치함.
+  - LOW: 2건
+    - `AWS-0025 (DynamoDB)`: 테이블 암호화에 CMK 대신 AWS 관리형 기본 KMS 키(Default KMS Key) 사용.
+    - `AWS-0017 (CloudWatch Logs)`: 로그 그룹에 KMS CMK가 미연결된 CloudWatch 기본 AES-256 서버사이드 암호화 적용.
+- **판정 (PASS)**: 데모 환경 비용 절감을 위해 기본 암호화 설정을 채택한 기설계 사항과 일치함.
 
 ---
 

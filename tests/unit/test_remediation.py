@@ -1781,6 +1781,37 @@ def test_terraform_lambda_dynamodb_iam_policy_includes_describe_table() -> None:
     assert "dynamodb:DeleteItem" in content
 
 
+def test_terraform_lambda_iam_policy_attachment_references_declared_policy() -> None:
+    """Terraform Lambda IAM 정책 첨부 리소스가 선언된 정책 식별자를 참조하는지 회귀 검증.
+
+    Why:
+        `aws_iam_role_policy_attachment`에서 존재하지 않는 `aws_iam_policy.least_privilege`를
+        참조할 경우 terraform validate 및 배포 시 'Reference to undeclared resource' 치명적 결함이
+        발생하므로, 첨부되는 모든 정책 참조가 모듈 내에 실제 선언된 정책 리소스와
+        100% 일치함을 HCL 정적 분석으로 보장함.
+    """
+    import re
+    from pathlib import Path
+
+    tf_path = Path(__file__).resolve().parents[2] / "infra/terraform/modules/lambda/main.tf"
+    content = tf_path.read_text(encoding="utf-8")
+
+    # 모듈 내 선언된 모든 aws_iam_policy 리소스 이름 수집
+    declared_policies = set(re.findall(r'resource\s+"aws_iam_policy"\s+"([^"]+)"', content))
+    assert "lambda_least_privilege" in declared_policies
+
+    # aws_iam_role_policy_attachment 리소스에서 참조하는 aws_iam_policy 식별자 수집
+    attached_policy_refs = re.findall(r"policy_arn\s*=\s*aws_iam_policy\.([^.]+)\.arn", content)
+    assert len(attached_policy_refs) > 0
+
+    for ref in attached_policy_refs:
+        err_msg = f"첨부 정책 'aws_iam_policy.{ref}'가 모듈 내에 없음 ({declared_policies})"
+        assert ref in declared_policies, err_msg
+
+    # 회귀 검증: 수정 전 잘못된 참조('least_privilege')는 선언 목록에 없어야 함
+    assert "least_privilege" not in declared_policies
+
+
 def test_web_attack_window_expired_history_does_not_block_new_split_batch_attack(
     mocked_ec2_target: MockEc2Target,
     mocked_waf_ipset: MockWafTarget,
