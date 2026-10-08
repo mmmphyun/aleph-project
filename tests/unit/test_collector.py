@@ -1293,3 +1293,98 @@ def test_decode_nginx_cw_logs_large_batch_with_fuzzed_noise() -> None:
     assert events[0].source_ip == "198.51.100.88"
     assert events[0].uri == "/wp-admin"
     assert events[0].status_code == 404
+
+
+def test_collection_latency_out_of_order_and_duplicates() -> None:
+    from collector.collection_latency import summarize_collection_latency
+
+    events = [
+        {"eventId": "b", "timestamp": 2000, "ingestionTime": 5100},
+        {"eventId": "a", "timestamp": 1000, "ingestionTime": 1100},
+        {"eventId": "a", "timestamp": 1000, "ingestionTime": 1100},
+    ]
+    result = summarize_collection_latency(events, expected_count=2)
+    assert result["observed_count"] == 2
+    assert result["duplicate_count"] == 1
+    assert result["p50_ms"] == 100
+    assert result["p95_ms"] == 3100
+    assert result["over_budget_count"] == 1
+    assert result["within_budget"] is False
+
+
+def test_collection_latency_missing_events_fail_budget() -> None:
+    from collector.collection_latency import summarize_collection_latency
+
+    event = {"eventId": "a", "timestamp": 1000, "ingestionTime": 4000}
+    assert summarize_collection_latency([event], expected_count=1)["within_budget"] is True
+    result = summarize_collection_latency([event], expected_count=2)
+    assert result["missing_count"] == 1
+    assert result["within_budget"] is False
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [],
+        [{}],
+        [{"eventId": "a", "timestamp": 1000, "ingestionTime": 999}],
+        [{"eventId": "a", "timestamp": True, "ingestionTime": 2000}],
+        [{"eventId": "a", "timestamp": 1.5, "ingestionTime": 2000}],
+        [
+            {"eventId": "a", "timestamp": 1000, "ingestionTime": 1100},
+            {"eventId": "a", "timestamp": 1000, "ingestionTime": 1200},
+        ],
+        [
+            {"eventId": "a", "timestamp": 1000, "ingestionTime": 1100},
+            {"eventId": "b", "timestamp": 1000, "ingestionTime": 1100},
+        ],
+    ],
+)
+def test_collection_latency_rejects_invalid_evidence(events: list[dict[str, Any]]) -> None:
+    from collector.collection_latency import summarize_collection_latency
+
+    with pytest.raises(ValueError):
+        summarize_collection_latency(events, expected_count=1)
+
+
+def test_collection_latency_capacity_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import collector.collection_latency as latency
+
+    monkeypatch.setattr(latency, "MAX_EVENTS", 1)
+    event = {"eventId": "a", "timestamp": 1000, "ingestionTime": 1100}
+    with pytest.raises(ValueError, match="entries"):
+        latency.summarize_collection_latency([event, event], expected_count=1)
+
+
+@pytest.mark.parametrize("expected,budget", [(0, 3000), (True, 3000), (1, 0)])
+def test_collection_latency_invalid_options(expected: int, budget: int) -> None:
+    from collector.collection_latency import summarize_collection_latency
+
+    with pytest.raises(ValueError):
+        summarize_collection_latency(
+            [{"eventId": "a", "timestamp": 1000, "ingestionTime": 1100}],
+            expected_count=expected,
+            budget_ms=budget,
+        )
+
+
+def test_collection_latency_cli_and_input_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import collector.collection_latency as latency
+
+    input_path = tmp_path / "events.json"
+    input_path.write_text(
+        json.dumps({"events": [{"eventId": "a", "timestamp": 1000, "ingestionTime": 1100}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("sys.argv", ["latency", str(input_path), "--expected-count", "1"])
+    latency.main()
+    assert json.loads(capsys.readouterr().out)["within_budget"] is True
+    monkeypatch.setattr("sys.argv", ["latency", str(input_path), "--expected-count", "2"])
+    with pytest.raises(SystemExit) as exit_info:
+        latency.main()
+    assert exit_info.value.code == 1
+    monkeypatch.setattr(latency, "MAX_INPUT_BYTES", 1)
+    with pytest.raises(ValueError, match="32 MiB"):
+        latency.main()
