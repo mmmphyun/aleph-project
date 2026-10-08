@@ -4,12 +4,19 @@
 
 from __future__ import annotations
 
+import base64
+import gzip
+import json
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
+
+from collector.cw_processor import SUBSCRIPTION_FILTER_SPECS
 
 
 def get_bash_executable() -> str | None:
@@ -36,7 +43,7 @@ def test_init_target_server_script_integrity() -> None:
     content = script_path.read_text(encoding="utf-8")
 
     # 1. POSIX 셸 안전성 플래그 및 보안 수칙 검증
-    assert "set -euo pipefail" in content, "안전성 플래그가 필수입니다."
+    assert "\nset -Eeuo pipefail\n" in content, "실행되는 안전성 플래그가 필수입니다."
     assert "EUID" in content, "루트 권한(EUID) 검증 로직이 포함되어야 합니다."
     assert "openssl" in content, "openssl 패키지 명시 설치 의존성 필수."
     assert "openssl passwd" in content, "htpasswd 평문 저장 금지(해시 사용 필수)."
@@ -85,127 +92,250 @@ def test_nginx_conf_integrity() -> None:
     assert "location /health" in content, "헬스체크 엔드포인트(/health) 필요."
 
 
-def test_htpasswd_migration_removes_plain_text(tmp_path: Path) -> None:
-    """기존 인스턴스에 평문 {PLAIN} 및 644 권한이 남아있을 때 해시 전환 및 640 보정 회귀 검증."""
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_ec2_filter_contract_matches_collector() -> None:
+    """Terraform 배포 필터와 수집기 명세의 이탈을 차단한다."""
+    module = ROOT / "infra/terraform/modules/ec2/main.tf"
+    content = module.read_text(encoding="utf-8")
+    for spec in SUBSCRIPTION_FILTER_SPECS.values():
+        match = re.search(
+            re.escape('"' + spec["log_group_name"] + '"') + r'\s*=\s*("(?:\\.|[^"\\])*")',
+            content,
+        )
+        assert match is not None
+        assert json.loads(match.group(1)) == spec["filter_pattern"]
+
+
+def script_section(start: str, end: str) -> str:
+    """복제 로직 대신 실제 초기화 스크립트의 구간을 실행한다."""
+    content = (ROOT / "init_target_server.sh").read_text(encoding="utf-8")
+    return content[content.index(start) : content.index(end)]
+
+
+def run_section(section: str, prefix: str = "") -> subprocess.CompletedProcess[str]:
     bash_exe = get_bash_executable()
-    if not bash_exe:
-        pytest.skip("Bash 실행 환경이 없어 테스트를 건너뜁니다.")
-
-    htpasswd_file = tmp_path / ".htpasswd"
-    # 1. 이전 버전 상태 모의 생성: 평문 {PLAIN} 및 0o644 권한
-    htpasswd_file.write_text("admin:{PLAIN}cloudshield_demo_pass\n", encoding="utf-8")
-    htpasswd_file.chmod(0o644)
-
-    # 2. init_target_server.sh의 htpasswd 처리 로직을 격리 실행
-    bash_script = f"""
-    set -euo pipefail
-    HTPASSWD_FILE="{htpasswd_file.as_posix()}"
-    NEEDS_HASH=false
-    if [[ ! -f "${{HTPASSWD_FILE}}" ]]; then
-        NEEDS_HASH=true
-    elif grep -q "{{PLAIN}}" "${{HTPASSWD_FILE}}" 2>/dev/null; then
-        NEEDS_HASH=true
-    fi
-
-    if [[ "${{NEEDS_HASH}}" == true ]]; then
-        PASS_HASH="\\$1\\$test\\$dummyhash123"
-        echo "admin:${{PASS_HASH}}" > "${{HTPASSWD_FILE}}"
-    fi
-    chmod 640 "${{HTPASSWD_FILE}}"
-    """
-
-    res = subprocess.run([bash_exe, "-c", bash_script], capture_output=True, text=True)
-    assert res.returncode == 0, f"Bash 실행 실패: {res.stderr}"
-
-    # 3. 평문 제거 및 해시 전환, 권한 640 확인
-    updated_content = htpasswd_file.read_text(encoding="utf-8")
-    assert "{PLAIN}" not in updated_content
-    assert "admin:$1$test$dummyhash123" in updated_content
-    # POSIX 권한 640 검증 (0o640 == 416)
-    if os.name != "nt":
-        assert (htpasswd_file.stat().st_mode & 0o777) == 0o640
+    assert bash_exe, "실제 초기화 회귀 검증에 Bash가 필요합니다."
+    with tempfile.TemporaryDirectory() as directory:
+        script = Path(directory) / "test-section.sh"
+        script.write_text(
+            "set -Eeuo pipefail\nlog_error() { :; }\nlog_warn() { :; }\nlog_success() { :; }\n"
+            + prefix
+            + section,
+            encoding="utf-8",
+            newline="\n",
+        )
+        return subprocess.run(
+            [bash_exe, script.as_posix()],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
 
 
-def test_sshd_rollback_preserves_existing_configs_on_failure(tmp_path: Path) -> None:
-    """재실행 중 sshd 검증 실패 시 기존 00 및 99 drop-in 파일이 완전히 복원되는지 회귀 검증."""
-    bash_exe = get_bash_executable()
-    if not bash_exe:
-        pytest.skip("Bash 실행 환경이 없어 테스트를 건너뜁니다.")
+@pytest.mark.parametrize("failure", [None, "random", "hash", "invalid_hash"])
+def test_real_htpasswd_migration(tmp_path: Path, failure: str | None) -> None:
+    target = tmp_path / ".htpasswd"
+    target.write_text("admin:{PLAIN}legacy\n", encoding="utf-8")
+    section = script_section("HTPASSWD_FILE=", "# 기존 index.html")
+    section = section.replace('"/etc/nginx/.htpasswd"', f'"{target.as_posix()}"')
+    prefix = "chown() { :; }\n"
+    if failure == "random":
+        prefix += 'openssl() { [[ "$1" != rand ]] && command openssl "$@"; }\n'
+    elif failure == "hash":
+        prefix += 'openssl() { [[ "$1" != passwd ]] && command openssl "$@"; }\n'
+    elif failure == "invalid_hash":
+        prefix += "openssl() { echo invalid; }\n"
+    result = run_section(section, prefix)
+    if failure:
+        assert result.returncode != 0
+        assert target.read_text(encoding="utf-8") == "admin:{PLAIN}legacy\n"
+    else:
+        assert result.returncode == 0, result.stderr
+        assert target.read_text(encoding="utf-8").startswith("admin:$6$")
+        if os.name != "nt":
+            assert target.stat().st_mode & 0o777 == 0o640
+        # 재실행 시 해시를 새로 만들지 않아 멱등성을 유지한다.
+        before = target.read_bytes()
+        assert run_section(section, prefix).returncode == 0
+        assert target.read_bytes() == before
 
+
+@pytest.mark.parametrize("failure", ["rsyslog", "syntax", "restart"])
+def test_real_ssh_failure_restores_configs(tmp_path: Path, failure: str) -> None:
     ssh_dir = tmp_path / "ssh"
-    sshd_dir = ssh_dir / "sshd_config.d"
-    sshd_dir.mkdir(parents=True)
+    dropins = ssh_dir / "sshd_config.d"
+    dropins.mkdir(parents=True)
+    files = [
+        ssh_dir / "sshd_config",
+        dropins / "00-cloudshield.conf",
+        dropins / "99-cloudshield.conf",
+    ]
+    for file in files:
+        file.write_text("original\n", encoding="utf-8")
+    section = script_section("SSHD_MAIN_CONF=", "# 5. Nginx")
+    section = section.replace("/etc/ssh", ssh_dir.as_posix())
+    rsyslog_dir = tmp_path / "rsyslog"
+    rsyslog_dir.mkdir()
+    section = section.replace("/etc/rsyslog.d", rsyslog_dir.as_posix())
+    prefix = f"""
+log_info() {{ :; }}
+systemctl() {{
+    if [[ '{failure}' == rsyslog && "$2" == rsyslog ]]; then return 1; fi
+    if [[ '{failure}' == restart && "$1" == restart && "$2" == ssh ]]; then return 1; fi
+    return 0
+}}
+sshd() {{
+    if [[ '{failure}' == syntax && "$1" == -t ]]; then return 1; fi
+    echo 'passwordauthentication yes'
+}}
+"""
+    result = run_section(section, prefix)
+    assert result.returncode != 0
+    for file in files:
+        assert file.read_text(encoding="utf-8") == "original\n", result.stderr
 
-    main_conf = ssh_dir / "sshd_config"
-    conf_00 = sshd_dir / "00-cloudshield.conf"
-    conf_99 = sshd_dir / "99-cloudshield.conf"
 
-    main_conf.write_text("Original Main SSH Config\n", encoding="utf-8")
-    conf_00.write_text("# Existing 00 Config Content\n", encoding="utf-8")
-    conf_99.write_text("# Existing 99 Legacy Config Content\n", encoding="utf-8")
-
-    bash_script = f"""
-    set -euo pipefail
-    SSHD_MAIN_CONF="{main_conf.as_posix()}"
-    SSHD_MAIN_BAK="{main_conf.as_posix()}.bak.cloudshield"
-    SSHD_DIR="{sshd_dir.as_posix()}"
-    SSHD_CUSTOM_CONF="{conf_00.as_posix()}"
-    SSHD_CUSTOM_BAK="{conf_00.as_posix()}.bak.cloudshield"
-    SSHD_LEGACY_CONF="{conf_99.as_posix()}"
-    SSHD_LEGACY_BAK="{conf_99.as_posix()}.bak.cloudshield"
-
-    HAD_MAIN=false
-    HAD_CUSTOM=false
-    HAD_LEGACY=false
-
-    if [[ -f "${{SSHD_MAIN_CONF}}" ]]; then
-        cp "${{SSHD_MAIN_CONF}}" "${{SSHD_MAIN_BAK}}"
-        HAD_MAIN=true
+@pytest.mark.parametrize("was_active", [True, False])
+@pytest.mark.parametrize(
+    "failure", ["syntax", "restart", "rollback_syntax", "rollback_restart", "rollback_inactive"]
+)
+def test_real_nginx_failure_restores_configuration(
+    tmp_path: Path, failure: str, was_active: bool
+) -> None:
+    nginx_dir = tmp_path / "nginx"
+    nginx_dir.mkdir()
+    conf = nginx_dir / "nginx.conf"
+    conf.write_text("original\n", encoding="utf-8")
+    auth = nginx_dir / ".htpasswd"
+    auth.write_text("admin:{PLAIN}legacy\n", encoding="utf-8")
+    state = tmp_path / "service-state"
+    calls = tmp_path / "service-calls"
+    web_dir = tmp_path / "html"
+    web_dir.mkdir()
+    index = web_dir / "index.html"
+    index.write_text("original page\n", encoding="utf-8")
+    section = script_section("NGINX_CONF_HAD_FILE=", "# 6. 방화벽")
+    section = section.replace("/etc/nginx", nginx_dir.as_posix()).replace(
+        "/var/www/html", web_dir.as_posix()
+    )
+    prefix = f"""
+SCRIPT_DIR='{tmp_path.as_posix()}'
+active={"true" if was_active else "false"}
+restarts=0
+trap 'printf "%s" "$active" > "{state.as_posix()}"' EXIT
+log_info() {{ :; }}
+log_error() {{ echo "$*" >&2; }}
+chown() {{ :; }}
+nginx() {{
+    if [[ "$(cat '{conf.as_posix()}')" != original ]]; then
+        [[ '{failure}' != syntax ]] || return 42
+    elif [[ '{failure}' == rollback_syntax ]]; then
+        return 43
     fi
-    if [[ -f "${{SSHD_CUSTOM_CONF}}" ]]; then
-        cp "${{SSHD_CUSTOM_CONF}}" "${{SSHD_CUSTOM_BAK}}"
-        HAD_CUSTOM=true
+    return 0
+}}
+systemctl() {{
+    echo "$*" >> '{calls.as_posix()}'
+    if [[ "$1" == is-active ]]; then
+        [[ "$active" == true ]]
+    elif [[ "$1" == restart ]]; then
+        restarts=$((restarts + 1))
+        active=false
+        if [[ "$restarts" == 1 && '{failure}' != syntax ]]; then return 42; fi
+        if [[ '{failure}' == rollback_restart ]]; then return 43; fi
+        if [[ '{failure}' != rollback_inactive ]]; then active=true; fi
     fi
-    if [[ -f "${{SSHD_LEGACY_CONF}}" ]]; then
-        cp "${{SSHD_LEGACY_CONF}}" "${{SSHD_LEGACY_BAK}}"
-        HAD_LEGACY=true
-        rm -f "${{SSHD_LEGACY_CONF}}"
+}}
+"""
+    result = run_section(section, prefix)
+    assert result.returncode == 42, result.stderr
+    assert conf.read_text(encoding="utf-8") == "original\n"
+    assert index.read_text(encoding="utf-8") == "original page\n"
+    assert auth.read_text(encoding="utf-8") == "admin:{PLAIN}legacy\n"
+    restart_count = calls.read_text(encoding="utf-8").count("restart nginx")
+    if was_active:
+        expected_restarts = 1 if failure in {"syntax", "rollback_syntax"} else 2
+        assert restart_count == expected_restarts
+        recovered = failure in {"syntax", "restart"}
+        assert state.read_text(encoding="utf-8") == ("true" if recovered else "false")
+        if not recovered:
+            assert "Nginx 롤백 실패:" in result.stderr
+    else:
+        assert restart_count == (0 if failure == "syntax" else 1)
+        assert state.read_text(encoding="utf-8") == "false"
+
+
+def test_real_firewall_failure_is_not_suppressed() -> None:
+    section = script_section("if command -v ufw", "# 7. 수집")
+    result = run_section(section, "log_info() { :; }\nufw() { return 1; }\n")
+    assert result.returncode != 0
+
+
+def test_real_health_failure_is_not_suppressed() -> None:
+    content = (ROOT / "init_target_server.sh").read_text(encoding="utf-8")
+    section = content[content.index("curl --fail --show-error --silent") :]
+    result = run_section(section, "curl() { return 22; }\n")
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize("failure", [None, "download", "install", "agent", "health"])
+def test_real_agent_bootstrap(tmp_path: Path, failure: str | None) -> None:
+    """압축 자산 복원과 단계별 장애 전파를 실제 user-data 템플릿으로 검증한다."""
+    module = ROOT / "infra/terraform/modules/ec2"
+    content = (module / "user_data.sh.tftpl").read_text(encoding="utf-8")
+    assets = {
+        "init_script": ROOT / "init_target_server.sh",
+        "nginx_config": ROOT / "nginx.conf",
+        "agent_config": ROOT / "src/collector/amazon-cloudwatch-agent.json",
+    }
+    for name, path in assets.items():
+        packed = base64.b64encode(gzip.compress(path.read_bytes())).decode("ascii")
+        content = content.replace("${" + name + "}", packed)
+    assert len(content.encode("ascii")) <= 16384
+    asset_dir = tmp_path / "assets"
+    content = content.replace("/opt/cloudshield", asset_dir.as_posix())
+    content = content.replace(
+        "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl", "agent_ctl"
+    )
+    marker = tmp_path / "calls"
+    prefix = f"""
+install() {{ mkdir -p "$4"; }}
+bash() {{ echo init >> '{marker.as_posix()}'; }}
+curl() {{
+    if [[ "$*" == *127.0.0.1* ]]; then
+        [[ '{failure}' != health ]] || return 22
+        echo health >> '{marker.as_posix()}'
+    else
+        [[ '{failure}' != download ]] || return 22
+        echo download >> '{marker.as_posix()}'
     fi
-
-    rollback_sshd() {{
-        if [[ "${{HAD_MAIN}}" == true && -f "${{SSHD_MAIN_BAK}}" ]]; then
-            cp "${{SSHD_MAIN_BAK}}" "${{SSHD_MAIN_CONF}}"
-            rm -f "${{SSHD_MAIN_BAK}}"
-        fi
-        if [[ "${{HAD_CUSTOM}}" == true && -f "${{SSHD_CUSTOM_BAK}}" ]]; then
-            cp "${{SSHD_CUSTOM_BAK}}" "${{SSHD_CUSTOM_CONF}}"
-            rm -f "${{SSHD_CUSTOM_BAK}}"
-        else
-            rm -f "${{SSHD_CUSTOM_CONF}}"
-            rm -f "${{SSHD_CUSTOM_BAK}}"
-        fi
-        if [[ "${{HAD_LEGACY}}" == true && -f "${{SSHD_LEGACY_BAK}}" ]]; then
-            cp "${{SSHD_LEGACY_BAK}}" "${{SSHD_LEGACY_CONF}}"
-            rm -f "${{SSHD_LEGACY_BAK}}"
-        fi
-    }}
-
-    # 새 설정 덮어쓰기 시도
-    echo "New 00 Config" > "${{SSHD_CUSTOM_CONF}}"
-    echo "Modified Main" > "${{SSHD_MAIN_CONF}}"
-
-    # 가상 검증 실패 트리거
-    SIMULATED_FAIL=true
-    if [[ "${{SIMULATED_FAIL}}" == true ]]; then
-        rollback_sshd
-        exit 1
-    fi
-    """
-
-    res = subprocess.run([bash_exe, "-c", bash_script], capture_output=True, text=True)
-    assert res.returncode == 1, "검증 실패 시 exit 1로 종료되어야 합니다."
-
-    # 롤백 후 원본 내용 완벽 복원 확인
-    assert main_conf.read_text(encoding="utf-8") == "Original Main SSH Config\n"
-    assert conf_00.read_text(encoding="utf-8") == "# Existing 00 Config Content\n"
-    assert conf_99.read_text(encoding="utf-8") == "# Existing 99 Legacy Config Content\n"
+}}
+dpkg() {{ [[ '{failure}' != install ]] || return 1; echo install >> '{marker.as_posix()}'; }}
+agent_ctl() {{ [[ '{failure}' != agent ]] || return 1; echo agent >> '{marker.as_posix()}'; }}
+systemctl() {{ :; }}
+"""
+    # shebang이 본문 첫 줄일 필요는 없으며 mock 외부 명령만 주입한다.
+    result = run_section(content, prefix)
+    if failure:
+        assert result.returncode != 0
+        assert "bootstrap failed" in result.stderr
+        assert failure not in marker.read_text(encoding="utf-8").splitlines()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert marker.read_text(encoding="utf-8").splitlines() == [
+            "init",
+            "download",
+            "install",
+            "agent",
+            "health",
+        ]
+    for name, path in assets.items():
+        restored = {
+            "init_script": "init_target_server.sh",
+            "nginx_config": "nginx.conf",
+            "agent_config": "amazon-cloudwatch-agent.json",
+        }[name]
+        assert (asset_dir / restored).read_bytes() == path.read_bytes()
