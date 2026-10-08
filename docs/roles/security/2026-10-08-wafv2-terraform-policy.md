@@ -102,6 +102,7 @@ terraform -chdir=infra/terraform/modules/waf fmt -check -recursive
 terraform -chdir=infra/terraform/modules/waf validate
 terraform -chdir=infra/terraform/modules/waf test
 trivy config --exit-code 1 infra/terraform/modules/waf
+$env:CLOUDSHIELD_REQUIRE_WAF_TERRAFORM = "1"
 powershell .\scripts\check.ps1
 ```
 
@@ -117,11 +118,62 @@ powershell .\scripts\check.ps1
 
 pytest 검증은 보안 소유 경로인 `tests/unit/test_incident_mapper.py`에서 실행한다.
 Terraform 설치와 모듈 init이 없는 Python 전용 환경에서는 IaC 테스트 2개가 명시적으로
-skip된다. WAF 변경의 검증자는 Terraform 설치 및 모듈 init 후 전체 게이트를 실행하여
-이 두 테스트가 실제로 통과했는지 확인해야 한다.
+skip된다. WAF 변경의 검증자는 Terraform 설치 및 모듈 init 후
+`CLOUDSHIELD_REQUIRE_WAF_TERRAFORM=1`을 설정한 상태로 전체 게이트를 실행해야 한다.
+이 모드에서는 Terraform 실행 파일 누락, 모듈 provider 미초기화, Terraform 1.7 미만이
+실패로 처리되므로 IaC 테스트 2개가 skip된 전체 테스트 성공을 필수 검증으로 오인할 수 없다.
+모드 값은 미설정/`0`(일반 Python 검증), `1`(필수 WAF 검증)만 허용하고 오타는 실패한다.
+Terraform 명령 실행 오류도 필수 여부와 관계없이 기존 assertion으로 실패한다.
+이 환경변수는 WAF 테스트에만 적용하며, 다른 직무의 IaC 검증을 대신하지 않는다.
+
+WAF 두 항목과 준비 실패 회귀 테스트만 먼저 확인하려면 다음 명령을 실행한다.
+
+```powershell
+$env:CLOUDSHIELD_REQUIRE_WAF_TERRAFORM = "1"
+uv run python -m pytest tests/unit/test_incident_mapper.py -k waf_terraform -v
+```
+
+기존 CI는 Terraform 설치·init 및 이 환경변수 설정을 수행하지 않는다. 따라서 이번 보완은
+명시적 필수 모드에서 누락을 차단하며, CI에서 항상 IaC를 실행하는 설정은 보호된 워크플로를
+소유한 클라우드 A의 후속 결합 범위다. 위 두 테스트의 실제 통과 결과를 별도로 확인한다.
 
 재계획 테스트는 임시 로컬 state에 기존 `/32` 주소 두 개를 두고, 실제 provider로
 `plan -refresh=false`를 수행해 태그 업데이트 이후에도 주소가 유지되는지 검사한다.
 검증 provider는 테스트 자격증명을 사용하고 계정·메타데이터 조회를 비활성화한다.
 mock 테스트의 apply도 실제 AWS를 호출하지 않는다. 실제 HTTP 차단, 전파 시간,
 권한 구성 및 전체 10초 관통 성능은 이 검증으로 증명하지 않는다.
+
+## 5. 선행 PR 머지 후 필수 모드 재검증 (2026-10-08 KST)
+
+- 선행 구현: [머지된 PR #155](https://github.com/mmmphyun/aleph-project/pull/155).
+- 보완 이슈: [Issue #158](https://github.com/mmmphyun/aleph-project/issues/158).
+- 기준 main: `ca8bd83f924fd5fde87fe44c9905ab4f449a9b58`.
+- 변경 범위: 이 문서와 `tests/unit/test_incident_mapper.py`의 검증 준비 조건·회귀 테스트.
+  WAF HCL·provider lock·공통 검사기·워크플로·의존성·계약은 변경하지 않았다.
+
+선행 PR 본문의 과거 로컬 검증 기록과 별개로, 최신 main에서 만든 별도 작업 공간에서
+Terraform을 설치하고 모듈을 `init -backend=false -input=false -lockfile=readonly`로 초기화했다.
+`CLOUDSHIELD_REQUIRE_WAF_TERRAFORM=1`을 설정해 다음 결과를 직접 확인했다.
+
+| 검사 | 실제 결과 |
+| --- | --- |
+| WAF `fmt -check -recursive`, `validate` | 각각 exit 0 |
+| WAF pytest 2개 + 준비 실패 회귀 테스트 12개 | **14 passed, 0 skipped**, 41 deselected, 23.55초 |
+| `powershell .\scripts\check.ps1` 전체 게이트 | **exit 0**, R&R·경로·Ruff lint·format·pytest 통과 |
+| 전체 게이트의 pytest | **895 passed, 0 skipped, 1 warning**, 173.19초 |
+| `trivy config --exit-code 1 infra/terraform/modules/waf` | **exit 0**, 설정 오류 0건, severity 필터·제외 없음 |
+
+준비 실패 회귀는 실행 파일 누락·provider 미초기화·Terraform 1.6.6 각각에 대해 일반/필수
+모드를 비교하고, 빈 문자열·`true`·`yes` 같은 모드 오타도 거부한다. 실패/skip 예외는 이
+회귀 테스트 안에서 기대 동작으로 확인하며, 실제 WAF pytest 2개는 Terraform으로 실행한다.
+기존 `/32` 두 주소의 재계획 보존 assertion과 WAF 정책 검증을 삭제하거나 완화하지 않았다.
+
+환경: Windows, Python 3.13.15, pytest 8.4.2, Ruff 0.16.4, Terraform 1.9.8,
+AWS provider 5.100.0, Trivy 0.75.0. Python 의존성은 기존 lock의 `uv sync --all-extras --frozen`
+결과를 사용했다. Terraform·Trivy 다운로드는 공식 배포 SHA-256과 대조했다.
+warning 1건은 기존 `test_network_socket_is_blocked_by_default`의 소켓 차단 확인이다.
+
+로컬 실행 로그는 `$env:TEMP/cloudshield-waf-158-check.log`와
+`$env:TEMP/cloudshield-waf-158-trivy.log`에 보관했다. 이 결과는 **필수 모드의 로컬 실행**이며,
+Terraform 설치·init이 없는 기존 GitHub CI에서 WAF 2개가 실행됐다는 의미가 아니다.
+원격 CI 결과는 보완 PR 본문에서 별도로 구분한다. 실제 AWS 배포는 수행하지 않았다.
