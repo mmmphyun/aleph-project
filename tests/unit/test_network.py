@@ -141,8 +141,18 @@ def test_sg_rejects_nonadjacent_causality_reversal(sg_timeline, send, receive, r
         sg_analyze(sg_timeline, rows, clock_error=error)
 
 
-@pytest.mark.parametrize("receive,response", [("17.9", "17.8"), ("18.1", "18.2")])
-def test_sg_keeps_causality_within_total_clock_margin(sg_timeline, receive, response):
+@pytest.mark.parametrize(
+    "receive,response",
+    [
+        ("17.9", "18.1"),
+        ("18.2", "18.1"),
+        ("17.8", "18.1"),
+        ("18.3", "18.1"),
+        ("18.1", "18.2"),
+    ],
+)
+def test_sg_keeps_cross_device_clock_margin_with_client_order(sg_timeline, receive, response):
+    # 서버 시각은 앞서거나 늦을 수 있지만 같은 클라이언트의 송신→응답은 역전되지 않는다.
     rows = sg_baseline() + [
         sg_event(5, "send", "18", sequence=2),
         sg_event(6, "server_receive", receive, sequence=2),
@@ -151,6 +161,27 @@ def test_sg_keeps_causality_within_total_clock_margin(sg_timeline, receive, resp
     report = sg_analyze(sg_timeline, rows)
     assert report["connections"]["A"]["post_confirmation_roundtrip_sequences"] == [2]
     assert "별도 대조" in report["connections"]["A"]["observation"]
+
+
+@pytest.mark.parametrize(
+    "send,receive,response,error",
+    [
+        ("18", "17.9", "17.8", "0.1"),
+        ("11", "10.9", "10.8", "0.1"),
+        ("18", "18", "17.999999999", "0.1"),
+        ("18", "18", "17.999999999", "5"),
+        ("18", None, "17.9", "0.1"),
+    ],
+    ids=["review", "baseline", "nanosecond", "large_clock_error", "missing_server"],
+)
+def test_sg_rejects_same_client_response_before_send(sg_timeline, send, receive, response, error):
+    rows = sg_baseline() if send != "11" else [sg_event(1, "socket_open", "10")]
+    rows.append(sg_event(5, "send", send, sequence=2))
+    if receive is not None:
+        rows.append(sg_event(6, "server_receive", receive, sequence=2))
+    rows.append(sg_event(7, "response_receive", response, sequence=2))
+    with pytest.raises(ValueError, match="클라이언트 송신·응답 순서 모순"):
+        sg_analyze(sg_timeline, rows, clock_error=error)
 
 
 @pytest.mark.parametrize("terminal", ["socket_close", "socket_reset"])

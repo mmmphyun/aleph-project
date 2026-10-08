@@ -189,14 +189,18 @@ def analyze_events(
             receive = message.get("server_receive")
             response = message.get("response_receive")
             chain = [item for item in (send, receive, response) if item]
-            # 각 두 시각의 최대 오차 합은 2×error다. 단계마다 이를 누적하면
-            # 송신→응답의 전체 역전을 허용하므로 비인접 단계까지 같은 한도로 대조한다.
+            # 장비 간 최대 오차 합은 2×error다. 단계별 누적으로 한도가 커지지
+            # 않도록 모든 선후 쌍을 대조하고 같은 클라이언트의 순서는 별도로 강제한다.
             if any(
                 epoch(a["epoch"]) > epoch(b["epoch"]) + 2 * error
                 for index, a in enumerate(chain)
                 for b in chain[index + 1 :]
             ):
                 raise ValueError("메시지 인과 시각 모순")
+            # 같은 클라이언트의 송신→응답에는 장비 간 오차를 적용할 수 없다.
+            # 시계 보정 여부를 입증할 로컬 단조 시각이 없으면 역전을 왕복으로 집계하지 않는다.
+            if send and response and epoch(send["epoch"]) > epoch(response["epoch"]):
+                raise ValueError("클라이언트 송신·응답 순서 모순")
             post = bool(send and epoch(send["epoch"]) > confirmed + 2 * error)
             results.append(
                 {
