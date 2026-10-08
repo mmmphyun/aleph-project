@@ -5,12 +5,146 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from contracts.incident import IncidentReport
 from detection.incident_mapper import analyze_incident, map_threat_to_incident
+
+
+@pytest.fixture
+def waf_terraform() -> tuple[str, Path]:
+    """WAF 정책과 사고 계약의 연결을 실제 Terraform 스키마로 검증한다.
+
+    Constraints:
+        Terraform 1.7+와 모듈의 사전 init이 필요하다. Python 전용 개발 환경에서는
+        명시적으로 skip하며, WAF PR 검증은 도구를 설치한 환경에서 반드시 실행한다.
+    """
+    terraform = shutil.which("terraform")
+    module = Path(__file__).resolve().parents[2] / "infra/terraform/modules/waf"
+    if terraform is None or not (module / ".terraform/providers").is_dir():
+        pytest.skip("WAF IaC 검증에는 Terraform 1.7+ 설치 및 모듈 init이 필요합니다.")
+    version = json.loads(_run_waf_terraform(terraform, module, "version", "-json").stdout)
+    if tuple(int(part) for part in version["terraform_version"].split(".")[:2]) < (1, 7):
+        pytest.skip("Terraform mock provider 검증에는 1.7 이상이 필요합니다.")
+    return terraform, module
+
+
+def _run_waf_terraform(
+    terraform: str, directory: Path, *arguments: str
+) -> subprocess.CompletedProcess[str]:
+    """셸을 거치지 않고 로컬 계획·mock 검증만 실행하며 실패 원인을 숨기지 않는다."""
+    environment = os.environ.copy()
+    environment.update({"TF_IN_AUTOMATION": "1", "CHECKPOINT_DISABLE": "1"})
+    result = subprocess.run(
+        [terraform, f"-chdir={directory}", *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+        timeout=90,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result
+
+
+def test_waf_terraform_incident_block_policy(waf_terraform: tuple[str, Path]) -> None:
+    """BLOCK_WAF의 도착점이 실제 IPSet Block 규칙이며 잘못된 입력이 거부되는지 검증한다."""
+    terraform, module = waf_terraform
+    _run_waf_terraform(terraform, module, "test", "-no-color")
+
+
+def test_waf_terraform_preserves_runtime_blocks(
+    waf_terraform: tuple[str, Path], tmp_path: Path
+) -> None:
+    """Lambda가 추가한 /32 주소를 Terraform 재적용이 삭제하는 회귀를 검출한다.
+
+    Why:
+        빈 초기 목록과 동적 차단 목록은 소유자가 다르므로 실제 계획 결과에서 보존을
+        증명한다. ignore_changes를 제거하면 이 테스트는 빈 주소 덮어쓰기를 검출한다.
+    Side-effects:
+        로컬 임시 state와 캐시된 provider만 사용한다. refresh를 비활성화하고 검증용
+        provider의 모든 계정·메타데이터 조회를 차단하며 apply는 실행하지 않는다.
+    """
+    terraform, module = waf_terraform
+    for source in module.glob("*.tf"):
+        shutil.copy2(source, tmp_path / source.name)
+    shutil.copy2(module / ".terraform.lock.hcl", tmp_path / ".terraform.lock.hcl")
+    (tmp_path / "provider.tf").write_text(
+        'provider "aws" {\n'
+        '  region                      = "ap-northeast-2"\n'
+        '  access_key                  = "testing"\n'
+        '  secret_key                  = "testing"\n'
+        "  skip_credentials_validation = true\n"
+        "  skip_requesting_account_id  = true\n"
+        "  skip_metadata_api_check     = true\n"
+        "  skip_region_validation     = true\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    addresses = ["203.0.113.10/32", "198.51.100.20/32"]
+    state = {
+        "version": 4,
+        "serial": 1,
+        "lineage": "33333333-3333-3333-3333-333333333333",
+        "outputs": {},
+        "resources": [
+            {
+                "mode": "managed",
+                "type": "aws_wafv2_ip_set",
+                "name": "blocked",
+                "provider": 'provider["registry.terraform.io/hashicorp/aws"]',
+                "instances": [
+                    {
+                        "schema_version": 0,
+                        "attributes": {
+                            "id": "11111111-1111-1111-1111-111111111111",
+                            "arn": (
+                                "arn:aws:wafv2:ap-northeast-2:123456789012:regional/ipset/"
+                                "CloudShield-Block-IPSet/11111111-1111-1111-1111-111111111111"
+                            ),
+                            "name": "CloudShield-Block-IPSet",
+                            "description": "CloudShield runtime-managed IPv4 host block list",
+                            "scope": "REGIONAL",
+                            "ip_address_version": "IPV4",
+                            "addresses": addresses,
+                            "tags": {},
+                            "tags_all": {},
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    (tmp_path / "terraform.tfstate").write_text(json.dumps(state), encoding="utf-8")
+    _run_waf_terraform(
+        terraform,
+        tmp_path,
+        "init",
+        "-backend=false",
+        "-input=false",
+        f"-plugin-dir={module / '.terraform/providers'}",
+        "-no-color",
+    )
+    _run_waf_terraform(
+        terraform, tmp_path, "plan", "-refresh=false", "-input=false", "-out=waf.plan", "-no-color"
+    )
+    plan = json.loads(_run_waf_terraform(terraform, tmp_path, "show", "-json", "waf.plan").stdout)
+    change = next(
+        resource["change"]
+        for resource in plan["resource_changes"]
+        if resource["address"] == "aws_wafv2_ip_set.blocked"
+    )
+    # 태그 업데이트가 함께 계획되어도 차단 목록의 두 기존 주소가 모두 유지되어야 한다.
+    assert change["actions"] == ["update"]
+    assert set(change["after"]["addresses"]) == set(addresses)
 
 
 def test_analyze_incident_interface(sample_auth_log_lines: list[str]) -> None:
