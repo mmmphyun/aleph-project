@@ -14,6 +14,381 @@ import pytest
 
 
 @pytest.fixture
+def sg_timeline(monkeypatch):
+    directory = Path(__file__).resolve().parents[2] / "network"
+    monkeypatch.syspath_prepend(str(directory))
+    spec = importlib.util.spec_from_file_location(
+        "sg_connection_timeline", directory / "sg_connection_timeline.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def sg_event(event_id, kind, epoch, *, connection="A", sequence=0):
+    # 합성 echo의 메타데이터만 사용한다. 실제 소켓·AWS·장비 시계로 폴백하지 않는다.
+    identity, port = {"A": (1, 40000), "B": (2, 40001), "R": (3, 40002)}[connection]
+    return [
+        event_id,
+        connection,
+        identity,
+        "192.0.2.1",
+        port,
+        "192.0.2.2",
+        9000,
+        sequence,
+        kind,
+        epoch,
+        32 if sequence else 0,
+    ]
+
+
+def sg_times(**overrides):
+    return {
+        "start": "10",
+        "end": "30",
+        "change_start": "15",
+        "api_complete": "16",
+        "sg_confirmed": "17",
+        "clock_error": "0.1",
+        **overrides,
+    }
+
+
+def sg_baseline():
+    return [
+        sg_event(1, "socket_open", "10"),
+        sg_event(2, "send", "11", sequence=1),
+        sg_event(3, "server_receive", "11.1", sequence=1),
+        sg_event(4, "response_receive", "11.2", sequence=1),
+    ]
+
+
+def sg_analyze(module, rows, **times):
+    return module.analyze_events(waf_csv(module, rows), **sg_times(**times))
+
+
+def test_sg_correlates_same_socket_post_change_and_separate_new_connection(sg_timeline):
+    rows = sg_baseline() + [
+        sg_event(5, "send", "18", sequence=2),
+        sg_event(6, "server_receive", "18.1", sequence=2),
+        sg_event(7, "response_receive", "18.2", sequence=2),
+        sg_event(8, "socket_open", "19", connection="B"),
+        sg_event(9, "timeout", "22", connection="B"),
+    ]
+    report = sg_analyze(sg_timeline, rows)
+    assert report["connections"]["A"]["baseline_roundtrip_before_change_recorded"]
+    assert report["connections"]["A"]["post_confirmation_roundtrip_sequences"] == [2]
+    assert report["connections"]["B"]["post_confirmation_roundtrip_sequences"] == []
+    assert "미확정" in report["sg_cause"]
+    assert "별도 대조" in report["connections"]["A"]["observation"]
+
+
+@pytest.mark.parametrize("kind", ["observed_established", "tcp_ack", "send", "response_receive"])
+def test_sg_state_ack_send_or_delayed_response_does_not_prove_delivery(sg_timeline, kind):
+    row = sg_event(5, kind, "18", sequence=2 if kind != "observed_established" else 0)
+    report = sg_analyze(sg_timeline, sg_baseline() + [row])
+    assert report["connections"]["A"]["post_confirmation_roundtrip_sequences"] == []
+    assert "증거 부족" in report["connections"]["A"]["observation"]
+
+
+@pytest.mark.parametrize("sent", ["14", "17", "17.199999999", "17.2"])
+def test_sg_pre_change_send_and_clock_margin_not_counted_as_post_change(sg_timeline, sent):
+    rows = sg_baseline() + [
+        sg_event(5, "send", sent, sequence=2),
+        sg_event(6, "server_receive", "18", sequence=2),
+        sg_event(7, "response_receive", "19", sequence=2),
+    ]
+    assert (
+        sg_analyze(sg_timeline, rows)["connections"]["A"]["post_confirmation_roundtrip_sequences"]
+        == []
+    )
+
+
+def test_sg_reverse_order_duplicates_and_missing_evidence(sg_timeline):
+    rows = sg_baseline()
+    report = sg_analyze(sg_timeline, list(reversed(rows)) + [rows[0]])
+    assert report["input_out_of_order"] and report["duplicate_event_count"] == 1
+    assert len(report["connections"]["A"]["events"]) == 4
+    assert sg_analyze(sg_timeline, [])["connections"] == {}
+    without_open = sg_analyze(sg_timeline, rows[1:])
+    assert not without_open["connections"]["A"]["baseline_roundtrip_before_change_recorded"]
+
+
+@pytest.mark.parametrize("terminal", ["socket_close", "socket_reset"])
+def test_sg_refuses_new_send_after_socket_termination(sg_timeline, terminal):
+    rows = sg_baseline() + [sg_event(5, terminal, "18"), sg_event(6, "send", "19", sequence=2)]
+    with pytest.raises(ValueError):
+        sg_analyze(sg_timeline, rows)
+
+
+@pytest.mark.parametrize(
+    "send,receive,response,error",
+    [
+        ("18", "17.8", "17.6", "0.1"),
+        ("18", "17.9", "17.8", "0.05"),
+        ("18", "17.9", "17.799999999", "0.1"),
+    ],
+)
+def test_sg_rejects_nonadjacent_causality_reversal(sg_timeline, send, receive, response, error):
+    # 인접 단계마다 허용 오차를 소비해 전체 역전을 왕복으로 승격하는 회귀를 막는다.
+    rows = sg_baseline() + [
+        sg_event(5, "send", send, sequence=2),
+        sg_event(6, "server_receive", receive, sequence=2),
+        sg_event(7, "response_receive", response, sequence=2),
+    ]
+    with pytest.raises(ValueError, match="메시지 인과 시각 모순"):
+        sg_analyze(sg_timeline, rows, clock_error=error)
+
+
+@pytest.mark.parametrize(
+    "receive,response",
+    [
+        ("17.9", "18.1"),
+        ("18.2", "18.1"),
+        ("17.8", "18.1"),
+        ("18.3", "18.1"),
+        ("18.1", "18.2"),
+    ],
+)
+def test_sg_keeps_cross_device_clock_margin_with_client_order(sg_timeline, receive, response):
+    # 서버 시각은 앞서거나 늦을 수 있지만 같은 클라이언트의 송신→응답은 역전되지 않는다.
+    rows = sg_baseline() + [
+        sg_event(5, "send", "18", sequence=2),
+        sg_event(6, "server_receive", receive, sequence=2),
+        sg_event(7, "response_receive", response, sequence=2),
+    ]
+    report = sg_analyze(sg_timeline, rows)
+    assert report["connections"]["A"]["post_confirmation_roundtrip_sequences"] == [2]
+    assert "별도 대조" in report["connections"]["A"]["observation"]
+
+
+@pytest.mark.parametrize(
+    "send,receive,response,error",
+    [
+        ("18", "17.9", "17.8", "0.1"),
+        ("11", "10.9", "10.8", "0.1"),
+        ("18", "18", "17.999999999", "0.1"),
+        ("18", "18", "17.999999999", "5"),
+        ("18", None, "17.9", "0.1"),
+    ],
+    ids=["review", "baseline", "nanosecond", "large_clock_error", "missing_server"],
+)
+def test_sg_rejects_same_client_response_before_send(sg_timeline, send, receive, response, error):
+    rows = sg_baseline() if send != "11" else [sg_event(1, "socket_open", "10")]
+    rows.append(sg_event(5, "send", send, sequence=2))
+    if receive is not None:
+        rows.append(sg_event(6, "server_receive", receive, sequence=2))
+    rows.append(sg_event(7, "response_receive", response, sequence=2))
+    with pytest.raises(ValueError, match="클라이언트 송신·응답 순서 모순"):
+        sg_analyze(sg_timeline, rows, clock_error=error)
+
+
+@pytest.mark.parametrize("terminal", ["socket_close", "socket_reset"])
+@pytest.mark.parametrize("error", ["0", "0.1"])
+def test_sg_rejects_client_response_after_socket_termination(sg_timeline, terminal, error):
+    rows = sg_baseline() + [
+        sg_event(5, "send", "18", sequence=2),
+        sg_event(6, "server_receive", "18.1", sequence=2),
+        sg_event(7, terminal, "18.2"),
+        sg_event(8, "response_receive", "19", sequence=2),
+    ]
+    with pytest.raises(ValueError, match="클라이언트 소켓 수명 밖"):
+        sg_analyze(sg_timeline, rows, clock_error=error)
+
+
+@pytest.mark.parametrize("terminal", ["socket_close", "socket_reset"])
+def test_sg_keeps_server_delayed_receive_after_client_termination(sg_timeline, terminal):
+    rows = sg_baseline() + [
+        sg_event(5, "send", "18", sequence=2),
+        sg_event(6, terminal, "18.2"),
+        sg_event(7, "server_receive", "19", sequence=2),
+    ]
+    report = sg_analyze(sg_timeline, rows, clock_error="0")
+    message = report["connections"]["A"]["messages"][1]
+    assert message["stages"]["server_receive"]["epoch"] == "19"
+    assert not message["roundtrip_recorded"]
+    assert report["connections"]["A"]["post_confirmation_roundtrip_sequences"] == []
+
+
+def test_sg_rejects_client_response_before_socket_creation(sg_timeline):
+    rows = [
+        sg_event(1, "socket_open", "19"),
+        sg_event(2, "response_receive", "18", sequence=1),
+    ]
+    with pytest.raises(ValueError, match="클라이언트 소켓 수명 밖"):
+        sg_analyze(sg_timeline, rows)
+
+
+def test_sg_nanosecond_send_interval_and_new_socket_creation(sg_timeline):
+    rows = sg_baseline() + [
+        sg_event(5, "send", "18", sequence=2),
+        sg_event(6, "send", "18.000000001", sequence=3),
+        sg_event(7, "socket_open", "19", connection="B"),
+    ]
+    report = sg_analyze(sg_timeline, rows)
+    assert report["connections"]["A"]["minimum_send_interval_seconds"] == "0.000000001"
+    assert report["connections"]["B"]["new_socket_after_confirmation_recorded"]
+    assert report["connections"]["B"]["post_confirmation_roundtrip_sequences"] == []
+
+
+def test_sg_write_failure_preserves_owned_partial_result(sg_timeline, tmp_path, monkeypatch):
+    source, output = tmp_path / "events.csv", tmp_path / "report.json"
+    source.write_text(waf_csv(sg_timeline, sg_baseline()), encoding="utf-8")
+
+    def failing_dump(report, handle, **kwargs):
+        handle.write('{"partial":')
+        raise OSError("synthetic storage failure")
+
+    monkeypatch.setattr(sg_timeline.json, "dump", failing_dump)
+    with pytest.raises(OSError):
+        sg_timeline.write_report(source, output, **sg_times())
+    assert output.read_text() == '{"partial":'
+    assert source.exists()
+
+
+@pytest.mark.parametrize(
+    "index,value",
+    [
+        (0, 0),
+        (1, "C"),
+        (2, "secret-token"),
+        (3, "2001:db8::1"),
+        (4, 0),
+        (4, 65536),
+        (6, "09000"),
+        (7, 21),
+        (8, "Authorization"),
+        (9, "NaN"),
+        (9, "31"),
+        (10, 257),
+    ],
+)
+def test_sg_rejects_invalid_or_sensitive_metadata(sg_timeline, index, value):
+    row = sg_event(1, "send", "18", sequence=1)
+    row[index] = value
+    with pytest.raises(ValueError) as error:
+        sg_analyze(sg_timeline, [row])
+    assert "secret-token" not in str(error.value) and "Authorization" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "violation",
+    [
+        "reconnect",
+        "extra_open",
+        "port_reuse",
+        "socket_reuse",
+        "other_server",
+        "conflicting_id",
+        "duplicate_stage",
+        "size",
+        "causality",
+        "state_payload",
+        "missing_sequence",
+        "extra_field",
+        "short_row",
+    ],
+)
+def test_sg_rejects_ambiguous_connection_or_message_evidence(sg_timeline, violation):
+    first = sg_event(1, "socket_open", "10")
+    second = sg_event(2, "send", "18", sequence=1)
+    rows = [first, second]
+    if violation == "reconnect":
+        second[2] = 2
+    elif violation == "extra_open":
+        second = sg_event(2, "socket_open", "18")
+        rows[1] = second
+    elif violation in {"port_reuse", "socket_reuse"}:
+        second = sg_event(2, "socket_open", "18", connection="B")
+        rows[1] = second
+        second[4 if violation == "port_reuse" else 2] = first[4 if violation == "port_reuse" else 2]
+    elif violation == "other_server":
+        second = sg_event(2, "socket_open", "18", connection="B")
+        rows[1] = second
+        second[5] = "192.0.2.3"
+    elif violation == "conflicting_id":
+        second[0] = 1
+    elif violation == "duplicate_stage":
+        rows.append(sg_event(3, "send", "19", sequence=1))
+    elif violation == "size":
+        rows.append(sg_event(3, "server_receive", "19", sequence=1))
+        rows[-1][10] = 64
+    elif violation == "causality":
+        rows.append(sg_event(3, "server_receive", "17", sequence=1))
+    elif violation == "state_payload":
+        first[7] = 1
+        first[10] = 32
+    elif violation == "missing_sequence":
+        second[7] = 0
+    elif violation == "extra_field":
+        second.append("secret-token")
+    elif violation == "short_row":
+        second.pop()
+    with pytest.raises(ValueError):
+        sg_analyze(sg_timeline, rows)
+
+
+@pytest.mark.parametrize(
+    "times",
+    [
+        {"end": "131"},
+        {"change_start": "18"},
+        {"api_complete": "18"},
+        {"clock_error": "5.1"},
+        {"start": "1e1"},
+    ],
+)
+def test_sg_rejects_invalid_control_times_and_observation_bounds(sg_timeline, times):
+    with pytest.raises(ValueError):
+        sg_analyze(sg_timeline, [], **times)
+
+
+def test_sg_capacity_header_and_writer_preservation(sg_timeline, waf_timeline, tmp_path):
+    with pytest.raises(ValueError):
+        sg_timeline.analyze_events("x" * (sg_timeline.MAX_BYTES + 1), **sg_times())
+    with pytest.raises(ValueError):
+        sg_analyze(sg_timeline, [sg_event(1, "socket_open", "10")] * (sg_timeline.MAX_ROWS + 1))
+    with pytest.raises(ValueError):
+        sg_timeline.analyze_events("Authorization,secret-token", **sg_times())
+    source, output, packets = (
+        tmp_path / "events.csv",
+        tmp_path / "report.json",
+        tmp_path / "tcp.csv",
+    )
+    source.write_text(waf_csv(sg_timeline, sg_baseline()), encoding="utf-8")
+    packets.write_text(waf_csv(waf_timeline, [waf_packet()]), encoding="utf-8")
+    sg_timeline.write_report(source, output, packets=packets, **sg_times())
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert len(report["source_sha256"]) == 64 and len(report["packet_csv_sha256"]) == 64
+    assert report["tcp"]["packet_count"] == 1
+    original = output.read_bytes()
+    with pytest.raises(FileExistsError):
+        sg_timeline.write_report(source, output, **sg_times())
+    assert output.read_bytes() == original
+    packets.write_text("secret-token")
+    fresh = tmp_path / "fresh.json"
+    with pytest.raises(ValueError):
+        sg_timeline.write_report(source, fresh, packets=packets, **sg_times())
+    assert not fresh.exists()
+
+
+def test_sg_cli_failure_preserves_partial_output_without_echo_or_network(
+    sg_timeline, tmp_path, monkeypatch, capsys
+):
+    source, output = tmp_path / "secret-token.csv", tmp_path / "output.json"
+    source.write_text("Authorization,secret-token")
+    argv = ["timeline", str(source), str(output)]
+    for key, value in sg_times().items():
+        argv.extend(["--" + key.replace("_", "-"), value])
+    monkeypatch.setattr("sys.argv", argv)
+    with pytest.raises(SystemExit) as error:
+        sg_timeline.main()
+    assert error.value.code == 2 and "secret-token" not in capsys.readouterr().err
+    assert not output.exists()
+
+
+@pytest.fixture
 def waf_timeline():
     path = Path(__file__).resolve().parents[2] / "network/waf_packet_timeline.py"
     spec = importlib.util.spec_from_file_location("waf_packet_timeline", path)
