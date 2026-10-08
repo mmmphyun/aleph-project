@@ -39,7 +39,7 @@ run "target_defaults" {
     error_message = "수집 역할은 로그 쓰기 최소 권한만 허용합니다."
   }
   assert {
-    condition     = length(local.user_data) <= 16384 && strcontains(local.user_data, "-a fetch-config -m ec2 -s")
+    condition     = length(local.user_data) <= 16384 && !strcontains(local.user_data, "\r") && strcontains(local.user_data, "-a fetch-config -m ec2 -s")
     error_message = "user-data 크기 제한과 Agent 시작 명령을 확인하세요."
   }
 }

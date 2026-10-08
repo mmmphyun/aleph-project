@@ -13,11 +13,11 @@ locals {
     "/cloudshield/target/nginx-access-log" = "[ip, ident, user, timestamp, request, status_code = 401 || status_code = 403 || status_code = 404, ...]"
   }
   # gzip 압축으로 EC2 user-data 16KiB 제한 안에 기존 초기화 자산을 포함한다.
-  user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    init_script  = base64gzip(file("${path.module}/../../../../init_target_server.sh"))
-    nginx_config = base64gzip(file("${path.module}/../../../../nginx.conf"))
+  user_data = replace(templatefile("${path.module}/user_data.sh.tftpl", {
+    init_script  = base64gzip(replace(file("${path.module}/../../../../init_target_server.sh"), "\r\n", "\n"))
+    nginx_config = base64gzip(replace(file("${path.module}/../../../../nginx.conf"), "\r\n", "\n"))
     agent_config = base64gzip(jsonencode(local.agent_config))
-  })
+  }), "\r\n", "\n")
 }
 
 resource "aws_cloudwatch_log_group" "target" {
