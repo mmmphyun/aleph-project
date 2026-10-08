@@ -128,10 +128,10 @@ AWS 네트워크 전송 및 Lambda 트리거를 포함한 실제 E2E 수집 관�
 
 | 수집 단계 | 처리 내용 | 예상 소요 시간 (추정치) | 비고 및 설계 근거 |
 | :--- | :--- | :---: | :--- |
-| **타깃 EC2 $\rightarrow$ CloudWatch** | CloudWatch Agent 버퍼 플러시 | 최대 ~2.0초 (상한) | `amazon-cloudwatch-agent.json` 배포 설정(`force_flush_interval: 2`) 기준 |
+| **타깃 EC2 $\rightarrow$ CloudWatch** | CloudWatch Agent 버퍼 플러시 | Agent 버퍼 설정 2초; 전체 구간 상한 미검증 | `amazon-cloudwatch-agent.json` 배포 설정(`force_flush_interval: 2`) 기준 |
 | **CloudWatch $\rightarrow$ Lambda** | Subscription Filter 트리거 및 전달 | ~0.5초 ~ 1.0초 (추정) | AWS 백본 내부 비동기 푸시 및 네트워크 전달 (실측 전 추정치) |
 | **Lambda 디코딩 & 라우팅** | Base64/Gzip 해제 + 계약 모델 파싱 | **< 0.005초 (5ms, 추정)** | 100건 배치 기준 선형 O(N) 단일 패스 처리 (실측 전 벤치마크 추정치) |
-| **합계 (추정치)** | **수집 Critical Path 추정 합계** | **약 2.5초 ~ 3.0초 내외** | **수집 목표 예산(3초 이내) 충족 예상 (향후 실측 계측으로 검증 예정)** |
+| **합계 (추정치)** | **수집 Critical Path 추정 합계** | **약 2.5초 ~ 3.0초 내외** | **수집 목표 예산 충족 여부 미검증; 파일 감지 및 재시도 지연 미포함** |
 
 > [!NOTE]
 > **실측 검증 계획**: `force_flush_interval: 2`는 Agent 메모리 버퍼 체류 상한 시간이며 전체 3초 예산 준수를 단독으로 담보하지 않습니다.
