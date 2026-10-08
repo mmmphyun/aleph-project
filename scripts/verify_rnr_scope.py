@@ -32,6 +32,7 @@ RNR_WHITELIST: dict[str, list[str]] = {
         "docs/roles/network/**",
         "docs/shared/**",
         "infra/terraform/modules/vpc/**",
+        "infra/terraform/modules/quarantine_sg/**",
     ],
     "cloud-b": [
         "src/collector/**",
