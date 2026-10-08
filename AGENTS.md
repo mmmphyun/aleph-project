@@ -61,7 +61,7 @@
 | :--- | :---: | :--- |
 | `amazon-cloudwatch-agent.json` | **클라우드 B** | 로그 수집 경로 확정 후 EC2 인스턴스에 배포 |
 | `nginx.conf` (Web 타깃 설정) | **클라우드 B** | 80/443 포트 및 수집 로깅 포맷 정의 |
-| 격리 Security Group 규칙 명세 | **네트워크** | 네트워크 담당이 인/아웃바운드 명세 작성 $\rightarrow$ 클라우드 A가 Terraform 코드로 변환 |
+| 격리 Security Group 규칙 명세 및 모듈 (`quarantine_sg/**`) | **네트워크** | 네트워크 담당이 명세 및 Terraform 모듈 구현 $\rightarrow$ 클라우드 A가 루트 오케스트레이션에 결합 |
 | AWS WAF IPSet 명세 | **보안** | 차단 정책 명세 $\rightarrow$ 클라우드 A가 Boto3/Terraform 엔진으로 구현 |
 
 ---
