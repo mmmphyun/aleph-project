@@ -130,7 +130,7 @@ resource "aws_iam_role" "lambda_exec" {
 
 resource "aws_iam_role_policy_attachment" "lambda_attach" {
   role       = aws_iam_role.lambda_exec.name
-  policy_arn = aws_iam_policy.least_privilege.arn
+  policy_arn = aws_iam_policy.lambda_least_privilege.arn
 }
 
 resource "aws_cloudwatch_log_group" "lambda_log" {
