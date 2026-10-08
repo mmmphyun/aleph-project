@@ -206,7 +206,7 @@ Windows / Python 3.12.14 / Terraform 1.16.5 / AWS provider 5.100.0 / Trivy 0.75.
 회귀 테스트를 수정한 뒤 main에 머지됐으며, 재개 시 해당 main을 기존 작업 브랜치에 반영했다.
 이 작업에서 검사기나 역할 파일을 수정해 우회하지 않았다.
 
-### 재개 후 검증 결과
+### 1차 재개 후 검증 결과 (보안 PR #159 반영 전)
 
 | 검사 | 결과 |
 | --- | --- |
@@ -236,6 +236,42 @@ PATH상의 Terraform 및 WAF 모듈 `.terraform/providers`가 없어 명시적�
 Terraform 실행 파일과 임시 provider 디렉터리를 사용해 31개 mock plan을 전부 검증했다.
 warning 1건은 기존 `test_network_socket_is_blocked_by_default`의 소켓 차단 확인이다.
 
+### 보안 PR #159 반영 후 필수 모드 재검증
+
+보안 PR #159가 머지된 main `98c2477`을 기존 작업 브랜치에 병합했다.
+보안 담당 테스트·WAF 모듈·공통 검사기·CI를 직접 수정하지 않았다.
+추가된 `CLOUDSHIELD_REQUIRE_WAF_TERRAFORM=1`은 WAF 검증 준비가 없을 때
+skip 대신 실패시키는 모드다. Terraform을 PATH에 두고 임시 체크아웃의 WAF 모듈을
+`init -backend=false -input=false -lockfile=readonly`로 준비해 두 검증을 실제 실행했다.
+VPC·격리 SG도 backend 없는 init 후 fmt 및 validate를 재실행했다.
+
+| 검사 | 결과 |
+| --- | --- |
+| 원본 `powershell .\scripts\check.ps1` | R&R 통과 후 기존 `.pytest_cache` 권한 오류로 exit 1; 자료·ACL 보존 |
+| 동일 파일 임시 체크아웃의 동일 명령, WAF 필수 모드 | **exit 0**, R&R·경로·Ruff lint·format·pytest 통과 |
+| 실제 pytest | **897 passed, 0 skipped, 1 warning**, 147.82초 |
+| 기존 WAF Terraform 2건 | mock provider 테스트 및 합성 local state의 차단 주소 보존 검증 모두 실행·통과 |
+| 네트워크 Terraform 연계 2건 | VPC 14 / SG 17 mock plan 실행·통과 |
+| VPC·격리 SG·WAF fmt / validate | 각각 exit 0 / 0; AWS 배포 검증 아님 |
+
+환경은 Windows / Python 3.12.14 / pytest 8.4.2 / Ruff 0.16.4 / Terraform 1.16.5 /
+AWS provider 5.100.0이며 저장소 lock으로 `uv sync --all-extras --frozen`을 실행했다.
+임시 경로는 `C:/Users/User/AppData/Local/Temp/cloudshield-network-pr154-security159`다.
+검증 전 추적 파일 **199개 전체 SHA-256 일치**를 확인했고 결과 문서는 검사 후 갱신했다.
+같은 상위 경로의 `cloudshield-network-pr154-security159-sha256.json` manifest SHA-256은
+`360626af0e3ff74f2a3120fcde6868d8a5b97e9a574cfaf569676a30cd026079`다.
+실행한 `check.ps1` SHA-256은 위 1차 재개 때와 동일하다.
+전체 로그는 `cloudshield-network-security159-full-check.log`, 원본 실패 로그는
+`cloudshield-network-security159-original-check.log`에 보존했다.
+warning 1건은 기존 소켓 차단 확인이며 실패나 스킵이 아니다.
+
+WAF 주소 보존 검증은 가짜 자격증명과 계정/자격증명/메타데이터 조회 생략 설정을 사용한다.
+합성 local state에 대해 `plan -refresh=false`를 실행하고 결과 JSON을 검사한다.
+이는 실제 AWS state나 계정에 대한 plan이 아니며 AWS 접속·배포·실측은 수행하지 않았다.
+공유 `TF_DATA_DIR`은 설정하지 않고 네트워크 연계 테스트에만 모듈별 provider 경로를 전달했다.
+CI의 Terraform 설치·init·필수 모드 설정은 여전히 클라우드 A 소유 협업 항목이다.
+PR #159의 필수 모드 추가만으로 현재 CI의 선택적 skip이 제거되었다고 주장하지 않는다.
+
 최초 검증에서 uv 샌드박스 캐시 권한 오류는 원본 자료·ACL을 변경하지 않고 정상 사용자
 실행으로 처리했다. 원본 pytest 캐시 권한도 보존했다. 아래 임시 체크아웃은 재개 시 사용했다.
 Terraform pytest는 모듈만 임시 폴더에 복사해 모든 복사 파일의 SHA-256 동일성을 assert한 뒤
@@ -254,8 +290,9 @@ uv run python -m pytest tests/unit/test_network.py -k terraform_network -v
 ```
 
 도구 경로 미설정 시 두 pytest 항목은 명시적으로 skip된다. 기존 CI에는 Terraform 설치
-단계가 없으므로 로컬 Terraform 검증을 CI 성공으로 표현하지 않는다. 모든 mock run은 plan만
-실행하며 실제 `plan/apply/destroy/import` 및 AWS 리소스 조회는 수행하지 않았다.
+단계가 없으므로 로컬 Terraform 검증을 CI 성공으로 표현하지 않는다. 네트워크 mock run은
+plan만 실행한다. WAF 재검증의 mock 및 합성 state plan과 실제 AWS plan을 구분하며,
+실제 AWS `plan/apply/destroy/import` 및 AWS 리소스 조회는 수행하지 않았다.
 
 모듈 구현과 필수 로컬 검증·CI 결과를 확인해 기존 PR에서 리뷰를 받는다.
 Flow Logs의 저장소·권한·보존 정책은 클라우드 A/B 결합 협업 사항으로 남기며,
