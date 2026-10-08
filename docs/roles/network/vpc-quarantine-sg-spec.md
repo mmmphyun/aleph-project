@@ -3,7 +3,8 @@
 - 기준일: 2026-10-08 KST
 - Notion Task: https://notion.so/3ea04d37c22581e0981bc3d45a22927f
 - GitHub Issue: https://github.com/mmmphyun/aleph-project/issues/153
-- 기준 main: `2684ee1` (PR #147 머지 포함)
+- 최초 기준 main: `2684ee1` (PR #147 머지 포함)
+- 재개 시 반영한 main: `ca8bd83` (클라우드 A 권한 핫픽스 PR #157 및 WAF PR #155 포함)
 - 사용자 승인: 네트워크 역할에 이번 작업만 두 모듈 경로 추가 허용, RFC 후 “진행해”.
 - 수정 범위: `infra/terraform/modules/vpc/**`, `infra/terraform/modules/quarantine_sg/**`,
   `docs/roles/network/**`, `tests/unit/test_network.py`만 사용한다.
@@ -31,7 +32,8 @@ SG HCL 작성, CIDR/stateful 원리, 보안 리뷰어 `gkacksdnjs22-stack`을 �
 - [클라우드 A PR #149](https://github.com/mmmphyun/aleph-project/pull/149),
   검토한 head `f07b992ac0f02679dc99be4df6dd49ea38a1ad30`:
   Lambda IAM 잘못된 참조 수정, Windows/Linux provider lock, 로컬 사전 검증 보고서를 확인했다.
-  해당 작업은 아직 별도 PR이며 이 브랜치에 가져오거나 대신 수정하지 않았다.
+  최초 정찰 당시 별도 PR이었으며 재개 시 main에 머지된 변경을 그대로 반영했다.
+  클라우드 A 파일을 직접 수정하지 않았다.
   문서 기준 도구는 Terraform 1.16.5 / Trivy 0.75.0, 검사는 `trivy config infra/terraform`이다.
 
 ## 2. VPC 토폴로지와 입력 방어
@@ -181,7 +183,7 @@ module "quarantine_sg" {
   트래픽·기존 연결 차단을 보장하지 않는다. FIN/RST 송신, 완전 격리, 10초 E2E를 주장하지 않는다.
 - WAF는 연결된 HTTP 보호 경로에서 평가하며 SSH/TCP 세션 종료 수단이 아니다.
 
-## 6. 로컬 검증 및 대기 조건
+## 6. 로컬 검증 및 협업 조건
 
 Windows / Python 3.12.14 / Terraform 1.16.5 / AWS provider 5.100.0 / Trivy 0.75.0.
 도구는 공식 배포 SHA-256을 대조했고 공통 의존성·루트 lock은 변경하지 않았다.
@@ -196,17 +198,46 @@ Windows / Python 3.12.14 / Terraform 1.16.5 / AWS provider 5.100.0 / Trivy 0.75.
 | SG mock plan | 17 passed, 0 failed |
 | pytest Terraform 연계 | 2 passed, 408 deselected; 31개 mock 결과·실패/skip 0 확인 |
 | 전체 Ruff lint / format | exit 0 / 0 |
-| 전체 pytest | exit 0, **882 passed, 2 warnings**, 132.74초 |
-| 원본 `powershell .\scripts\check.ps1` | exit 1, R&R 단계에서 `quarantine_sg` 허용 누락으로 중단 |
+| 최초 전체 pytest | exit 0, **882 passed, 2 warnings**, 132.74초 |
+| 최초 원본 `powershell .\scripts\check.ps1` | exit 1, 당시 R&R 단계에서 `quarantine_sg` 허용 누락으로 중단 |
 | Trivy 전체 심각도, `--exit-code 1` | VPC exit 1: MEDIUM AWS-0178 1건; SG exit 0; HIGH/CRITICAL 0건 |
 
-공통 검사기는 `vpc/**`만 허용한다. 이번 사용자 승인과 검사기 목록의 불일치를
-`scripts/verify_rnr_scope.py`나 `.agent-role` 변경으로 우회하지 않았다.
-클라우드 A의 정식 목록 반영 후 원본 단일 게이트 및 최신 CI를 재실행해야 한다.
-개별 검사는 실패한 단일 게이트를 통과한 것으로 대체하지 않는다.
+최초 공통 검사기는 `vpc/**`만 허용했다. 클라우드 A PR #157이 검사기와 AGENTS.md 및
+회귀 테스트를 수정한 뒤 main에 머지됐으며, 재개 시 해당 main을 기존 작업 브랜치에 반영했다.
+이 작업에서 검사기나 역할 파일을 수정해 우회하지 않았다.
 
-uv 샌드박스 캐시 권한 오류는 원본 자료·ACL을 변경하지 않고 정상 사용자 실행으로 처리했다.
-pytest 캐시 쓰기 경고는 보존한다. 전체 코드 임시 체크아웃은 사용하지 않았다.
+### 재개 후 검증 결과
+
+| 검사 | 결과 |
+| --- | --- |
+| 원본 작업 트리의 `powershell .\scripts\check.ps1` | R&R 통과 후 기존 `.pytest_cache` 열거 권한 오류로 exit 1; 자료·ACL 보존 |
+| SHA-256 동일 임시 체크아웃의 동일 명령 | **exit 0**, R&R·테스트 경로·Ruff lint·format·pytest 모두 통과 |
+| 단일 게이트 내 실제 pytest | **883 passed, 2 skipped, 1 warning**, 130.72초 |
+| 두 모듈 fmt / init / validate | 각 exit 0; `init -backend=false -input=false`, AWS provider 5.100.0 |
+| 네트워크 Terraform mock | **VPC 14 / SG 17 passed**, 실패 0; pytest 연계 2건도 실행·통과 |
+| Trivy 예시 입력 명시 재검사 | VPC exit 1: AWS-0178 MEDIUM 1건; SG exit 0; HIGH/CRITICAL 0건 |
+
+임시 체크아웃은 `C:/Users/User/AppData/Local/Temp/cloudshield-network-pr154-resume`이며,
+원본의 추적 파일 **199개 전체를 바이트 단위로 복사한 뒤 SHA-256 일치**를 확인했다.
+원본 `check.ps1`과 검사 기준을 그대로 사용했고 `.agent-role`은 `network`로 설정했다.
+검증용 module lock 2개도 동일성을 확인했으며 커밋에서 제외한다.
+해시 manifest는 같은 임시 상위 경로의 `cloudshield-network-pr154-resume-sha256.json`,
+실제 단일 게이트 로그는 `cloudshield-network-resume-check-identical.log`로 보존했다.
+manifest SHA-256: `d18b78da1bbfe4c5632de861a062921d6b7ab75c188947da11a319f682f08474`.
+실행한 `check.ps1` SHA-256: `8b89383ac3366d4c4c95842e9ef24e9438ccfc21ea7a6c6d1efd51acad8c88fa`.
+결과 문서는 검증 완료 후 갱신했다. 런타임 코드·테스트·검사기는 검증 중 변경하지 않았다.
+
+실행 환경: Windows, Python 3.12.14, pytest 8.4.2, Ruff 0.16.4, moto 5.2.3, boto3 1.43.88,
+Terraform 1.16.5, AWS provider 5.100.0,
+Trivy 0.75.0. 임시 환경 의존성은 저장소 lock을 그대로 사용한 `uv sync --all-extras`로 설치했다.
+skip 2건은 main에 추가된 보안 담당 WAF Terraform 테스트이며, 해당 fixture가 요구하는
+PATH상의 Terraform 및 WAF 모듈 `.terraform/providers`가 없어 명시적으로 skip됐다.
+타 직무 검증 환경을 바꾸거나 WAF plan을 실행하지 않았다. 네트워크 테스트는 별도 명시한
+Terraform 실행 파일과 임시 provider 디렉터리를 사용해 31개 mock plan을 전부 검증했다.
+warning 1건은 기존 `test_network_socket_is_blocked_by_default`의 소켓 차단 확인이다.
+
+최초 검증에서 uv 샌드박스 캐시 권한 오류는 원본 자료·ACL을 변경하지 않고 정상 사용자
+실행으로 처리했다. 원본 pytest 캐시 권한도 보존했다. 아래 임시 체크아웃은 재개 시 사용했다.
 Terraform pytest는 모듈만 임시 폴더에 복사해 모든 복사 파일의 SHA-256 동일성을 assert한 뒤
 mock 테스트하며 원본을 변형하지 않는다. SHA-256 검사 추가 후 해당 2개 테스트도 다시 통과했다.
 전체 pytest의 경고는 기존 소켓 차단 확인 경고 1개와 원본 pytest 캐시 권한 경고 1개다.
@@ -226,7 +257,9 @@ uv run python -m pytest tests/unit/test_network.py -k terraform_network -v
 단계가 없으므로 로컬 Terraform 검증을 CI 성공으로 표현하지 않는다. 모든 mock run은 plan만
 실행하며 실제 `plan/apply/destroy/import` 및 AWS 리소스 조회는 수행하지 않았다.
 
-모듈 구현은 완료하되 **단일 게이트·CI 미통과와 Flow Logs 연계가 남으면 Draft로 유지**한다.
+모듈 구현과 필수 로컬 검증·CI 결과를 확인해 기존 PR에서 리뷰를 받는다.
+Flow Logs의 저장소·권한·보존 정책은 클라우드 A/B 결합 협업 사항으로 남기며,
+Trivy 전체 심각도 검사 결과를 통과로 바꾸어 기록하지 않는다.
 루트 결합·배포·실측은 다른 작업의 범위다. 이번 요청에서 PR을 머지하지 않는다.
 
 ## 7. 자동화와 완료 구분
@@ -236,7 +269,9 @@ uv run python -m pytest tests/unit/test_network.py -k terraform_network -v
 Draft 여부도 이 자동화의 상태 전이 조건에서 검사하지 않는다. 따라서 Draft 자체가 노션
 전이를 차단한다고 주장하지 않는다. 에이전트는 노션 상태·속성을 직접 변경하지 않았다.
 선행 PR #147의 머지는 AWS 실측 완료 증거가 아니며 그 보고서의 미실측 상태를 계승한다.
-이 티켓은 모듈 작성 범위이지만 검증 차단 해소 전 머지/완료 처리를 보류한다.
+재개 시 읽기 전용 조회에서 Issue 153은 OPEN, 노션 카드는 검토 중이었다.
+이 티켓은 모듈 작성 범위이며 루트 결합·AWS 배포·실측 성공으로 확장하지 않는다.
+리뷰를 기다리고 이번 요청에서는 머지/완료 처리를 수행하지 않는다.
 
 ## 8. 공식 근거 (2026-10-08 확인)
 
