@@ -87,6 +87,7 @@ def test_whitelist_matching_for_network() -> None:
     assert is_file_allowed("network/lab/Dockerfile", patterns)
     assert is_file_allowed("tests/unit/test_network.py", patterns)
     assert is_file_allowed("infra/terraform/modules/vpc/main.tf", patterns)
+    assert is_file_allowed("infra/terraform/modules/quarantine_sg/main.tf", patterns)
     assert is_file_allowed("docs/roles/network/report.md", patterns)
 
     # 2. 차단 대상
