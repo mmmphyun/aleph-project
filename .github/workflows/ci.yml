@@ -54,5 +54,33 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Cache Terraform Providers
+        uses: actions/cache@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: ${{ runner.os }}-terraform-${{ hashFiles('infra/terraform/**/*.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-
+
+      - name: Initialize Terraform Modules for Mock Tests
+        run: |
+          mkdir -p ~/.terraform.d/plugin-cache
+          export TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
+          terraform -chdir=infra/terraform/modules/vpc init -backend=false -input=false
+          terraform -chdir=infra/terraform/modules/quarantine_sg init -backend=false -input=false
+          terraform -chdir=infra/terraform/modules/waf init -backend=false -input=false
+
       - name: Run Contract & Unit Tests
-        run: uv run pytest -v
+        env:
+          CLOUDSHIELD_REQUIRE_WAF_TERRAFORM: "1"
+          CLOUDSHIELD_TF_DATA_VPC: "${{ github.workspace }}/infra/terraform/modules/vpc/.terraform"
+          CLOUDSHIELD_TF_DATA_QUARANTINE_SG: "${{ github.workspace }}/infra/terraform/modules/quarantine_sg/.terraform"
+        run: |
+          export CLOUDSHIELD_TERRAFORM=$(which terraform)
+          uv run pytest -v

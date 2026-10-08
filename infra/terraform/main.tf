@@ -21,7 +21,37 @@ module "dynamodb" {
 }
 
 # ==============================================================================
-# 2. Lambda 위협 분석 및 원자적 차단 오케스트레이터 모듈 (클라우드 A 전담)
+# 2. VPC 및 라우팅 네트워크 모듈 (네트워크 전담)
+# ==============================================================================
+module "vpc" {
+  source = "./modules/vpc"
+
+  environment = var.environment
+  topology    = var.vpc_topology
+}
+
+# ==============================================================================
+# 3. 기본 및 격리 보안 그룹 모듈 (네트워크 전담)
+# ==============================================================================
+module "quarantine_sg" {
+  source = "./modules/quarantine_sg"
+
+  vpc_id      = module.vpc.vpc_id
+  environment = var.environment
+  traffic     = var.quarantine_traffic
+}
+
+# ==============================================================================
+# 4. AWS WAFv2 WebACL 및 차단 IPSet 모듈 (보안 전담)
+# ==============================================================================
+module "waf" {
+  source = "./modules/waf"
+
+  environment = var.environment
+}
+
+# ==============================================================================
+# 5. Lambda 위협 분석 및 원자적 차단 오케스트레이터 모듈 (클라우드 A 전담)
 # ==============================================================================
 module "lambda" {
   source = "./modules/lambda"
@@ -30,8 +60,8 @@ module "lambda" {
   environment         = var.environment
   dynamodb_table_arn  = module.dynamodb.table_arn
   dynamodb_table_name = module.dynamodb.table_name
-  quarantine_sg_arn   = var.quarantine_sg_arn
-  waf_ipset_arn       = var.waf_ipset_arn
+  quarantine_sg_arn   = module.quarantine_sg.quarantine_sg_arn
+  waf_ipset_arn       = module.waf.ipset_arn
   slack_webhook_url   = var.slack_webhook_url
   package_zip_path = var.lambda_package_zip_path != "" ? (
     startswith(var.lambda_package_zip_path, "/") || can(regex("^[A-Za-z]:", var.lambda_package_zip_path)) ?
@@ -41,25 +71,17 @@ module "lambda" {
 }
 
 # ==============================================================================
-# [Phase 2 연계 가이드: 타 직무 모듈 머지 후 활성화 영역]
+# 6. 타깃 EC2 및 CW Agent 모듈 (클라우드 B 전담)
 # ==============================================================================
-#
-# # 3. VPC 및 격리 보안 그룹 모듈 (네트워크 전담: modules/vpc/)
-# module "vpc" {
-#   source = "./modules/vpc"
-#   environment = var.environment
-# }
-#
-# # 4. 타깃 EC2 및 CW Agent 모듈 (클라우드 B 전담: modules/ec2/)
-# module "ec2_target" {
-#   source              = "./modules/ec2"
-#   environment         = var.environment
-#   subnet_id           = module.vpc.target_subnet_id
-#   security_group_ids  = [module.vpc.target_security_group_id]
-# }
-#
-# # 5. AWS WAFv2 WebACL 및 IPSet 모듈 (보안 전담: modules/waf/)
-# module "waf" {
-#   source      = "./modules/waf"
-#   environment = var.environment
-# }
+module "ec2_target" {
+  source = "./modules/ec2"
+
+  environment                 = var.environment
+  subnet_id                   = module.vpc.public_subnet_ids["public-2a"]
+  security_group_ids          = [module.quarantine_sg.baseline_sg_id]
+  ami_id                      = var.ec2_ami_id
+  lambda_function_arn         = module.lambda.function_arn
+  instance_type               = var.ec2_instance_type
+  associate_public_ip_address = var.ec2_associate_public_ip
+  log_retention_days          = var.ec2_log_retention_days
+}
