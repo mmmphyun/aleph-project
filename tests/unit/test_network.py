@@ -1,5 +1,6 @@
 """실제 SSH 대신 격리된 PATH의 가짜 실행 파일로 네트워크 부작용 없이 검증한다."""
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -11,6 +12,61 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+
+
+@pytest.mark.parametrize("module,expected_runs", [("vpc", 14), ("quarantine_sg", 17)])
+def test_terraform_network_mock_contracts(module, expected_runs, tmp_path):
+    """HCL 자체를 평가해 라우팅/격리/출력 계약 및 잘못된 입력의 거부를 확인한다.
+
+    Terraform과 provider는 사전 설치한 로컬 자산만 사용한다. 일반 Python CI에는
+    Terraform이 없으므로 명시적 실행 환경이 없으면 skip을 보고하며 통과로 대체하지 않는다.
+    모든 run은 mock plan이고 테스트에서 init, 실제 AWS plan, apply를 호출하지 않는다.
+    """
+    executable = os.environ.get("CLOUDSHIELD_TERRAFORM")
+    data_dir = os.environ.get(f"CLOUDSHIELD_TF_DATA_{module.upper()}")
+    if not executable or not data_dir:
+        pytest.skip("Terraform mock 검증 도구/provider 경로 미설정; 모듈 README 참조")
+    assert Path(executable).is_file(), "명시한 Terraform 실행 파일이 없습니다"
+    assert Path(data_dir).is_dir(), "backend=false로 초기화한 provider 디렉토리가 없습니다"
+    source = Path(__file__).resolve().parents[2] / "infra" / "terraform" / "modules" / module
+    target = tmp_path / module
+    shutil.copytree(source, target, ignore=shutil.ignore_patterns(".terraform", "*.tfstate*"))
+    for copied in target.rglob("*"):
+        if copied.is_file():
+            original = source / copied.relative_to(target)
+            assert (
+                hashlib.sha256(copied.read_bytes()).digest()
+                == hashlib.sha256(original.read_bytes()).digest()
+            ), f"임시 복사본 SHA-256 불일치: {original}"
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("AWS_", "TF_VAR_", "TF_CLI_ARGS"))
+    }
+    environment.update(
+        TF_DATA_DIR=data_dir,
+        TF_IN_AUTOMATION="1",
+        AWS_EC2_METADATA_DISABLED="true",
+        AWS_SHARED_CREDENTIALS_FILE=str(tmp_path / "no-credentials"),
+        AWS_CONFIG_FILE=str(tmp_path / "no-config"),
+    )
+    result = subprocess.run(
+        [executable, f"-chdir={target}", "test", "-json"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    summaries = [event["test_summary"] for event in events if event.get("type") == "test_summary"]
+    assert len(summaries) == 1, result.stdout
+    assert summaries[0]["passed"] == expected_runs
+    assert summaries[0]["failed"] == 0
+    assert summaries[0]["errored"] == 0
+    assert summaries[0]["skipped"] == 0
 
 
 @pytest.fixture
