@@ -122,6 +122,73 @@ def test_sg_refuses_new_send_after_socket_termination(sg_timeline, terminal):
         sg_analyze(sg_timeline, rows)
 
 
+@pytest.mark.parametrize(
+    "send,receive,response,error",
+    [
+        ("18", "17.8", "17.6", "0.1"),
+        ("18", "17.9", "17.8", "0.05"),
+        ("18", "17.9", "17.799999999", "0.1"),
+    ],
+)
+def test_sg_rejects_nonadjacent_causality_reversal(sg_timeline, send, receive, response, error):
+    # 인접 단계마다 허용 오차를 소비해 전체 역전을 왕복으로 승격하는 회귀를 막는다.
+    rows = sg_baseline() + [
+        sg_event(5, "send", send, sequence=2),
+        sg_event(6, "server_receive", receive, sequence=2),
+        sg_event(7, "response_receive", response, sequence=2),
+    ]
+    with pytest.raises(ValueError, match="메시지 인과 시각 모순"):
+        sg_analyze(sg_timeline, rows, clock_error=error)
+
+
+@pytest.mark.parametrize("receive,response", [("17.9", "17.8"), ("18.1", "18.2")])
+def test_sg_keeps_causality_within_total_clock_margin(sg_timeline, receive, response):
+    rows = sg_baseline() + [
+        sg_event(5, "send", "18", sequence=2),
+        sg_event(6, "server_receive", receive, sequence=2),
+        sg_event(7, "response_receive", response, sequence=2),
+    ]
+    report = sg_analyze(sg_timeline, rows)
+    assert report["connections"]["A"]["post_confirmation_roundtrip_sequences"] == [2]
+    assert "별도 대조" in report["connections"]["A"]["observation"]
+
+
+@pytest.mark.parametrize("terminal", ["socket_close", "socket_reset"])
+@pytest.mark.parametrize("error", ["0", "0.1"])
+def test_sg_rejects_client_response_after_socket_termination(sg_timeline, terminal, error):
+    rows = sg_baseline() + [
+        sg_event(5, "send", "18", sequence=2),
+        sg_event(6, "server_receive", "18.1", sequence=2),
+        sg_event(7, terminal, "18.2"),
+        sg_event(8, "response_receive", "19", sequence=2),
+    ]
+    with pytest.raises(ValueError, match="클라이언트 소켓 수명 밖"):
+        sg_analyze(sg_timeline, rows, clock_error=error)
+
+
+@pytest.mark.parametrize("terminal", ["socket_close", "socket_reset"])
+def test_sg_keeps_server_delayed_receive_after_client_termination(sg_timeline, terminal):
+    rows = sg_baseline() + [
+        sg_event(5, "send", "18", sequence=2),
+        sg_event(6, terminal, "18.2"),
+        sg_event(7, "server_receive", "19", sequence=2),
+    ]
+    report = sg_analyze(sg_timeline, rows, clock_error="0")
+    message = report["connections"]["A"]["messages"][1]
+    assert message["stages"]["server_receive"]["epoch"] == "19"
+    assert not message["roundtrip_recorded"]
+    assert report["connections"]["A"]["post_confirmation_roundtrip_sequences"] == []
+
+
+def test_sg_rejects_client_response_before_socket_creation(sg_timeline):
+    rows = [
+        sg_event(1, "socket_open", "19"),
+        sg_event(2, "response_receive", "18", sequence=1),
+    ]
+    with pytest.raises(ValueError, match="클라이언트 소켓 수명 밖"):
+        sg_analyze(sg_timeline, rows)
+
+
 def test_sg_nanosecond_send_interval_and_new_socket_creation(sg_timeline):
     rows = sg_baseline() + [
         sg_event(5, "send", "18", sequence=2),

@@ -161,15 +161,17 @@ def analyze_events(
             for item in ordered
             if item["event"] in {"socket_close", "socket_reset"}
         ]
+        # 클라이언트 소켓의 같은 시계로 기록된 송신·앱 수신은 수명 안에 있어야 한다.
+        # 서버의 지연 수신과 캡처 ACK는 클라이언트 close 후에도 관측될 수 있어 제외한다.
         if any(
-            item["event"] == "send"
+            item["event"] in {"send", "response_receive"}
             and (
                 (opens and epoch(item["epoch"]) < epoch(opens[0]["epoch"]))
                 or any(epoch(item["epoch"]) > terminal for terminal in terminal_times)
             )
             for item in ordered
         ):
-            raise ValueError("소켓 생성 전 또는 종료 후 새 송신 기록")
+            raise ValueError("클라이언트 소켓 수명 밖 송신 또는 응답 수신 기록")
         messages = {}
         for item in ordered:
             if item["event"] not in MESSAGE_EVENTS:
@@ -187,9 +189,12 @@ def analyze_events(
             receive = message.get("server_receive")
             response = message.get("response_receive")
             chain = [item for item in (send, receive, response) if item]
+            # 각 두 시각의 최대 오차 합은 2×error다. 단계마다 이를 누적하면
+            # 송신→응답의 전체 역전을 허용하므로 비인접 단계까지 같은 한도로 대조한다.
             if any(
                 epoch(a["epoch"]) > epoch(b["epoch"]) + 2 * error
-                for a, b in zip(chain, chain[1:], strict=False)
+                for index, a in enumerate(chain)
+                for b in chain[index + 1 :]
             ):
                 raise ValueError("메시지 인과 시각 모순")
             post = bool(send and epoch(send["epoch"]) > confirmed + 2 * error)
