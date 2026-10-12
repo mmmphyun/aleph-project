@@ -50,3 +50,88 @@ variable "lambda_package_zip_path" {
   default     = "modules/lambda/build/orchestrator.zip"
 }
 
+variable "vpc_topology" {
+  description = "VPC CIDR, AZ 목록 및 서브넷 매핑 토폴로지"
+  type = object({
+    vpc_cidr           = string
+    availability_zones = set(string)
+    public_subnets     = map(object({ cidr = string, availability_zone = string }))
+    private_subnets    = map(object({ cidr = string, availability_zone = string }))
+  })
+  default = {
+    vpc_cidr           = "10.42.0.0/16"
+    availability_zones = ["ap-northeast-2a", "ap-northeast-2c"]
+    public_subnets = {
+      "public-2a" = {
+        cidr              = "10.42.0.0/24"
+        availability_zone = "ap-northeast-2a"
+      }
+    }
+    private_subnets = {
+      "private-2a" = {
+        cidr              = "10.42.10.0/24"
+        availability_zone = "ap-northeast-2a"
+      }
+    }
+  }
+}
+
+variable "quarantine_traffic" {
+  description = "기본 SG의 ingress/egress 트래픽 허용 명세 (격리 SG는 항상 빈 규칙 유지)"
+  type = object({
+    ingress = map(object({ cidr = string, protocol = string, from_port = number, to_port = number, description = string }))
+    egress  = map(object({ cidr = string, protocol = string, from_port = number, to_port = number, description = string }))
+  })
+  default = {
+    ingress = {
+      "ssh" = {
+        cidr        = "10.42.0.0/16"
+        protocol    = "tcp"
+        from_port   = 22
+        to_port     = 22
+        description = "Internal SSH access"
+      }
+      "http" = {
+        cidr        = "10.42.0.0/16"
+        protocol    = "tcp"
+        from_port   = 80
+        to_port     = 80
+        description = "Internal HTTP access"
+      }
+    }
+    egress = {
+      "all-vpc" = {
+        cidr        = "10.42.0.0/16"
+        protocol    = "tcp"
+        from_port   = 1
+        to_port     = 65535
+        description = "Allow VPC outbound TCP"
+      }
+    }
+  }
+}
+
+variable "ec2_ami_id" {
+  description = "타깃 EC2에 사용할 Ubuntu amd64 AMI ID"
+  type        = string
+  default     = "ami-0123456789abcdef0"
+}
+
+variable "ec2_instance_type" {
+  description = "타깃 EC2 인스턴스 타입"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "ec2_associate_public_ip" {
+  description = "타깃 EC2 공인 IP 할당 여부"
+  type        = bool
+  default     = true
+}
+
+variable "ec2_log_retention_days" {
+  description = "CloudWatch 로그 그룹 보존 기간 (일)"
+  type        = number
+  default     = 7
+}
+
