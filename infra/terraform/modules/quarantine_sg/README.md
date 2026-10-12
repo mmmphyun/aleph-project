@@ -14,10 +14,18 @@ SG 부착·교체·복구는 수행하지 않는다. AWS 생성 기본 allow-all
 | `environment`, `tags` | 환경 및 추가 태그 | `dev`, `{}` |
 
 `traffic = { ingress = {}, egress = {} }`는 기본 SG도 빈 규칙으로 관리한다.
-기본 개방 포트나 CIDR은 없다. IPv4 정규 CIDR(`/0` 금지), `tcp`/`udp`, 정수 포트
+기본 개방 포트나 CIDR은 없다. IPv4 정규 CIDR(ingress `/0` 금지, baseline egress `0.0.0.0/0` 허용), `tcp`/`udp`, 정수 포트
 1~65535, 오름차순 포트 범위, ASCII 설명, 중복 거부 및 방향별 최대 60개를 검증한다.
+CIDR은 네트워크 주소와 prefix 모두 정규 표기여야 하며 `/00`, `/032` 같은 선행 0은 거부한다.
 IPv6·ICMP·전체 프로토콜·SG 참조는 지원하지 않는다. 넓은 CIDR 여러 개로 전체 인터넷을
 덮는 집합까지 계산하지 않으므로 승인된 최소 범위인지 리뷰가 필요하다.
+
+P3-1A는 baseline `traffic.egress`의 입력 허용 범위만 변경한다. `/0`을 입력해도
+격리 SG의 `ingress = []`, `egress = []`는 유지한다. 외부 egress 기본 규칙을 추가하지
+않으며 자동 개방이나 실제 배포를 의미하지 않는다. 서비스별 목적지·프로토콜·포트 정책은
+P3-1B에서 정의하고, 루트 egress 결합·프로비저닝은 P3-2의 클라우드 A 범위다.
+이번 로컬 검증 결과와 미수행한 AWS 배포·실측은
+[P3-1A 검증 기록](../../../../docs/roles/network/2026-10-12-p3-1a-egress-cidr-validation.md)에 기록한다.
 
 출력은 `baseline_sg_id`, `quarantine_sg_id`, `quarantine_sg_arn`,
 `quarantine_sg_name`, `vpc_id`이다. ARN은 Lambda IAM 입력용이고 SG ID와 다르다.

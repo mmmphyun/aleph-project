@@ -55,7 +55,7 @@ run "empty_baseline" {
     error_message = "Empty input must manage zero rules"
   }
 }
-run "reject_world" {
+run "reject_world_ingress" {
   command = plan
   variables { traffic = { "ingress" = { "ssh" = { "cidr" = "0.0.0.0/0", "protocol" = "tcp", "from_port" = 22, "to_port" = 22, "description" = "Approved SSH test source" } }, "egress" = { "collector" = { "cidr" = "10.42.20.0/24", "protocol" = "tcp", "from_port" = 443, "to_port" = 443, "description" = "Example collector only" } } } }
   expect_failures = [var.traffic]

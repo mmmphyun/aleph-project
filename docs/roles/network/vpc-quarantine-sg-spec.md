@@ -1,5 +1,9 @@
 # VPC 및 격리 SG 모듈 설계·로컬 검증
 
+현재 SG 방향별 정책은 P3-1A(2026-10-12)를 반영한다. 아래 최초 설계·검증 이력은
+PR 154 시점의 기록이다. PR 163에서 루트 결합과 CI Terraform 환경이 머지됐으며,
+최신 변경 범위·검증 상태는 [P3-1A 기록](2026-10-12-p3-1a-egress-cidr-validation.md)을 따른다.
+
 - 기준일: 2026-10-08 KST
 - Notion Task: https://notion.so/3ea04d37c22581e0981bc3d45a22927f
 - GitHub Issue: https://github.com/mmmphyun/aleph-project/issues/153
@@ -75,7 +79,7 @@ AZ 이름은 계정마다 물리 AZ 매핑이 다를 수 있다. 여러 리전�
 | SG / 방향 | 허용 규칙 | 설계 이유 |
 | --- | --- | --- |
 | baseline ingress | 승인 CIDR + TCP/UDP + 포트 범위만 입력; 기본값 없음 | 모의 공격·서비스 입력을 명시적으로 검토 |
-| baseline egress | 승인 목적지 CIDR + TCP/UDP + 포트만 입력; 빈 map 가능 | 외부 개방을 암묵적으로 만들지 않음 |
+| baseline egress | 정규 IPv4 CIDR(`/0` 허용) + TCP/UDP + 포트만 입력; 빈 map 가능 | 외부 개방을 암묵적으로 만들지 않음 |
 | quarantine ingress | `[]` | 새 인바운드 연결 허용 규칙 없음 |
 | quarantine egress | `[]` | AWS 생성 기본 allow-all egress가 잔존하지 않도록 관리 |
 | VPC default SG | ingress/egress 모두 `[]` | 기본 SG를 잘못 부착했을 때 개방 방지 |
@@ -87,7 +91,11 @@ HTTP/SSH도 모듈 기본 허용값으로 넣지 않는다. WAF 보호 대상의
 
 SG는 stateful이므로 허용 연결의 응답 트래픽은 별도의 역방향 허용 규칙 없이 통과한다.
 새 외부 연결을 위한 egress는 별도 정책이다. IPv6, ICMP, 전체 프로토콜은 지원하지 않는다.
-`/0`, 비정규 CIDR, 잘못된 포트, 중복 규칙, 방향별 60개 초과를 거부한다.
+ingress `/0`, 양방향 비정규 CIDR, 잘못된 포트, 중복 규칙, 방향별 60개 초과를 거부한다.
+P3-1A에서 baseline egress의 정규 `0.0.0.0/0` 입력만 허용하며 격리 SG의 빈 양방향 규칙은 유지한다.
+입력 허용은 자동 개방·배포 정책 확정·실제 배포를 의미하지 않는다. 서비스별 목적지·프로토콜·포트는
+P3-1B, 루트 egress 결합·프로비저닝은 P3-2(클라우드 A) 범위다.
+[P3-1A 검증 기록](2026-10-12-p3-1a-egress-cidr-validation.md)을 함께 확인한다.
 여러 넓은 CIDR의 합집합으로 인터넷 전체를 허용하는지까지는 계산하지 않으므로 최소 범위 리뷰가 필요하다.
 
 AWS provider 5.100.0은 SG 생성 시 AWS 기본 egress를 제거한다. 규칙 인자 생략은 기존
