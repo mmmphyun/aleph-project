@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("module,expected_runs", [("vpc", 14), ("quarantine_sg", 35)])
+@pytest.mark.parametrize("module,expected_runs", [("vpc", 14), ("quarantine_sg", 39)])
 def test_terraform_network_mock_contracts(module, expected_runs, tmp_path):
     """HCL 자체를 평가해 라우팅/격리/출력 계약 및 잘못된 입력의 거부를 확인한다.
 

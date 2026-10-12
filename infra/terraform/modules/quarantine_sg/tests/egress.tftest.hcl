@@ -8,6 +8,83 @@ variables {
   vpc_id = "vpc-0123456789abcdef0"
 }
 
+# CIDR 주소뿐 아니라 prefix 표기도 정규화해야 동일 목적지의 별칭 입력을 거부할 수 있다.
+run "reject_egress_zero_padded_world_prefix" {
+  command = plan
+  variables {
+    traffic = {
+      ingress = {}
+      egress = {
+        outbound = {
+          cidr        = "0.0.0.0/00"
+          protocol    = "tcp"
+          from_port   = 443
+          to_port     = 443
+          description = "Noncanonical world prefix"
+        }
+      }
+    }
+  }
+  expect_failures = [var.traffic]
+}
+
+run "reject_egress_zero_padded_host_prefix" {
+  command = plan
+  variables {
+    traffic = {
+      ingress = {}
+      egress = {
+        outbound = {
+          cidr        = "198.51.100.10/032"
+          protocol    = "tcp"
+          from_port   = 443
+          to_port     = 443
+          description = "Noncanonical host prefix"
+        }
+      }
+    }
+  }
+  expect_failures = [var.traffic]
+}
+
+run "reject_ingress_zero_padded_host_prefix" {
+  command = plan
+  variables {
+    traffic = {
+      ingress = {
+        ssh = {
+          cidr        = "198.51.100.10/032"
+          protocol    = "tcp"
+          from_port   = 22
+          to_port     = 22
+          description = "Noncanonical inbound prefix"
+        }
+      }
+      egress = {}
+    }
+  }
+  expect_failures = [var.traffic]
+}
+
+run "reject_egress_mixed_world_prefix_aliases" {
+  command = plan
+  variables {
+    traffic = {
+      ingress = {}
+      egress = {
+        for key, cidr in { canonical = "0.0.0.0/0", alias = "0.0.0.0/00" } : key => {
+          cidr                       = cidr
+          protocol                   = "tcp"
+          from_port                  = 443
+          to_port                    = 443
+          description                = "Same destination and service"
+        }
+      }
+    }
+  }
+  expect_failures = [var.traffic]
+}
+
 run "empty_egress_keeps_ingress" {
   command = plan
   variables { traffic = { "ingress" : { "ssh" : { "cidr" : "198.51.100.10/32", "protocol" : "tcp", "from_port" : 22, "to_port" : 22, "description" : "Approved SSH test source" } }, "egress" : {} } }

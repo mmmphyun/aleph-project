@@ -12,7 +12,7 @@
 baseline SG는 정상 운영 트래픽 입력을 소비하고 격리 SG는 허용 규칙 없이 유지한다.
 공통 CIDR/프로토콜/포트/설명 검증에서 `/0` 금지 조건을 분리해 ingress에만 적용했다.
 baseline `traffic.egress`는 정규 IPv4 `0.0.0.0/0`을 허용한다. ingress `/0`은 계속 거부한다.
-`cidrnetmask`와 `cidrhost(..., 0)` 비교로 CIDR 문법·IPv4·네트워크 주소 정규화를 유지한다.
+`cidrnetmask`, `cidrhost(..., 0)`, 숫자로 변환한 prefix 비교로 CIDR 문법·IPv4·네트워크 주소와 prefix 정규화를 유지한다.
 TCP/UDP, 정수 포트 1~65535, 포트 순서, ASCII 설명 1~255자, 중복 거부와 방향별 60개 상한도 유지한다.
 
 `main.tf` 및 `outputs.tf`는 변경하지 않았다. baseline 규칙은 입력된 map만 사용하며,
@@ -31,7 +31,7 @@ PR 154의 설계·inline SG 규칙 소유권·출력 계약과 PR 163의 루트 
 노션 티켓의 `modules/network/quarantine_sg` 경로는 오기로 확인했고 실제 `modules/quarantine_sg`를 사용했다.
 
 기존 `reject_world_egress`를 허용 및 리소스 결과 검증으로 교체했다. ingress `/0` 거부 검증은 유지한다.
-SG mock plan은 기존 17개에 egress 전용 18개를 더해 35개다. pytest 연계 기대 개수도 35로 갱신한다.
+SG mock plan은 최초 35개에 리뷰 회귀 4개를 더해 39개다. pytest 연계 기대 개수도 39로 갱신한다.
 잘못된 CIDR·prefix·IPv6·host bits·비정규 `/0`, 프로토콜·포트·설명·중복·규칙 상한을 실제 HCL로 검증한다.
 60개 UDP `/0` 허용과 61개 거부, 빈 egress 및 격리 SG의 빈 양방향 규칙을 확인한다.
 테스트 실패를 문자열 존재 검사나 skip으로 대체하지 않는다.
@@ -42,7 +42,7 @@ SG mock plan은 기존 17개에 egress 전용 18개를 더해 35개다. pytest �
 스토리지는 기존 SG 규칙 상한으로 제한하며 잘못된 입력은 Terraform validation 실패로 전파한다.
 런타임 `raise`/재시도/DLQ 코드는 변경하지 않는다.
 
-## 검증 기록
+## 최초 커밋 검증 기록
 
 실제 AWS 조회·생성·변경·삭제 및 실제 AWS
 `plan/apply/destroy/import`, SG 교체·복구·통신 실측·10초 E2E는 수행하지 않는다.
@@ -101,3 +101,40 @@ PR merged 시 완료로 노션을 전이한다. Draft 예외는 없고, merged P
 열린 Issue를 종료하므로 `Refs`로 종료를 막을 수 없다. 본문에는 P3-1A Issue만 번호로 연결한다.
 P3-1B/P3-2는 본문에 후속 협업 범위로 적고 P3-1A 완료와 구분한다.
 노션 상태·속성은 직접 변경하지 않는다. 이번 요청에서 PR을 머지하지 않고 보안 리뷰를 기다린다.
+
+## 리뷰 피드백 반영
+
+보안 리뷰어의 P2 권장 사항은 prefix 원문 때문에 `/0`과 `/00`을 다른 규칙으로 계산하는 약점이다.
+기존 커밋에서 `terraform console`로 `cidrnetmask("0.0.0.0/00")`의 성공,
+기존 CIDR 정규 비교 `true`, `/0`·`/00`의 동일 서비스 distinct 개수 `2`를 재현했다.
+빈 임시 디렉터리에서 Terraform 1.16.5 내장 함수만 실행했으며 provider·AWS API는 사용하지 않았다.
+
+prefix를 `tonumber`로 변환해 네트워크 주소와 함께 정규 문자열로 비교한다.
+`/00` 및 양방향 `/032`를 거부하고, egress `/0`·`/00` 혼합 입력도 거부하는 mock 4개를 추가했다.
+정규 egress `/0` 허용과 ingress `/0` 금지, 격리 SG의 빈 규칙 검증은 그대로 유지한다.
+같은 PR·Issue·브랜치에서 수정하며 새 Issue 발행·타 직무 코드 변경은 하지 않는다.
+
+리뷰 수정 후 로컬 검증 결과:
+
+| 검사 | 실제 결과 |
+| --- | --- |
+| Terraform console 내장 함수 평가 | exit 0; `/0`, `/32`는 true, `/00`, `/032`는 false |
+| SG 모듈 fmt | exit 0 |
+| SG validate | exit 1; 동일 Windows provider 실행 차단 |
+| Trivy 전체 심각도, 합성 egress `/0` 명시 | exit 0; 71 successes / 0 failures |
+| 원본 check.ps1 | exit 1; 기존 `.pytest_cache` 열거 권한 오류 |
+| SHA-256 동일 체크아웃 check.ps1 | exit 1; R&R·경로·Ruff 통과; **916 passed, 4 failed, 0 skipped, 1 warning**, 252.88초 |
+| 실패 4건 | VPC/SG Terraform 연계 및 WAF 2건; provider 실행 차단. SG run 39개 발견 후 평가 중단 |
+
+리뷰 검증 환경은 최초 기록과 동일한 Windows / Python 3.12.14 / Terraform 1.16.5 /
+AWS provider 5.100.0이다. `cloudshield-p3-1a-review-20261012` 임시 체크아웃의 213개 파일이
+원본과 바이트 단위로 같음을 확인했다. `cloudshield-p3-1a-review-sha256.json` manifest SHA-256은
+`00a30e5433e86998a8e5b8caef7ea3446e21e5b84d4d48985cc6db67127ad966`이다.
+결과 문서만 검사 후 갱신했다. 같은 Temp 상위 경로의 `cloudshield-p3-1a-review-full-check.log`,
+`cloudshield-p3-1a-review-original-check.log`, `cloudshield-p3-1a-review-validate.log`,
+`cloudshield-p3-1a-review-trivy.json` 및 `.log`에 실제 결과를 보존한다.
+수정 최신 커밋의 GitHub CI는 PR 본문에 별도로 기록하며 Draft 대기 조건을 유지한다.
+
+읽기 전용 Windows 진단에서 Smart App Control 상태 1, provider의 Authenticode `NotSigned`,
+Code Integrity 이벤트 3077의 해당 실행 파일 차단을 확인했다. 보안 정책·예외·자료·ACL은 변경하지 않았다.
+Smart App Control의 개별 앱 예외 제한은 [Microsoft 공식 FAQ](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions)를 참고한다.

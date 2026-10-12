@@ -41,6 +41,8 @@ variable "names" {
 # TCP/UDP IPv4만 지원하며 ICMP, IPv6, SG 참조 및 전체 프로토콜은 후속 협업 범위다.
 # baseline 외부 목적지는 명시적 egress 입력으로만 허용한다. ingress /0 금지는 별도로
 # 평가해 방향 혼동에 따른 공개 인바운드를 거부하며 격리 SG의 빈 규칙에는 영향을 주지 않는다.
+# prefix도 숫자의 표준 표기와 비교해 /00·/032 별칭을 거부한다. 동일 네트워크가 원문 차이로
+# 중복 검증을 통과하여 AWS에 같은 규칙을 제출하는 실패를 입력 단계에서 차단한다.
 variable "traffic" {
   description = "기본 SG의 명시적 ingress/egress 허용 목록; 빈 map은 해당 방향 허용 없음"
   type = object({
@@ -51,13 +53,13 @@ variable "traffic" {
   validation {
     condition = try(alltrue([
       for r in concat(values(var.traffic.ingress), values(var.traffic.egress)) :
-      cidrnetmask(r.cidr) != "" && r.cidr == "${cidrhost(r.cidr, 0)}/${split("/", r.cidr)[1]}" &&
+      cidrnetmask(r.cidr) != "" && r.cidr == "${cidrhost(r.cidr, 0)}/${tonumber(split("/", r.cidr)[1])}" &&
       contains(["tcp", "udp"], r.protocol) &&
       r.from_port >= 1 && r.to_port <= 65535 && r.from_port <= r.to_port &&
       floor(r.from_port) == r.from_port && floor(r.to_port) == r.to_port &&
       can(regex("^[A-Za-z0-9 ._:/()-]{1,255}$", r.description))
     ]), false)
-    error_message = "양방향 규칙은 정규 IPv4 CIDR, tcp/udp, 정수 포트 1~65535의 유효 범위 및 ASCII 설명(1~255자)이 필요합니다. baseline egress는 0.0.0.0/0을 허용하며 ingress /0은 금지합니다."
+    error_message = "양방향 규칙은 정규 IPv4 CIDR(prefix 선행 0 금지), tcp/udp, 정수 포트 1~65535의 유효 범위 및 ASCII 설명(1~255자)이 필요합니다. baseline egress는 0.0.0.0/0을 허용하며 ingress /0은 금지합니다."
   }
   validation {
     condition = try(alltrue([
