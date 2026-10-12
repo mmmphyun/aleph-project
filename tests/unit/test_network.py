@@ -14,12 +14,12 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("module,expected_runs", [("vpc", 14), ("quarantine_sg", 17)])
+@pytest.mark.parametrize("module,expected_runs", [("vpc", 14), ("quarantine_sg", 35)])
 def test_terraform_network_mock_contracts(module, expected_runs, tmp_path):
     """HCL 자체를 평가해 라우팅/격리/출력 계약 및 잘못된 입력의 거부를 확인한다.
 
-    Terraform과 provider는 사전 설치한 로컬 자산만 사용한다. 일반 Python CI에는
-    Terraform이 없으므로 명시적 실행 환경이 없으면 skip을 보고하며 통과로 대체하지 않는다.
+    Terraform과 provider는 사전 설치한 로컬 자산만 사용한다. PR #163 CI는 실행 환경을
+    주입한다. 환경이 없는 Python 전용 개발 환경에서는 skip을 통과로 대체하지 않는다.
     모든 run은 mock plan이고 테스트에서 init, 실제 AWS plan, apply를 호출하지 않는다.
     """
     executable = os.environ.get("CLOUDSHIELD_TERRAFORM")
