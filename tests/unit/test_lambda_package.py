@@ -165,7 +165,7 @@ else:
     try:
         import pydantic
         print("[격리검증] pydantic 로딩됨")
-    except ModuleNotFoundError as e:
+    except (ModuleNotFoundError, ImportError) as e:
         assert "_pydantic_core" in str(e)
         print("[격리검증-성공] 비-Linux 환경에서 Linux .so 탑재로 인한 정상 분기 확인:", e)
 """
