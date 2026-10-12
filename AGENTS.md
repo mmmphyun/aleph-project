@@ -85,9 +85,11 @@
    - 본인 직무의 미머지 열린 PR(`state:open`)이 1개라도 존재하는 경우, **신규 티켓 착수 및 `gh issue create`를 전면 금지**한다.
    - 선행 PR이 머지되기 전에 후속 작업을 브랜치로 쌓는 행위(PR Stacking)를 엄격히 금지한다.
 2. **1단계 (main 최신화)**: `git checkout main && git pull origin main`으로 최신 커밋 동기화.
-3. **2단계 (GitHub Issue 선발행)**:
-   - `uv run python scripts/get_my_tasks.py` 실행 (열린 PR 존재 시 하드 가드로 실행 차단됨).
-   - `gh issue create --title "<타입>(<직무>): <제목>" --body "- Notion Task: <노션URL>\n- 브랜치: feat/<직무>-<기능명>"` 실행하여 이슈 번호 확보.
+3. **2단계 (GitHub Issue 선발행 및 순차 의존성 검증)**:
+   - 전체/타 직무 현황 조회 시 `uv run python scripts/get_my_tasks.py --all` 또는 `--status [진행 중|검토 중|완료]` 활용.
+   - 작업 착수 시 `uv run python scripts/get_my_tasks.py` 실행 (열린 PR 존재 시 하드 가드로 실행 차단됨).
+   - 직렬 순서 식별자(`[P<Phase>-<순서>]`)가 부여된 티켓은 선행 티켓 미완료 시 `[대기 필요]`로 차단되므로 선행 PR 머지를 대기한다.
+   - `[착수 가능]` 확인 후 `gh issue create --title "<타입>(<직무>): <제목>" --body "- Notion Task: <노션URL>\n- 브랜치: feat/<직무>-<기능명>"` 실행하여 이슈 번호 확보.
 4. **3단계 (작업 브랜치 분기)**: `git checkout -b feat/<직무>-<기능명>` 생성 후 개발 착수.
 5. **4단계 (기존 자산 정찰 및 중복 방지 - Check-before-write)**:
    - 코드를 새로 작성하기 전에 `src/contracts/`, `src/detection/`, `src/remediation/`, `src/reporter/` 내에 이미 존재하는 데이터 모델, 헬퍼 함수(`map_threat_to_incident`), 상수를 반드시 먼저 검색·확인(Hydration)한다.
