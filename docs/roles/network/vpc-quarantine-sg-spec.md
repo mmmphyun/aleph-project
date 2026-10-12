@@ -1,5 +1,10 @@
 # VPC 및 격리 SG 모듈 설계·로컬 검증
 
+P3-1B(2026-10-12)의 명시적 TCP 80/443 외부 송신 정책과 P3-2 전달 인터페이스는
+[외부 Egress 정책 기록](2026-10-12-p3-1b-baseline-egress-policy.md)과
+[SG 모듈 README](../../../infra/terraform/modules/quarantine_sg/README.md)에 있다.
+빈 일반 egress 및 격리 SG 양방향 빈 규칙을 유지하며 루트 활성화·AWS 배포는 후속 범위다.
+
 현재 SG 방향별 정책은 P3-1A(2026-10-12)를 반영한다. 아래 최초 설계·검증 이력은
 PR 154 시점의 기록이다. PR 163에서 루트 결합과 CI Terraform 환경이 머지됐으며,
 최신 변경 범위·검증 상태는 [P3-1A 기록](2026-10-12-p3-1a-egress-cidr-validation.md)을 따른다.
