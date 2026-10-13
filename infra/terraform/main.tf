@@ -33,19 +33,12 @@ module "vpc" {
 # ==============================================================================
 # 3. 기본 및 격리 보안 그룹 모듈 (네트워크 전담)
 # ==============================================================================
-module "baseline_external_policy" {
-  source = "./modules/quarantine_sg/policies/external_bootstrap"
-}
-
 module "quarantine_sg" {
   source = "./modules/quarantine_sg"
 
   vpc_id      = module.vpc.vpc_id
   environment = var.environment
-  traffic = {
-    ingress = var.quarantine_traffic.ingress
-    egress  = module.baseline_external_policy.egress
-  }
+  traffic     = var.quarantine_traffic
 }
 
 # ==============================================================================

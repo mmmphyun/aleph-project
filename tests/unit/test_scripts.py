@@ -20,7 +20,9 @@ from scripts import get_my_tasks  # noqa: E402
 from scripts.get_my_tasks import (  # noqa: E402
     check_open_pr_guard,
     detect_role_from_branch,
+    filter_tickets_by_role,
     get_current_role,
+    get_role_aliases,
     load_env,
 )
 
@@ -143,3 +145,45 @@ def test_check_ps1_contains_exit_code_guards() -> None:
     assert len(exit_checks) >= 4, (
         "모든 검증 단계(0, 2, 3, 4)에 exit $LASTEXITCODE 가드가 존재해야 함"
     )
+
+
+@pytest.mark.parametrize(
+    ("role_input", "expected_aliases"),
+    [
+        ("cloud-a", ["[cloud-a]", "[cloud a]", "[클라우드 a]"]),
+        ("Cloud-A", ["[cloud-a]", "[cloud a]", "[클라우드 a]"]),
+        ("cloud-b", ["[cloud-b]", "[cloud b]", "[클라우드 b]"]),
+        ("security", ["[security]", "[보안]"]),
+        ("SECURITY", ["[security]", "[보안]"]),
+        ("network", ["[network]", "[네트워크]"]),
+        ("custom-role", ["[custom-role]", "[custom role]"]),
+    ],
+)
+def test_get_role_aliases_mappings(role_input: str, expected_aliases: list[str]) -> None:
+    """영문·한글 직무 별칭 매핑 및 대소문자 정규화 검증."""
+    aliases = get_role_aliases(role_input)
+    assert aliases == expected_aliases
+
+
+def test_filter_tickets_by_role_includes_korean_and_excludes_other_roles() -> None:
+    """한글 및 영문 별칭 매칭 검증과 타 직무 배제(Isolation) 검증."""
+    mock_tickets = [
+        {"id": "1", "title": "[P3-2] [클라우드 A] 루트 Terraform Egress 결합", "status": "검토 중"},
+        {"id": "2", "title": "[P3-5] [cloud-a] ALB 및 WAF 결합", "status": "시작 전"},
+        {"id": "3", "title": "[P3-4] [클라우드 B] CW Agent 수집 지연 계측", "status": "시작 전"},
+        {"id": "4", "title": "[P3-3] [네트워크] Hydra 공격 패킷 실측", "status": "시작 전"},
+        {"id": "5", "title": "[P3-8] [보안] 룰 엔진 최종 검증", "status": "시작 전"},
+        {"id": "6", "title": "[P3-9] [SECURITY] LLM 정밀 분석 파이프라인", "status": "시작 전"},
+    ]
+
+    cloud_a_tickets = filter_tickets_by_role(mock_tickets, "cloud-a")
+    assert [t["id"] for t in cloud_a_tickets] == ["1", "2"]
+
+    cloud_b_tickets = filter_tickets_by_role(mock_tickets, "cloud-b")
+    assert [t["id"] for t in cloud_b_tickets] == ["3"]
+
+    network_tickets = filter_tickets_by_role(mock_tickets, "network")
+    assert [t["id"] for t in network_tickets] == ["4"]
+
+    security_tickets = filter_tickets_by_role(mock_tickets, "security")
+    assert [t["id"] for t in security_tickets] == ["5", "6"]
