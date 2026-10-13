@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -2919,5 +2920,298 @@ def test_spray_server_evidence_requires_each_requested_account(
 
 def test_spray_shell_syntax(bash):
     script = Path(__file__).resolve().parents[2] / "network/password_spraying.sh"
+    result = subprocess.run([bash, "-n", script.as_posix()], capture_output=True, check=False)
+    assert result.returncode == 0
+
+
+@pytest.fixture
+def ec2_measurement(monkeypatch):
+    """외부 EC2 러너를 모듈로만 적재하며 실제 소켓·Hydra 실행은 각 테스트가 봉쇄한다."""
+    directory = Path(__file__).resolve().parents[2] / "network"
+    monkeypatch.syspath_prepend(str(directory))
+    spec = importlib.util.spec_from_file_location(
+        "ec2_hydra_measurement", directory / "ec2_hydra_measurement.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_ec2_measurement_plan_is_masked_and_has_no_side_effects(
+    ec2_measurement, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        ec2_measurement, "load_config", lambda *_: pytest.fail("private config read")
+    )
+    monkeypatch.setattr(ec2_measurement, "run_measurement", lambda *_: pytest.fail("network run"))
+    environment = {"CLOUDSHIELD_TARGET_IP": "8.8.8.8", "MOCK_SECRET": "do-not-print"}
+    assert ec2_measurement.main(["plan"], environment) == 0
+    output = capsys.readouterr()
+    summary = json.loads(output.out)
+    assert summary == {
+        "mode": "plan",
+        "network_executed": False,
+        "target": "TARGET_EC2_PUBLIC_IP",
+        "port": 22,
+        "test_account_required": True,
+        "candidate_count": 5,
+        "concurrency": 1,
+        "hydra_timeout_seconds": 30,
+        "capture_seconds": 45,
+        "capture_packet_limit": 2000,
+        "probe_count": 30,
+        "probe_interval_seconds": 1,
+        "reruns": 0,
+    }
+    assert "8.8.8.8" not in output.out and "do-not-print" not in output.out
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "",
+        "example.org",
+        "127.0.0.1",
+        "10.0.0.1",
+        "192.168.0.1",
+        "169.254.1.1",
+        "203.0.113.10",
+        "01.2.3.4",
+        "8.8.8.8;id",
+    ],
+)
+def test_ec2_measurement_rejects_non_public_or_injected_target(ec2_measurement, target):
+    with pytest.raises(ec2_measurement.PreparationError):
+        ec2_measurement.validate_public_ipv4(target)
+
+
+def test_ec2_measurement_accepts_normalized_public_target_without_connecting(ec2_measurement):
+    assert ec2_measurement.validate_public_ipv4("8.8.8.8") == "8.8.8.8"
+
+
+@pytest.mark.parametrize(
+    "account",
+    ["", "root", "admin", "ubuntu", "ec2-user", "cloudshield", "cloudshield_test;id"],
+)
+def test_ec2_measurement_requires_dedicated_test_account(ec2_measurement, account):
+    with pytest.raises(ec2_measurement.PreparationError):
+        ec2_measurement.validate_account(account)
+
+
+@pytest.mark.parametrize("account", ["cloudshield_test", "cloudshield_test_p3"])
+def test_ec2_measurement_accepts_only_test_account_contract(ec2_measurement, account):
+    assert ec2_measurement.validate_account(account) == account
+
+
+@pytest.mark.parametrize("interface", ["", "any", "eth 0", "-i", "eth0;id", "a" * 16])
+def test_ec2_measurement_rejects_unsafe_capture_interface(ec2_measurement, interface):
+    with pytest.raises(ec2_measurement.PreparationError):
+        ec2_measurement.validate_interface(interface)
+
+
+def test_ec2_measurement_requires_all_readiness_attestations_before_private_input(
+    ec2_measurement, monkeypatch
+):
+    monkeypatch.setattr(
+        ec2_measurement, "validate_public_ipv4", lambda *_: pytest.fail("target inspected")
+    )
+    args = ec2_measurement.parser().parse_args(["run", "--execute"])
+    with pytest.raises(ec2_measurement.PreparationError, match="준비 확인"):
+        ec2_measurement.load_config(args, {})
+
+
+def test_ec2_measurement_hydra_argv_is_fixed_and_bounded(ec2_measurement, tmp_path):
+    config = ec2_measurement.Config(
+        target="8.8.8.8",
+        account="cloudshield_test",
+        interface="eth0",
+        evidence_root=tmp_path,
+    )
+    candidates = tmp_path / "candidates"
+    assert ec2_measurement.build_hydra_command("mock-hydra", config, candidates) == [
+        "mock-hydra",
+        "-I",
+        "-K",
+        "-f",
+        "-l",
+        "cloudshield_test",
+        "-P",
+        str(candidates),
+        "-t",
+        "1",
+        "-w",
+        "3",
+        "-W",
+        "1",
+        "-s",
+        "22",
+        "8.8.8.8",
+        "ssh",
+    ]
+
+
+def test_ec2_measurement_accepts_hydra_help_exit_255_when_features_exist(
+    ec2_measurement, monkeypatch
+):
+    help_text = "Hydra v9.7\n-K do not redo failed attempts\nSupported services: ftp ssh smtp\n"
+    monkeypatch.setattr(
+        ec2_measurement.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 255, help_text, ""),
+    )
+    assert ec2_measurement.check_hydra("mock-hydra") == "Hydra v9.7"
+
+
+@pytest.mark.parametrize(
+    "code,output,timed,state",
+    [
+        (0, "0 valid passwords found", False, "exhausted_without_success"),
+        (0, "[22][ssh] host: X login: u password: P", False, "unexpected_success"),
+        (0, "could not connect", False, "connection_error"),
+        (1, "", False, "tool_error"),
+        (0, "", True, "timeout"),
+        (0, "", False, "unconfirmed"),
+    ],
+)
+def test_ec2_measurement_classifies_without_trusting_exit_zero(
+    ec2_measurement, code, output, timed, state
+):
+    assert ec2_measurement.classify_hydra(code, output, timed_out=timed) == state
+
+
+def test_ec2_measurement_candidate_file_is_five_private_synthetic_values(ec2_measurement, tmp_path):
+    candidates = tmp_path / "candidates"
+    ec2_measurement.write_candidates(candidates)
+    values = candidates.read_text().splitlines()
+    assert len(values) == 5 and len(set(values)) == 5
+    assert all(value.startswith("WRONG-P3-3-") for value in values)
+    if os.name == "posix":
+        assert candidates.stat().st_mode & 0o777 == 0o600
+
+
+def test_ec2_measurement_execution_guard_allows_no_rerun(ec2_measurement, tmp_path):
+    guard = ec2_measurement.create_execution_guard(tmp_path)
+    assert json.loads(guard.read_text())["reruns_allowed"] == 0
+    with pytest.raises(ec2_measurement.PreparationError, match="재실행"):
+        ec2_measurement.create_execution_guard(tmp_path)
+
+
+def test_ec2_measurement_probe_uses_one_tcp22_connection(ec2_measurement, monkeypatch):
+    calls = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def connect(address, timeout):
+        calls.append((address, timeout))
+        return Connection()
+
+    monkeypatch.setattr(ec2_measurement.socket, "create_connection", connect)
+    result = ec2_measurement.probe_once("8.8.8.8")
+    assert result["state"] == "connected"
+    assert calls == [(("8.8.8.8", 22), 0.8)]
+
+
+def test_ec2_measurement_capture_exit_aborts_active_window(ec2_measurement, monkeypatch, tmp_path):
+    clock = {"now": 0.0}
+    terminated = []
+    probes = []
+    hydra_log = tmp_path / "hydra.log"
+    hydra_log.write_text("", encoding="utf-8")
+
+    class Hydra:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    class Capture:
+        def poll(self):
+            return 0 if clock["now"] >= 1.25 else None
+
+    hydra = Hydra()
+    monkeypatch.setattr(ec2_measurement.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        ec2_measurement.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    monkeypatch.setattr(
+        ec2_measurement,
+        "probe_once",
+        lambda *_: probes.append(clock["now"]) or {"state": "connected"},
+    )
+
+    def terminate(process):
+        terminated.append(process)
+        process.returncode = -15
+
+    monkeypatch.setattr(ec2_measurement, "terminate_owned_process", terminate)
+
+    with pytest.raises(ec2_measurement.MeasurementError, match="조기 종료"):
+        ec2_measurement.observe_attack_window("8.8.8.8", hydra, Capture(), hydra_log)
+    assert terminated == [hydra]
+    assert probes == [0.0, 1.0]
+
+
+def test_ec2_measurement_hydra_deadline_is_independent_of_probe_schedule(
+    ec2_measurement, monkeypatch, tmp_path
+):
+    clock = {"now": 0.0}
+    terminated = []
+    hydra_log = tmp_path / "hydra.log"
+    hydra_log.write_text("", encoding="utf-8")
+
+    class Hydra:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    class Capture:
+        def poll(self):
+            return None
+
+    hydra = Hydra()
+    monkeypatch.setattr(ec2_measurement.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        ec2_measurement.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    monkeypatch.setattr(ec2_measurement, "probe_once", lambda *_: {"state": "connected"})
+
+    def terminate(process):
+        terminated.append(process)
+        process.returncode = -15
+
+    monkeypatch.setattr(ec2_measurement, "terminate_owned_process", terminate)
+
+    probes, timed_out = ec2_measurement.observe_attack_window(
+        "8.8.8.8", hydra, Capture(), hydra_log
+    )
+    assert len(probes) == ec2_measurement.PROBE_COUNT
+    assert probes[-1]["index"] == ec2_measurement.PROBE_COUNT
+    assert clock["now"] == pytest.approx(ec2_measurement.HYDRA_SECONDS)
+    assert timed_out is True
+    assert terminated == [hydra]
+    assert ec2_measurement.classify_hydra(-15, "", timed_out=timed_out) == "timeout"
+
+
+def test_ec2_measurement_run_without_execute_never_reads_config(
+    ec2_measurement, monkeypatch, capsys
+):
+    monkeypatch.setattr(ec2_measurement, "load_config", lambda *_: pytest.fail("config read"))
+    assert ec2_measurement.main(["run"], {}) == 2
+    assert "run --execute" in capsys.readouterr().err
+
+
+def test_ec2_measurement_shell_syntax(bash):
+    script = Path(__file__).resolve().parents[2] / "network/ec2_hydra_measurement.sh"
     result = subprocess.run([bash, "-n", script.as_posix()], capture_output=True, check=False)
     assert result.returncode == 0
