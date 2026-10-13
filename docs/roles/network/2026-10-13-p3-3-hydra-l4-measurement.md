@@ -156,6 +156,21 @@ Ruff lint, 126개 파일 format 검사와 pytest가 모두 통과했다. pytest 
 
 ## 8. 대체 원인, 중단 및 복구
 
+### 기존 SSH 세션 유지 판단
+
+AWS 공식 연결 추적 문서에 따르면 SG 규칙을 바꿔도 **추적 중인 TCP 연결은 즉시 끊기지 않고**
+연결 추적 만료까지 허용될 수 있다. 반대로 양방향 `0.0.0.0/0` 허용처럼 추적되지 않은 흐름은
+허용 규칙 변경 시 즉시 끊길 수 있다. 따라서 “격리 SG 부착 = 기존 SSH 세션 단절”로 단정할 수 없다.
+
+- 이번 실험의 관측 목표는 기존 세션 생존 여부와 무관하게 **격리 뒤 신규 TCP/22 연결이 10초 안에
+  실패하는지**로 고정한다.
+- 복구용 기존 세션은 `/32` 출발지처럼 추적되는 조건에서 사전에 만들고 keepalive를 사용하되,
+  보장된 복구 채널로 간주하지 않는다. Session Manager 또는 콘솔 접근을 별도 복구 채널로 준비한다.
+- 기존 연결까지 즉시 강제 단절해야 한다면 SG만으로는 부족할 수 있다. NACL은 기존 연결도 끊을 수
+  있지만 서브넷 전체 영향이 있으므로 이번 네트워크 역할 실험 범위 밖의 별도 승인 사항이다.
+
+근거: [Amazon EC2 security group connection tracking](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/security-group-connection-tracking.html)
+
 신규 연결 무응답이 관측되더라도 다음 원인을 구분해야 한다.
 
 - Baseline SG에 출발 공인 IP가 허용되지 않음
