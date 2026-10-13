@@ -170,6 +170,25 @@ cleanup_sshd_backups() {
 # 중간 rsyslog 실패와 SSH 재시작 실패도 원본을 복원한다.
 trap 'rollback_sshd' ERR
 
+# 기존 Match는 전역 기본값보다 우선할 수 있어 임의 병합하지 않고 중단한다.
+# 관리 블록을 제외한 main/drop-in의 Match와 추가 Include는 검증 범위 밖이다.
+sed -i '/^# BEGIN CLOUDSHIELD LAB$/,/^# END CLOUDSHIELD LAB$/d' "${SSHD_MAIN_CONF}"
+for POLICY_FILE in "${SSHD_MAIN_CONF}" "${SSHD_DIR}"/*.conf; do
+    [[ -f "${POLICY_FILE}" ]] || continue
+    [[ "${POLICY_FILE}" != "${SSHD_CUSTOM_CONF}" ]] || continue
+    if ! awk -v main="${SSHD_MAIN_CONF}" -v allowed_include="${SSHD_DIR}/*.conf" '
+        tolower($1) == "match" { bad=1 }
+        tolower($1) == "include" {
+            if (FILENAME != main || $2 != allowed_include || (NF > 2 && $3 !~ /^#/)) bad=1
+        }
+        END { exit bad ? 1 : 0 }
+    ' "${POLICY_FILE}"; then
+        log_error "기존 SSH Match/추가 Include 정책 충돌: ${POLICY_FILE}"
+        rollback_sshd
+        exit 1
+    fi
+done
+
 # sshd_config 최상단에 Include 구문 보장 (00-*.conf가 다른 모든 설정보다 최우선 로드되도록 정렬)
 if [[ -f "${SSHD_MAIN_CONF}" ]]; then
     # 기존 위치와 관계없이 중복 Include 지침 정리 후 최상단(1라인)에 배치
@@ -224,16 +243,27 @@ fi
 
 # Match 조건을 포함한 실측으로 계정별 정책과 관리 키 인증 보존을 확인한다.
 LAB_EFFECTIVE="$(sshd -T -C user=cloudshield_test,host=localhost,addr=127.0.0.1)"
-ADMIN_EFFECTIVE="$(sshd -T -C user=root,host=localhost,addr=127.0.0.1)"
 if ! grep -qx 'passwordauthentication yes' <<< "${LAB_EFFECTIVE}" \
     || ! grep -qx 'authenticationmethods password' <<< "${LAB_EFFECTIVE}" \
-    || ! grep -qx 'disableforwarding yes' <<< "${LAB_EFFECTIVE}" \
-    || ! grep -qx 'passwordauthentication no' <<< "${ADMIN_EFFECTIVE}" \
-    || ! grep -qx 'pubkeyauthentication yes' <<< "${ADMIN_EFFECTIVE}"; then
+    || ! grep -qx 'disableforwarding yes' <<< "${LAB_EFFECTIVE}"; then
     log_error "SSH 계정별 유효 설정 검증 실패"
     rollback_sshd
     exit 1
 fi
+
+# 실제 Ubuntu 관리자와 기타 로컬 계정도 검사한다. 조건부 정책은 위에서 거부했다.
+LOCAL_USERS="$(cut -d: -f1 /etc/passwd)"
+while IFS= read -r POLICY_USER; do
+    [[ "${POLICY_USER}" != "${LAB_USER:-cloudshield_test}" ]] || continue
+    USER_EFFECTIVE="$(sshd -T -C "user=${POLICY_USER},host=localhost,addr=127.0.0.1")"
+    if ! grep -qx 'passwordauthentication no' <<< "${USER_EFFECTIVE}" \
+        || ! grep -qx 'kbdinteractiveauthentication no' <<< "${USER_EFFECTIVE}" \
+        || ! grep -qx 'pubkeyauthentication yes' <<< "${USER_EFFECTIVE}"; then
+        log_error "실습 계정 외 SSH 인증 정책 검증 실패: ${POLICY_USER}"
+        rollback_sshd
+        exit 1
+    fi
+done <<< "${LOCAL_USERS}"
 
 # SSH 데몬 서비스 재시작
 if systemctl is-active --quiet ssh; then

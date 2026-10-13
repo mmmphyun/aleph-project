@@ -165,7 +165,16 @@ def test_real_htpasswd_migration(tmp_path: Path, failure: str | None) -> None:
 
 @pytest.mark.parametrize(
     "failure",
-    [None, "rsyslog", "syntax", "restart", "restart_recover", "policy", "policy_mismatch"],
+    [
+        None,
+        "rsyslog",
+        "syntax",
+        "restart",
+        "restart_recover",
+        "policy",
+        "policy_mismatch",
+        "ubuntu_policy",
+    ],
 )
 def test_real_ssh_failure_restores_configs(tmp_path: Path, failure: str | None) -> None:
     ssh_dir = tmp_path / "ssh"
@@ -185,6 +194,7 @@ def test_real_ssh_failure_restores_configs(tmp_path: Path, failure: str | None) 
     rsyslog_dir.mkdir()
     section = section.replace("/etc/rsyslog.d", rsyslog_dir.as_posix())
     prefix = f"""
+cut() {{ printf '%s\\n' root ubuntu other cloudshield_test; }}
 log_info() {{ :; }}
 log_error() {{ echo "$*" >&2; }}
 restarts=0
@@ -200,13 +210,18 @@ systemctl() {{
 sshd() {{
     if [[ '{failure}' == syntax && "$1" == -t ]]; then return 1; fi
     if [[ '{failure}' == policy && "$1" == -T ]]; then return 42; fi
+    if [[ '{failure}' == ubuntu_policy && "$*" == *user=ubuntu,* ]]; then
+        echo 'passwordauthentication yes'; return 0
+    fi
     if [[ "$*" == *user=cloudshield_test* ]]; then
         if [[ '{failure}' == policy_mismatch ]]; then echo 'passwordauthentication no'
         else echo 'passwordauthentication yes'; fi
         echo 'authenticationmethods password'
         echo 'disableforwarding yes'
     else
-        printf '%s\\n' 'passwordauthentication no' 'pubkeyauthentication yes'
+        echo 'passwordauthentication no'
+        echo 'pubkeyauthentication yes'
+        echo 'kbdinteractiveauthentication no'
     fi
 }}
 """
@@ -408,3 +423,29 @@ passwd() {{
     else:
         assert actions == ["create"]
     assert "$6$mock" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("location", ["main", "dropin", "include"])
+def test_existing_ssh_match_is_rejected_and_restored(tmp_path: Path, location: str) -> None:
+    """리뷰에서 재현한 기존 ubuntu Match 입력을 실제 스크립트로 거부한다."""
+    ssh = tmp_path / "ssh"
+    dropins = ssh / "sshd_config.d"
+    dropins.mkdir(parents=True)
+    main = ssh / "sshd_config"
+    main.write_text("# original\n", encoding="utf-8")
+    custom = dropins / "00-cloudshield.conf"
+    custom.write_text("# original custom\n", encoding="utf-8")
+    policy = main if location == "main" else dropins / "50-cloud-init.conf"
+    conflict = "Match User ubuntu\n    PasswordAuthentication yes\n"
+    if location == "include":
+        conflict = "Include /outside/policy.conf\n"
+    policy.write_text(conflict, encoding="utf-8")
+    before = {p: p.read_bytes() for p in [main, custom, policy]}
+    section = script_section("SSHD_MAIN_CONF=", "# 5. Nginx")
+    section = section.replace("/etc/ssh", ssh.as_posix())
+    result = run_section(section, 'log_error() { echo "$*" >&2; }\n')
+    assert result.returncode != 0
+    assert "정책 충돌" in result.stderr
+    assert "awk: fatal" not in result.stderr
+    for path, content in before.items():
+        assert path.read_bytes() == content
