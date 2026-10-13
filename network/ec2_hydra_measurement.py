@@ -278,6 +278,69 @@ def wait_capture_ready(process: subprocess.Popen[Any], stderr_path: Path) -> Non
     raise MeasurementError("패킷 캡처 준비를 확인하지 못해 공격을 시작하지 않았습니다.", 22)
 
 
+def require_capture_alive(
+    capture: subprocess.Popen[Any], hydra_process: subprocess.Popen[Any]
+) -> None:
+    """증거 캡처가 먼저 끝나면 공격을 즉시 중단해 불완전한 실측을 차단한다."""
+    if capture.poll() is None:
+        return
+    if hydra_process.poll() is None:
+        terminate_owned_process(hydra_process)
+    raise MeasurementError("패킷 캡처가 실측 도중 조기 종료되어 Hydra와 탐침을 중단했습니다.", 22)
+
+
+def observe_attack_window(
+    target: str,
+    hydra_process: subprocess.Popen[Any],
+    capture: subprocess.Popen[Any],
+    hydra_log: Path,
+) -> tuple[list[dict[str, Any]], bool]:
+    """캡처 생존을 감시하며 탐침 스케줄과 독립적인 Hydra deadline을 집행한다."""
+    hydra_started = time.monotonic()
+    hydra_deadline = hydra_started + HYDRA_SECONDS
+    probes: list[dict[str, Any]] = []
+    hydra_timed_out = False
+
+    for index in range(PROBE_COUNT):
+        scheduled = hydra_started + index * PROBE_INTERVAL_SECONDS
+        while time.monotonic() < scheduled:
+            require_capture_alive(capture, hydra_process)
+            raw = hydra_log.read_text(encoding="utf-8", errors="replace")
+            if classify_hydra(hydra_process.poll(), raw, timed_out=False) == ("unexpected_success"):
+                terminate_owned_process(hydra_process)
+                return probes, hydra_timed_out
+            if hydra_process.poll() is None and time.monotonic() >= hydra_deadline:
+                terminate_owned_process(hydra_process)
+                hydra_timed_out = True
+            remaining = scheduled - time.monotonic()
+            time.sleep(min(0.05, max(0, remaining)))
+
+        require_capture_alive(capture, hydra_process)
+        probes.append(probe_once(target) | {"index": index + 1})
+        require_capture_alive(capture, hydra_process)
+        raw = hydra_log.read_text(encoding="utf-8", errors="replace")
+        if classify_hydra(hydra_process.poll(), raw, timed_out=False) == ("unexpected_success"):
+            terminate_owned_process(hydra_process)
+            return probes, hydra_timed_out
+        if hydra_process.poll() is None and time.monotonic() >= hydra_deadline:
+            terminate_owned_process(hydra_process)
+            hydra_timed_out = True
+
+    while hydra_process.poll() is None:
+        require_capture_alive(capture, hydra_process)
+        raw = hydra_log.read_text(encoding="utf-8", errors="replace")
+        if classify_hydra(hydra_process.poll(), raw, timed_out=False) == ("unexpected_success"):
+            terminate_owned_process(hydra_process)
+            return probes, hydra_timed_out
+        remaining = hydra_deadline - time.monotonic()
+        if remaining <= 0:
+            terminate_owned_process(hydra_process)
+            return probes, True
+        time.sleep(min(0.05, remaining))
+
+    return probes, hydra_timed_out
+
+
 def write_candidates(path: Path) -> None:
     values = [f"WRONG-P3-3-{secrets.token_hex(16)}" for _ in range(CANDIDATE_COUNT)]
     path.write_text("\n".join(values) + "\n", encoding="utf-8")
@@ -381,6 +444,7 @@ def run_measurement(config: Config) -> dict[str, Any]:
                 stderr=capture_errors,
                 start_new_session=True,
             )
+            capture_started = time.monotonic()
             wait_capture_ready(capture, capture_stderr)
             baseline = probe_once(config.target)
             if baseline["state"] != "connected":
@@ -399,30 +463,13 @@ def run_measurement(config: Config) -> dict[str, Any]:
                         stderr=subprocess.STDOUT,
                         start_new_session=True,
                     )
-                    hydra_started = time.monotonic()
-                    probes = []
-                    for index in range(PROBE_COUNT):
-                        scheduled = hydra_started + index * PROBE_INTERVAL_SECONDS
-                        if time.monotonic() < scheduled:
-                            time.sleep(scheduled - time.monotonic())
-                        probes.append(probe_once(config.target) | {"index": index + 1})
-                        raw = hydra_log.read_text(encoding="utf-8", errors="replace")
-                        if classify_hydra(hydra_process.poll(), raw, timed_out=False) == (
-                            "unexpected_success"
-                        ):
-                            terminate_owned_process(hydra_process)
-                            break
-                        if hydra_process.poll() is None and (
-                            time.monotonic() - hydra_started >= HYDRA_SECONDS
-                        ):
-                            hydra_timed_out = True
-                            terminate_owned_process(hydra_process)
-                    if hydra_process.poll() is None:
-                        terminate_owned_process(hydra_process)
+                    probes, hydra_timed_out = observe_attack_window(
+                        config.target, hydra_process, capture, hydra_log
+                    )
                     hydra_code = hydra_process.wait()
 
-            remaining = CAPTURE_SECONDS + 5 - (time.monotonic() - hydra_started)
             try:
+                remaining = CAPTURE_SECONDS + 5 - (time.monotonic() - capture_started)
                 capture_code = capture.wait(timeout=max(1, remaining))
             except subprocess.TimeoutExpired:
                 terminate_owned_process(capture)
@@ -443,8 +490,10 @@ def run_measurement(config: Config) -> dict[str, Any]:
 
     raw_hydra = hydra_log.read_text(encoding="utf-8", errors="replace")
     hydra_state = classify_hydra(hydra_code, raw_hydra, timed_out=hydra_timed_out)
-    if capture_code not in (0, 124) or not pcap.is_file():
-        raise MeasurementError("패킷 캡처가 유효한 종료 계약을 충족하지 못했습니다.", 22)
+    if capture_code != 124 or not pcap.is_file():
+        raise MeasurementError(
+            "패킷 캡처가 시간 상한 전에 종료되었거나 유효한 증거를 만들지 못했습니다.", 22
+        )
     packet_rows = analyze_pcap(tshark, pcap, tshark_csv)
     evidence = {
         path.name: sha256_file(path)

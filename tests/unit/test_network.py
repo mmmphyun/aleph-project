@@ -3117,6 +3117,92 @@ def test_ec2_measurement_probe_uses_one_tcp22_connection(ec2_measurement, monkey
     assert calls == [(("8.8.8.8", 22), 0.8)]
 
 
+def test_ec2_measurement_capture_exit_aborts_active_window(ec2_measurement, monkeypatch, tmp_path):
+    clock = {"now": 0.0}
+    terminated = []
+    probes = []
+    hydra_log = tmp_path / "hydra.log"
+    hydra_log.write_text("", encoding="utf-8")
+
+    class Hydra:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    class Capture:
+        def poll(self):
+            return 0 if clock["now"] >= 1.25 else None
+
+    hydra = Hydra()
+    monkeypatch.setattr(ec2_measurement.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        ec2_measurement.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    monkeypatch.setattr(
+        ec2_measurement,
+        "probe_once",
+        lambda *_: probes.append(clock["now"]) or {"state": "connected"},
+    )
+
+    def terminate(process):
+        terminated.append(process)
+        process.returncode = -15
+
+    monkeypatch.setattr(ec2_measurement, "terminate_owned_process", terminate)
+
+    with pytest.raises(ec2_measurement.MeasurementError, match="조기 종료"):
+        ec2_measurement.observe_attack_window("8.8.8.8", hydra, Capture(), hydra_log)
+    assert terminated == [hydra]
+    assert probes == [0.0, 1.0]
+
+
+def test_ec2_measurement_hydra_deadline_is_independent_of_probe_schedule(
+    ec2_measurement, monkeypatch, tmp_path
+):
+    clock = {"now": 0.0}
+    terminated = []
+    hydra_log = tmp_path / "hydra.log"
+    hydra_log.write_text("", encoding="utf-8")
+
+    class Hydra:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    class Capture:
+        def poll(self):
+            return None
+
+    hydra = Hydra()
+    monkeypatch.setattr(ec2_measurement.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        ec2_measurement.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    monkeypatch.setattr(ec2_measurement, "probe_once", lambda *_: {"state": "connected"})
+
+    def terminate(process):
+        terminated.append(process)
+        process.returncode = -15
+
+    monkeypatch.setattr(ec2_measurement, "terminate_owned_process", terminate)
+
+    probes, timed_out = ec2_measurement.observe_attack_window(
+        "8.8.8.8", hydra, Capture(), hydra_log
+    )
+    assert len(probes) == ec2_measurement.PROBE_COUNT
+    assert probes[-1]["index"] == ec2_measurement.PROBE_COUNT
+    assert clock["now"] == pytest.approx(ec2_measurement.HYDRA_SECONDS)
+    assert timed_out is True
+    assert terminated == [hydra]
+    assert ec2_measurement.classify_hydra(-15, "", timed_out=timed_out) == "timeout"
+
+
 def test_ec2_measurement_run_without_execute_never_reads_config(
     ec2_measurement, monkeypatch, capsys
 ):

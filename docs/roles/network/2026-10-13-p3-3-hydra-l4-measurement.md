@@ -138,21 +138,22 @@ bash network/ec2_hydra_measurement.sh run --execute \
 | --- | --- | --- |
 | `P3-3-SOURCE-IP-OBS-01` | `/var/lib/cloudshield-evidence/p3-3/source-public-ip.private`, SHA-256 `ed6d175fc1f2a3f536404d0bfef7634b60d076eae63c83c30bb86d8f3dd1b755` | 비공개 원본, mode 600 |
 | 증거 루트 | `/var/lib/cloudshield-evidence/p3-3`, mode 700 | Git 밖 Kali ext4 |
-| Python 러너 | SHA-256 `78cbcb9edb549e014f971a66d339634a049e2cb438a34b48119325a7cdc4878c` | 공유 소스 |
+| Python 러너 | SHA-256 `c38c547d01ebfea0d15e6cfafbc7abcceffcc18cbe3e2e943e0f73695bb88f93` | 공유 소스 |
 | Shell 진입점 | SHA-256 `adf96c67bb8ae596f3ddb2c4ca157e83d0c2c2600c0cd493a5a7d03b7a99a39c` | 공유 소스 |
 | 기존 캡처 스크립트 | SHA-256 `01e2e693d5426699aab921b163b3a379fd8257357afc0d15aa68f155179499e7` | 재사용 소스 |
-| 네트워크 테스트 | SHA-256 `6beaa1cf980f1ce0a359cae0579f4ddb1c7ea09131bcae0d56b3761655f1f0a3` | 공유 소스 |
+| 네트워크 테스트 | SHA-256 `e035fa8223f26869b5a8b4794009b9dbc27f3e35d0f897ae44c80622f3de1a96` | 공유 소스 |
 
-신규 mock 단위 테스트 40개가 통과했다. 공개 대상 검증, 전용 계정 규약, 준비 플래그 선검사,
+신규 mock 단위 테스트 42개가 통과했다. 공개 대상 검증, 전용 계정 규약, 준비 플래그 선검사,
 Hydra 고정 argv, 합성 후보 5개, 단일 실행 마커, 종료 코드 비신뢰 분류, TCP 22 단일 탐침,
-기본 plan의 무부작용을 검증했다. 이 결과는 실제 EC2·AWS·Slack 실측이 아니다.
+기본 plan의 무부작용, 캡처 조기 종료 시 즉시 중단, 탐침 스케줄과 독립적인 30초 Hydra deadline을
+검증했다. 이 결과는 실제 EC2·AWS·Slack 실측이 아니다.
 
 작업 트리의 기존 `.pytest_cache`는 샌드박스 ACL 때문에 `check.ps1` 경로 순회가 거부됐다.
 검사 기준을 완화하지 않고 `.codex-build/p3-3-check`에 로컬 Git 복제본을 만들고 위 해시의 변경
 소스를 복사한 뒤 `pyproject.toml`의 기존 `dev` extra를 설치했다. 해당 Windows/Python 3.14.7
 환경에서 `powershell .\scripts\check.ps1`을 우회 플래그 없이 실행한 결과 R&R, 테스트 경로,
 Ruff lint, 126개 파일 format 검사와 pytest가 모두 통과했다. pytest 결과는
-`964 passed, 4 skipped, 1 warning`이며 경고는 기존 소켓 차단 smoke 테스트의 DNS 호출 차단이다.
+`966 passed, 4 skipped, 1 warning`이며 경고는 기존 소켓 차단 smoke 테스트의 DNS 호출 차단이다.
 
 ## 8. 대체 원인, 중단 및 복구
 
