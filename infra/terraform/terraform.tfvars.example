@@ -1,0 +1,34 @@
+# CloudShield Terraform 환경 변수 예시 파일
+# 실제 배포 시 terraform.tfvars로 복사하여 사용하십시오.
+
+aws_region  = "ap-southeast-2"
+environment = "dev"
+
+# 타깃 EC2 Ubuntu 22.04 LTS 공식 AMI ID (ap-southeast-2 시드니 기준)
+ec2_ami_id = "ami-075a5b973dac51741"
+
+# VPC 토폴로지 (시드니 리전 2개 AZ 구성)
+vpc_topology = {
+  vpc_cidr           = "10.42.0.0/16"
+  availability_zones = ["ap-southeast-2a", "ap-southeast-2b"]
+  public_subnets = {
+    "public-2a" = {
+      cidr              = "10.42.0.0/24"
+      availability_zone = "ap-southeast-2a"
+    }
+    "public-2b" = {
+      cidr              = "10.42.1.0/24"
+      availability_zone = "ap-southeast-2b"
+    }
+  }
+  private_subnets = {
+    "private-2a" = {
+      cidr              = "10.42.10.0/24"
+      availability_zone = "ap-southeast-2a"
+    }
+    "private-2b" = {
+      cidr              = "10.42.11.0/24"
+      availability_zone = "ap-southeast-2b"
+    }
+  }
+}

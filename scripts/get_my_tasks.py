@@ -324,11 +324,15 @@ def main() -> None:
         print("=" * 80)
         return
 
-    # 2. 작업 착수 모드 (기본 실행: 내 직무의 시작 전 티켓 조회 및 순차 의존성 판정)
+    role_aliases = {
+        "cloud-a": ["[cloud-a]", "[cloud a]", "[클라우드 a]"],
+        "cloud-b": ["[cloud-b]", "[cloud b]", "[클라우드 b]"],
+        "security": ["[security]", "[보안]"],
+        "network": ["[network]", "[네트워크]"],
+    }.get(role.lower(), [f"[{role.lower()}]", f"[{role.lower().replace('-', ' ')}]"])
+
     role_tickets = [
-        t
-        for t in all_tickets
-        if f"[{role}]" in t["title"].lower() or f"[{role.replace('-', ' ')}]" in t["title"].lower()
+        t for t in all_tickets if any(alias in t["title"].lower() for alias in role_aliases)
     ]
     my_todo_tickets = [t for t in role_tickets if t["status"] == "시작 전"]
 
