@@ -110,13 +110,13 @@ data "aws_iam_policy_document" "least_privilege" {
 
 resource "aws_iam_policy" "lambda_least_privilege" {
   name        = "${var.function_name}-least-privilege-policy"
-  description = "CloudShield Lambda 최소 권한 실행 정책 (L4 격리, L7 차단, DynamoDB 윈도우)"
+  description = "CloudShield Lambda least privilege execution policy"
   policy      = data.aws_iam_policy_document.least_privilege.json
 }
 
 resource "aws_iam_role" "lambda_exec" {
   name               = "${var.function_name}-exec-role"
-  description        = "CloudShield 위협 대응 오케스트레이터 Lambda 실행 역할"
+  description        = "CloudShield Threat Orchestrator Lambda execution role"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 
   tags = merge(
