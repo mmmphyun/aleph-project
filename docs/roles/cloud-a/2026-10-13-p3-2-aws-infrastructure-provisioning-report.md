@@ -39,15 +39,18 @@ P3-1A(Egress 검증 완화) 및 P3-1B(baseline Egress TCP 80/443 정책) 완료�
 
 ## 3. 루트 Terraform Egress 결합 및 정규화 상세
 
-### 3.1 Egress 결합 (`main.tf`)
-- `module "baseline_external_policy"` (`./modules/quarantine_sg/policies/external_bootstrap`) 선언.
-- `module "quarantine_sg"`의 `traffic.egress`에 해당 정책 출력을 명시적으로 바인딩:
+### 3.1 Egress 결합 및 변수 바인딩 복원 (`main.tf`)
+- 루트 `quarantine_sg` 모듈의 `traffic` 속성에 입력 변수 `var.quarantine_traffic`을 직접 바인딩:
   ```hcl
-  traffic = {
-    ingress = var.quarantine_traffic.ingress
-    egress  = module.baseline_external_policy.egress
+  module "quarantine_sg" {
+    source = "./modules/quarantine_sg"
+
+    vpc_id      = module.vpc.vpc_id
+    environment = var.environment
+    traffic     = var.quarantine_traffic
   }
   ```
+- 리뷰 피드백(P1)을 반영하여 외부 정책 모듈 강제 고정을 제거하고, `variables.tf`의 기본값(TCP 80/443 외부 송신)을 수용하면서 사용자 및 테스트 환경의 커스텀 egress(예: 빈 규칙 `egress = {}`) 정책이 정상 반영되도록 인터페이스 계약을 복원함.
 
 ### 3.2 변수 기본값 동기화 (`variables.tf`)
 - 루트 `quarantine_traffic.egress` 기본값을 기존 넓은 대역(`10.42.0.0/16`, 1~65535)에서 P3-1B 신설 규칙인 `package_http`(TCP 80), `agent_logs_https`(TCP 443)로 전면 교체하여 일관성 유지.
