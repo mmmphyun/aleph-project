@@ -251,6 +251,28 @@ def check_sequential_dependencies(
     return results
 
 
+def get_role_aliases(role: str) -> list[str]:
+    """직무별 노션 티켓 제목 매칭용 영문/한글 별칭 목록을 반환.
+
+    Why:
+        노션 일감 제목에 영문([cloud-a], [security]) 또는 한글([클라우드 a], [보안])
+        태그가 혼용되더라도 대소문자 및 공백에 구애받지 않고 정확히 식별하기 위함.
+    """
+    clean_role = role.strip().lower()
+    return {
+        "cloud-a": ["[cloud-a]", "[cloud a]", "[클라우드 a]"],
+        "cloud-b": ["[cloud-b]", "[cloud b]", "[클라우드 b]"],
+        "security": ["[security]", "[보안]"],
+        "network": ["[network]", "[네트워크]"],
+    }.get(clean_role, [f"[{clean_role}]", f"[{clean_role.replace('-', ' ')}]"])
+
+
+def filter_tickets_by_role(tickets: list[dict], role: str) -> list[dict]:
+    """전체 티켓 목록 중 지정된 직무의 별칭과 매칭되는 티켓만 필터링."""
+    aliases = get_role_aliases(role)
+    return [t for t in tickets if any(alias in t.get("title", "").lower() for alias in aliases)]
+
+
 def main() -> None:
     """티켓 조회 및 WIP/순차 의존성 검사 엔트리포인트."""
     parser = argparse.ArgumentParser(description="노션 프로젝트 일정 티켓 조회 및 WIP 가드 도구")
@@ -324,12 +346,7 @@ def main() -> None:
         print("=" * 80)
         return
 
-    # 2. 작업 착수 모드 (기본 실행: 내 직무의 시작 전 티켓 조회 및 순차 의존성 판정)
-    role_tickets = [
-        t
-        for t in all_tickets
-        if f"[{role}]" in t["title"].lower() or f"[{role.replace('-', ' ')}]" in t["title"].lower()
-    ]
+    role_tickets = filter_tickets_by_role(all_tickets, role)
     my_todo_tickets = [t for t in role_tickets if t["status"] == "시작 전"]
 
     print(f"[노션 연동] 직무: [{role}] | '시작 전' 티켓 수: {len(my_todo_tickets)}건")

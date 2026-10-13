@@ -100,12 +100,19 @@ variable "quarantine_traffic" {
       }
     }
     egress = {
-      "all-vpc" = {
-        cidr        = "10.42.0.0/16"
+      "package_http" = {
+        cidr        = "0.0.0.0/0"
         protocol    = "tcp"
-        from_port   = 1
-        to_port     = 65535
-        description = "Allow VPC outbound TCP"
+        from_port   = 80
+        to_port     = 80
+        description = "HTTP package repositories"
+      }
+      "agent_logs_https" = {
+        cidr        = "0.0.0.0/0"
+        protocol    = "tcp"
+        from_port   = 443
+        to_port     = 443
+        description = "HTTPS agent download and CloudWatch Logs"
       }
     }
   }
