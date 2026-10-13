@@ -163,8 +163,11 @@ def test_real_htpasswd_migration(tmp_path: Path, failure: str | None) -> None:
         assert target.read_bytes() == before
 
 
-@pytest.mark.parametrize("failure", ["rsyslog", "syntax", "restart"])
-def test_real_ssh_failure_restores_configs(tmp_path: Path, failure: str) -> None:
+@pytest.mark.parametrize(
+    "failure",
+    [None, "rsyslog", "syntax", "restart", "restart_recover", "policy", "policy_mismatch"],
+)
+def test_real_ssh_failure_restores_configs(tmp_path: Path, failure: str | None) -> None:
     ssh_dir = tmp_path / "ssh"
     dropins = ssh_dir / "sshd_config.d"
     dropins.mkdir(parents=True)
@@ -177,25 +180,51 @@ def test_real_ssh_failure_restores_configs(tmp_path: Path, failure: str) -> None
         file.write_text("original\n", encoding="utf-8")
     section = script_section("SSHD_MAIN_CONF=", "# 5. Nginx")
     section = section.replace("/etc/ssh", ssh_dir.as_posix())
+    section = section.replace(r"\/etc\/ssh", ssh_dir.as_posix().replace("/", r"\/"))
     rsyslog_dir = tmp_path / "rsyslog"
     rsyslog_dir.mkdir()
     section = section.replace("/etc/rsyslog.d", rsyslog_dir.as_posix())
     prefix = f"""
 log_info() {{ :; }}
+log_error() {{ echo "$*" >&2; }}
+restarts=0
 systemctl() {{
+    if [[ "$1" == restart && "$2" == ssh ]]; then
+        restarts=$((restarts + 1))
+        if [[ '{failure}' == restart_recover && "$restarts" == 1 ]]; then return 1; fi
+    fi
     if [[ '{failure}' == rsyslog && "$2" == rsyslog ]]; then return 1; fi
     if [[ '{failure}' == restart && "$1" == restart && "$2" == ssh ]]; then return 1; fi
     return 0
 }}
 sshd() {{
     if [[ '{failure}' == syntax && "$1" == -t ]]; then return 1; fi
-    echo 'passwordauthentication yes'
+    if [[ '{failure}' == policy && "$1" == -T ]]; then return 42; fi
+    if [[ "$*" == *user=cloudshield_test* ]]; then
+        if [[ '{failure}' == policy_mismatch ]]; then echo 'passwordauthentication no'
+        else echo 'passwordauthentication yes'; fi
+        echo 'authenticationmethods password'
+        echo 'disableforwarding yes'
+    else
+        printf '%s\\n' 'passwordauthentication no' 'pubkeyauthentication yes'
+    fi
 }}
 """
     result = run_section(section, prefix)
-    assert result.returncode != 0
-    for file in files:
-        assert file.read_text(encoding="utf-8") == "original\n", result.stderr
+    if failure is None:
+        assert result.returncode == 0, result.stderr
+        before = files[0].read_text(encoding="utf-8")
+        assert before.count("# BEGIN CLOUDSHIELD LAB") == 1
+        assert run_section(section, prefix).returncode == 0
+        assert files[0].read_text(encoding="utf-8") == before
+    else:
+        assert result.returncode != 0
+        if failure == "restart":
+            assert "서비스 복구 실패" in result.stderr
+        if failure == "restart_recover":
+            assert "서비스 복구 실패" not in result.stderr
+        for file in files:
+            assert file.read_text(encoding="utf-8") == "original\n", result.stderr
 
 
 @pytest.mark.parametrize("was_active", [True, False])
@@ -339,3 +368,43 @@ systemctl() {{ :; }}
             "agent_config": "amazon-cloudwatch-agent.json",
         }[name]
         assert (asset_dir / restored).read_bytes() == path.read_bytes()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", [None, "random", "password", "privileged", "locked"])
+def test_real_lab_account(existing: bool, failure: str | None, tmp_path: Path) -> None:
+    """실제 계정 구성 구간에서 재실행과 권한/비밀번호 장애를 검증한다."""
+    calls = tmp_path / "calls"
+    prefix = f"""
+log_info() {{ :; }}
+getent() {{ [[ '{existing}' == True ]]; }}
+openssl() {{
+    [[ '{failure}' != random ]] || return 41
+    if [[ "$1" == rand ]]; then echo random; else cat >/dev/null; echo '$6$mock'; fi
+}}
+useradd() {{ echo create >> '{calls.as_posix()}'; }}
+userdel() {{ echo delete >> '{calls.as_posix()}'; }}
+chpasswd() {{ cat >/dev/null; [[ '{failure}' != password ]]; }}
+id() {{
+    if [[ "$1" == -u ]]; then echo 1001
+    elif [[ '{failure}' == privileged ]]; then echo 'cloudshield_test sudo'
+    else echo cloudshield_test; fi
+}}
+passwd() {{
+    if [[ '{failure}' == locked ]]; then echo 'cloudshield_test L'
+    else echo 'cloudshield_test P'; fi
+}}
+"""
+    result = run_section(script_section("LAB_USER=", "# 4. SSH"), prefix)
+    expected_failure = failure in {"privileged", "locked"} or (
+        not existing and failure in {"random", "password"}
+    )
+    assert (result.returncode != 0) == expected_failure, result.stderr
+    actions = calls.read_text().splitlines() if calls.exists() else []
+    if existing or failure == "random":
+        assert actions == []
+    elif failure == "password":
+        assert actions == ["create", "delete"]
+    else:
+        assert actions == ["create"]
+    assert "$6$mock" not in result.stdout + result.stderr

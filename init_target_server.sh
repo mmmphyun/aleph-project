@@ -70,6 +70,30 @@ apt-get install -y --no-install-recommends \
 
 log_success "필수 패키지(nginx, openssh-server, openssl, rsyslog 등) 설치 완료"
 
+# 3.1 모의 공격 계정: 관리 계정과 분리하고 알려진 비밀번호를 배포하지 않는다.
+# Why: 유효 사용자에 대한 Failed password를 생성하되 성공 로그인은 의도하지 않는다.
+# Constraints: 신규 계정만 생성; 기존 계정은 UID/그룹/잠금 상태를 검증하고 변경하지 않는다.
+LAB_USER=cloudshield_test
+if ! getent passwd "${LAB_USER}" >/dev/null; then
+    # 파이프 입력만 사용하여 평문과 해시를 argv/로그/user-data에 노출하지 않는다.
+    LAB_HASH="$(openssl rand -base64 48 | openssl passwd -6 -stdin)"
+    [[ "${LAB_HASH}" == '$6$'* ]] || { log_error "실습 계정 해시 생성 실패"; exit 1; }
+    useradd --create-home --shell /bin/bash "${LAB_USER}"
+    if ! printf '%s:%s\n' "${LAB_USER}" "${LAB_HASH}" | chpasswd --encrypted; then
+        userdel --remove "${LAB_USER}"
+        log_error "실습 계정 비밀번호 설정 실패"
+        exit 1
+    fi
+    unset LAB_HASH
+fi
+LAB_UID="$(id -u "${LAB_USER}")"
+LAB_GROUPS="$(id -Gn "${LAB_USER}")"
+LAB_STATUS="$(passwd -S "${LAB_USER}" | awk '{print $2}')"
+if [[ "${LAB_UID}" -lt 1000 || "${LAB_STATUS}" != P || "${LAB_GROUPS}" != "${LAB_USER}" ]]; then
+    log_error "실습 계정은 UID>=1000, 전용 그룹만, 잠기지 않은 비밀번호 상태여야 합니다."
+    exit 1
+fi
+
 # 4. SSH 데몬 설정 (인증 실패 로그 생성 보장)
 # Why:
 #   OpenSSH(sshd_config)는 '먼저 평가된 설정값(First Match Wins)'을 채택하므로,
@@ -109,7 +133,10 @@ if [[ -f "${SSHD_LEGACY_CONF}" ]]; then
     rm -f "${SSHD_LEGACY_CONF}"
 fi
 
+SSH_RESTART_SERVICE=""
 rollback_sshd() {
+    # ERR가 명령 치환 내부와 부모에서 중복 실행되어도 원본을 삭제하지 않는다.
+    trap - ERR
     log_error "SSH 설정 검증 실패! 실행 전 상태로 완전 복원(Rollback)합니다."
     if [[ "${HAD_MAIN}" == true && -f "${SSHD_MAIN_BAK}" ]]; then
         cp "${SSHD_MAIN_BAK}" "${SSHD_MAIN_CONF}"
@@ -119,7 +146,7 @@ rollback_sshd() {
     if [[ "${HAD_CUSTOM}" == true && -f "${SSHD_CUSTOM_BAK}" ]]; then
         cp "${SSHD_CUSTOM_BAK}" "${SSHD_CUSTOM_CONF}"
         rm -f "${SSHD_CUSTOM_BAK}"
-    else
+    elif [[ "${HAD_CUSTOM}" == false ]]; then
         rm -f "${SSHD_CUSTOM_CONF}"
         rm -f "${SSHD_CUSTOM_BAK}"
     fi
@@ -127,6 +154,12 @@ rollback_sshd() {
     if [[ "${HAD_LEGACY}" == true && -f "${SSHD_LEGACY_BAK}" ]]; then
         cp "${SSHD_LEGACY_BAK}" "${SSHD_LEGACY_CONF}"
         rm -f "${SSHD_LEGACY_BAK}"
+    fi
+    # restart가 프로세스를 정지한 뒤 실패할 수 있어 복원 설정으로 재기동한다.
+    if [[ -n "${SSH_RESTART_SERVICE}" ]]; then
+        if ! sshd -t || ! systemctl restart "${SSH_RESTART_SERVICE}"; then
+            log_error "SSH 설정은 복원했지만 서비스 복구 실패: 운영자 확인 필요"
+        fi
     fi
 }
 
@@ -147,13 +180,28 @@ fi
 # CloudShield 전용 00-cloudshield.conf 최우선 순위 설정 파일 생성
 cat << 'EOF' > "${SSHD_CUSTOM_CONF}"
 # CloudShield 타깃 서버 SSH 침해 실증용 최우선 순위 설정 (00-cloudshield.conf)
-PasswordAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
 PermitEmptyPasswords no
 PubkeyAuthentication yes
 LogLevel VERBOSE
 SyslogFacility AUTH
 MaxAuthTries 10
 EOF
+
+# Match 구문은 메인 파일 끝에 배치해 후속 전역 지시어의 문법 오류를 피한다.
+# 기존 관리 블록만 교체하여 재실행 시 중복되지 않는다.
+sed -i '/^# BEGIN CLOUDSHIELD LAB$/,/^# END CLOUDSHIELD LAB$/d' "${SSHD_MAIN_CONF}"
+cat << 'LAB_EOF' >> "${SSHD_MAIN_CONF}"
+# BEGIN CLOUDSHIELD LAB
+Match User cloudshield_test
+    PasswordAuthentication yes
+    AuthenticationMethods password
+    DisableForwarding yes
+    PermitTTY no
+# END CLOUDSHIELD LAB
+LAB_EOF
 
 # rsyslog 서비스 활성화 및 타임스탬프 포맷 정규화 (CloudWatch Agent %z 디렉티브 호환 커스텀 템플릿)
 # Constraints: CloudWatch Agent %z는 [+-]\d{4}(콜론 없음)만 지원하므로 RSYSLOG_FileFormat(+00:00) 대신
@@ -174,23 +222,25 @@ if ! sshd -t; then
     exit 1
 fi
 
-# OpenSSH 런타임 유효 설정 실측 평가 (sshd -T)
-# Constraints: passwordauthentication 항목이 반드시 'yes'로 실측되어야 함
-log_info "sshd -T 런타임 유효 설정 평가 중..."
-EFFECTIVE_PASS_AUTH="$(sshd -T | grep -i '^passwordauthentication' | awk '{print $2}' || echo 'unknown')"
-
-if [[ "${EFFECTIVE_PASS_AUTH}" != "yes" ]]; then
-    log_error "SSH PasswordAuthentication 적용 실패! (sshd -T 실측 결과: ${EFFECTIVE_PASS_AUTH})"
+# Match 조건을 포함한 실측으로 계정별 정책과 관리 키 인증 보존을 확인한다.
+LAB_EFFECTIVE="$(sshd -T -C user=cloudshield_test,host=localhost,addr=127.0.0.1)"
+ADMIN_EFFECTIVE="$(sshd -T -C user=root,host=localhost,addr=127.0.0.1)"
+if ! grep -qx 'passwordauthentication yes' <<< "${LAB_EFFECTIVE}" \
+    || ! grep -qx 'authenticationmethods password' <<< "${LAB_EFFECTIVE}" \
+    || ! grep -qx 'disableforwarding yes' <<< "${LAB_EFFECTIVE}" \
+    || ! grep -qx 'passwordauthentication no' <<< "${ADMIN_EFFECTIVE}" \
+    || ! grep -qx 'pubkeyauthentication yes' <<< "${ADMIN_EFFECTIVE}"; then
+    log_error "SSH 계정별 유효 설정 검증 실패"
     rollback_sshd
     exit 1
 fi
 
-log_success "SSH PasswordAuthentication 런타임 실측 검증 완료 (status: ${EFFECTIVE_PASS_AUTH})"
-
 # SSH 데몬 서비스 재시작
 if systemctl is-active --quiet ssh; then
+    SSH_RESTART_SERVICE=ssh
     systemctl restart ssh
 elif systemctl is-active --quiet sshd; then
+    SSH_RESTART_SERVICE=sshd
     systemctl restart sshd
 else
     systemctl enable --now ssh || systemctl enable --now sshd
