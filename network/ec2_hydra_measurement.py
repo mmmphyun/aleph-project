@@ -34,10 +34,13 @@ from typing import Any
 
 PORT = 22
 CANDIDATE_COUNT = 5
-HYDRA_SECONDS = 30
-CAPTURE_SECONDS = 45
+HYDRA_RESPONSE_SECONDS = 10
+# PAM 인증 지연을 후보 실패로 오인하지 않도록 응답 대기를 확보하되 전체 실행은 제한한다.
+# 후보 수·동시성은 늘리지 않으며, 시간 초과나 연결 오류는 서버 인증 실패 수로 환산하지 않는다.
+HYDRA_SECONDS = 60
+CAPTURE_SECONDS = 75
 CAPTURE_PACKETS = 2000
-PROBE_COUNT = 30
+PROBE_COUNT = 60
 PROBE_INTERVAL_SECONDS = 1
 PROBE_TIMEOUT_SECONDS = 0.8
 TARGET_LABEL = "TARGET_EC2_PUBLIC_IP"
@@ -84,6 +87,7 @@ def plan() -> dict[str, Any]:
         "test_account_required": True,
         "candidate_count": CANDIDATE_COUNT,
         "concurrency": 1,
+        "hydra_response_timeout_seconds": HYDRA_RESPONSE_SECONDS,
         "hydra_timeout_seconds": HYDRA_SECONDS,
         "capture_seconds": CAPTURE_SECONDS,
         "capture_packet_limit": CAPTURE_PACKETS,
@@ -196,6 +200,7 @@ def build_hydra_command(binary: str, config: Config, candidates: Path) -> list[s
         "-I",
         "-K",
         "-f",
+        "-v",
         "-l",
         config.account,
         "-P",
@@ -203,7 +208,7 @@ def build_hydra_command(binary: str, config: Config, candidates: Path) -> list[s
         "-t",
         "1",
         "-w",
-        "3",
+        str(HYDRA_RESPONSE_SECONDS),
         "-W",
         "1",
         "-s",
@@ -456,6 +461,9 @@ def run_measurement(config: Config) -> dict[str, Any]:
                 candidates = Path(private) / "candidates"
                 write_candidates(candidates)
                 with hydra_log.open("x", encoding="utf-8") as hydra_output:
+                    # 호출 직전·종료 확인 시각은 PCAP 첫 SYN 및 서버 로그와 대조할 경계값이다.
+                    # 프로세스 생성 시각을 최초 인증 실패 시각으로 간주하지 않는다.
+                    hydra_started_at = utc_now()
                     hydra_process = subprocess.Popen(
                         build_hydra_command(hydra, config, candidates),
                         cwd=private,
@@ -467,6 +475,7 @@ def run_measurement(config: Config) -> dict[str, Any]:
                         config.target, hydra_process, capture, hydra_log
                     )
                     hydra_code = hydra_process.wait()
+                    hydra_exit_observed_at = utc_now()
 
             try:
                 remaining = CAPTURE_SECONDS + 5 - (time.monotonic() - capture_started)
@@ -515,6 +524,8 @@ def run_measurement(config: Config) -> dict[str, Any]:
         "baseline": baseline,
         "probes": probes,
         "hydra": {
+            "started_at": hydra_started_at,
+            "exit_observed_at": hydra_exit_observed_at,
             "state": hydra_state,
             "exit_code": hydra_code,
             "candidate_count": CANDIDATE_COUNT,
@@ -538,6 +549,7 @@ def run_measurement(config: Config) -> dict[str, Any]:
         "run_id": run_id,
         "target": TARGET_LABEL,
         "hydra_state": hydra_state,
+        "hydra_started_at": hydra_started_at,
         "capture_packet_rows": packet_rows,
         "manifest_sha256": sha256_file(manifest_path)["sha256"],
         "pipeline_verdict": manifest["pipeline_verdict"],
