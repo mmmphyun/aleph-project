@@ -2569,7 +2569,7 @@ def test_waf_block_read_after_write_failure_simulation(
     mocked_aws: None,
     mocked_waf_ipset: MockWafTarget,
 ) -> None:
-    """WAF update 직후 get_ip_set 재조회 시 주소가 누락된 경우 Read-after-Write 실패(False) 반환 검증."""
+    """WAF IPSet 재조회 시 주소가 누락된 경우 Read-after-Write 실패(False) 반환 검증."""
     waf_client = boto3.client("wafv2", region_name="us-east-1")
     attacker_ip = "198.51.100.100"
 
@@ -2804,3 +2804,24 @@ def test_apply_remediation_with_alb_and_active_probe_integration(
     assert result["waf_blocked"] is True
     assert result["iam_revoked"] is False
 
+
+def test_probe_socket_dropped_timeout() -> None:
+    """probe_socket_dropped에 타임아웃 발생 시 패킷 침묵 폐기(DROP)로 True 반환 검증."""
+
+    def mock_timeout(*args: Any, **kwargs: Any) -> Any:
+        raise TimeoutError("connection timeout")
+
+    assert probe_socket_dropped("10.0.0.1", port=22, socket_fn=mock_timeout) is True
+
+
+def test_probe_socket_dropped_connected_fails() -> None:
+    """probe_socket_dropped에 소켓 연결 체결 시 패킷 미차단으로 False 반환 검증."""
+    from unittest.mock import MagicMock
+
+    mock_sock = MagicMock()
+
+    def mock_connect(*args: Any, **kwargs: Any) -> Any:
+        return mock_sock
+
+    assert probe_socket_dropped("10.0.0.1", port=22, socket_fn=mock_connect) is False
+    assert mock_sock.close.called

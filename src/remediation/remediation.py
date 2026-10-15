@@ -18,7 +18,8 @@ import ipaddress
 import logging
 import os
 import socket
-from typing import Any, Callable, TypedDict
+from collections.abc import Callable
+from typing import Any, TypedDict
 
 import boto3
 from botocore.exceptions import ClientError
@@ -37,7 +38,6 @@ DEFAULT_WAF_IPSET_NAME = "CloudShield-Block-IPSet"
 DEFAULT_WAF_SCOPE = "REGIONAL"
 MAX_WAF_UPDATE_RETRIES = 3
 DEFAULT_PROBE_TIMEOUT = 0.3
-
 
 
 class RemediationResult(TypedDict):
@@ -104,8 +104,8 @@ def probe_socket_dropped(
 
     Constraints:
         - timeout: 기본 300ms (0.3초). 동일 리전 VPC RTT < 2ms 감안하여 10초 SLA 마진 보존.
-        - 반환값: 패킷이 침묵 폐기(Timeout)되거나 연결 거부(Connection Refused)된 경우 True(격리 확증),
-          연결이 체결(Connect 성공)된 경우 False(격리 미반영/실패).
+        - 반환값: 패킷 침묵 폐기(Timeout) 또는 연결 거부(Refused) 시 True(격리 확증),
+          연결 체결(Connect 성공) 시 False(격리 미반영/실패).
 
     Side-effects / Edge-cases:
         - 단위 테스트 환경에서 pytest-socket에 의해 SocketBlockedError 발생 시
@@ -126,7 +126,7 @@ def probe_socket_dropped(
             port,
         )
         return False
-    except (TimeoutError, socket.timeout):
+    except TimeoutError:
         logger.info(
             "L4 Active Probe 확증: 타깃 %s:%d 포트 패킷 침묵 폐기(DROP/Timeout) 확인됨",
             target_host,
@@ -385,7 +385,7 @@ def block_ip_wafv2(
     max_retries: int = MAX_WAF_UPDATE_RETRIES,
     alb_arn: str | None = None,
 ) -> bool:
-    """공격자 IP 주소를 AWS WAFv2 IPSet에 /32 CIDR 규격으로 원자적 등록 및 Read-after-Write 차단 확증.
+    """공격자 IP 주소를 WAFv2 IPSet에 등록하고 Read-after-Write로 차단을 동기 확증.
 
     Why:
         L7 침해 공격(스프레잉, 웹 무차별 대입 등) 발생 시 단일 공격자 IP만을 정밀 차단하여
@@ -527,7 +527,7 @@ def block_ip_wafv2(
                 return False
 
             logger.info(
-                "WAF IPSet(%s) 차단 등록 및 Read-after-Write 확증 완료: %s 추가 (총 %d개 IP 차단 중)",
+                "WAF IPSet(%s) 차단 및 Read-after-Write 확증: %s (총 %d개 IP 차단 중)",
                 ipset_name,
                 target_cidr,
                 len(verified_addresses),
