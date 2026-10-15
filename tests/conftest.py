@@ -102,13 +102,19 @@ def mocked_aws() -> Generator[None, None, None]:
 
 
 @pytest.fixture
-def mocked_ec2_target(mocked_aws: None) -> MockEc2Target:
+def mocked_ec2_target(mocked_aws: None, monkeypatch: pytest.MonkeyPatch) -> MockEc2Target:
     """moto 가상 VPC 내 타깃 EC2 1대 및 Normal SG, Quarantine SG 사전 생성.
 
     Why:
         L4 보안 그룹 격리(apply_remediation) 테스트 시 실제 EC2 리소스 없이도
-        보안 그룹 교체(ModifyInstanceAttribute)를 검증할 수 있는 테스트베드 제공.
+        보안 그룹 교체(ModifyInstanceAttribute) 및 L4 Active Probe(패킷 DROP 모의)를
+        안전하게 검증할 수 있는 테스트베드 제공.
     """
+
+    def _default_probe_timeout(*args: Any, **kwargs: Any) -> Any:
+        raise TimeoutError("Simulated packet drop in moto environment")
+
+    monkeypatch.setattr("socket.create_connection", _default_probe_timeout)
     ec2_resource = boto3.resource("ec2", region_name="us-east-1")
 
     # VPC 및 서브넷 프로비저닝

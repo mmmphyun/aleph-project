@@ -70,3 +70,19 @@ output "target_public_ip" {
   description = "타깃 EC2 퍼블릭 IP 주소"
   value       = module.ec2_target.public_ip
 }
+
+output "alb_arn" {
+  description = "Application Load Balancer ARN"
+  value       = module.alb.alb_arn
+}
+
+output "alb_dns_name" {
+  description = "Application Load Balancer 공용 DNS 이름"
+  value       = module.alb.alb_dns_name
+}
+
+output "target_group_arn" {
+  description = "타깃 EC2 등록 대상 Target Group ARN"
+  value       = module.alb.target_group_arn
+}
+

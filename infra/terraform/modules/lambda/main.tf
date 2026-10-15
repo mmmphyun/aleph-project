@@ -106,6 +106,31 @@ data "aws_iam_policy_document" "least_privilege" {
       var.waf_ipset_arn
     ]
   }
+
+  # 4-3. WAFv2 ALB 결합 WebACL 조회 권한 (공식 명세: WebACL ARN에 wafv2:GetWebACLForResource 및 wafv2:GetWebACL 허용)
+  statement {
+    sid    = "WAFv2GetWebACLForResource"
+    effect = "Allow"
+    actions = [
+      "wafv2:GetWebACLForResource",
+      "wafv2:GetWebACL"
+    ]
+    resources = [
+      var.target_web_acl_arn != "" ? var.target_web_acl_arn : "arn:aws:wafv2:*:*:regional/webacl/*/*"
+    ]
+  }
+
+  # 4-4. Application Load Balancer WebACL 조회 권한 (공식 명세: ALB ARN에 elasticloadbalancing:GetLoadBalancerWebACL 허용)
+  statement {
+    sid    = "ELBGetLoadBalancerWebACL"
+    effect = "Allow"
+    actions = [
+      "elasticloadbalancing:GetLoadBalancerWebACL"
+    ]
+    resources = [
+      var.target_alb_arn != "" ? var.target_alb_arn : "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
+    ]
+  }
 }
 
 resource "aws_iam_policy" "lambda_least_privilege" {
@@ -160,6 +185,7 @@ resource "aws_lambda_function" "orchestrator" {
     variables = {
       AUTH_FAILURE_TABLE_NAME = var.dynamodb_table_name
       SLACK_WEBHOOK_URL       = var.slack_webhook_url
+      TARGET_ALB_ARN          = var.target_alb_arn
     }
   }
 
