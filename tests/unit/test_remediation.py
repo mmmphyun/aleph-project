@@ -3139,3 +3139,157 @@ def test_alb_real_ip_restoration_and_spoofed_xff_defense(
     assert f"{real_attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
     assert f"{spoofed_ip}/32" not in ip_set["IPSet"]["Addresses"]
     assert f"{alb_internal_ip}/32" not in ip_set["IPSet"]["Addresses"]
+
+
+def test_unblock_ip_wafv2_single_ip_success(mocked_waf_ipset: Any) -> None:
+    """단일 IP WAF IPSet 차단 해제 및 Read-after-Write 정상 확증 검증.
+
+    Why:
+        시나리오 2 관통 실측 후 차단된 공격자 IP를 원자적으로 제거하여
+        테스트베드 인프라의 가용성을 즉시 회복하는지 검증함.
+    """
+    from remediation.remediation import block_ip_wafv2, unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    target_ip = "198.51.100.77"
+
+    # 1. 먼저 IP 차단 등록
+    block_success = block_ip_wafv2(
+        source_ip=target_ip,
+        ipset_name=mocked_waf_ipset.ipset_name,
+        ipset_id=mocked_waf_ipset.ipset_id,
+        waf_client=waf_client,
+    )
+    assert block_success is True
+
+    # 등록 확인
+    get_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{target_ip}/32" in get_res["IPSet"]["Addresses"]
+
+    # 2. unblock_ip_wafv2 호출
+    unblock_success = unblock_ip_wafv2(
+        source_ip=target_ip,
+        ipset_name=mocked_waf_ipset.ipset_name,
+        ipset_id=mocked_waf_ipset.ipset_id,
+        waf_client=waf_client,
+    )
+    assert unblock_success is True
+
+    # 3. Read-after-Write 물리적 제거 확증
+    verify_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{target_ip}/32" not in verify_res["IPSet"]["Addresses"]
+
+
+def test_unblock_ip_wafv2_idempotency(mocked_waf_ipset: Any) -> None:
+    """존재하지 않는 IP에 대한 WAF 차단 해제 시 멱등성 보장 검증.
+
+    Why:
+        이미 해제되었거나 목록에 없는 IP를 대상으로 복구 스크립트가 중복 호출되어도
+        불필요한 API 수정 없이 즉시 성공(True)을 반환해야 함.
+    """
+    from remediation.remediation import unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    unregistered_ip = "192.0.2.1"
+
+    success = unblock_ip_wafv2(
+        source_ip=unregistered_ip,
+        ipset_name=mocked_waf_ipset.ipset_name,
+        ipset_id=mocked_waf_ipset.ipset_id,
+        waf_client=waf_client,
+    )
+    assert success is True
+
+
+def test_unblock_ip_wafv2_unblock_all(mocked_waf_ipset: Any) -> None:
+    """unblock_all=True 옵션을 통한 WAF IPSet 전체 초기화 원자적 검증.
+
+    Why:
+        다회차 테스트 후 잔여 차단 IP를 일괄 삭제하여 테스트 환경을 초기 상태로 복원함.
+    """
+    from remediation.remediation import block_ip_wafv2, unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    ips = ["198.51.100.1", "198.51.100.2", "198.51.100.3"]
+
+    for ip in ips:
+        block_ip_wafv2(
+            source_ip=ip,
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+        )
+
+    # 3개 모두 등록 확인
+    get_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert len(get_res["IPSet"]["Addresses"]) == 3
+
+    # 전체 해제
+    success = unblock_ip_wafv2(
+        unblock_all=True,
+        ipset_name=mocked_waf_ipset.ipset_name,
+        ipset_id=mocked_waf_ipset.ipset_id,
+        waf_client=waf_client,
+    )
+    assert success is True
+
+    # 완전 비어있음 확증
+    verify_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert verify_res["IPSet"]["Addresses"] == []
+
+
+def test_unblock_ip_wafv2_invalid_ip_rejected(mocked_waf_ipset: Any) -> None:
+    """유효하지 않은 IP 형식 전달 시 예외 격리 및 차단 해제 거부 검증."""
+    from remediation.remediation import unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    # IPv6 거부
+    assert (
+        unblock_ip_wafv2(
+            source_ip="2001:db8::1",
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+        )
+        is False
+    )
+
+    # 잘못된 문자열 거부
+    assert (
+        unblock_ip_wafv2(
+            source_ip="invalid-ip-string",
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+        )
+        is False
+    )
+
+    # 인자 미제공 거부
+    assert (
+        unblock_ip_wafv2(
+            source_ip=None,
+            unblock_all=False,
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+        )
+        is False
+    )

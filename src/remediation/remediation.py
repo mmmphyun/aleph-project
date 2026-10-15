@@ -607,6 +607,156 @@ def block_ip_wafv2(
     return False
 
 
+def unblock_ip_wafv2(
+    source_ip: str | None = None,
+    unblock_all: bool = False,
+    ipset_name: str = DEFAULT_WAF_IPSET_NAME,
+    ipset_id: str | None = None,
+    scope: str = DEFAULT_WAF_SCOPE,
+    waf_client: Any = None,
+    max_retries: int = MAX_WAF_UPDATE_RETRIES,
+) -> bool:
+    """공격자 IP 주소를 WAFv2 IPSet에서 제거(차단 해제)하고 Read-after-Write로 동기 확증.
+
+    Why:
+        침해사고 실측 또는 오탐 발생 시 특정 IP의 WAF 차단을 해제하고,
+        테스트베드 인프라의 가용성을 즉시 회복하며 원자적 롤백을 확증함.
+
+    Constraints:
+        - source_ip: 단일 유효 IPv4 주소 문자열 또는 CIDR (/32 자동 처리).
+        - unblock_all: True일 경우 IPSet 내 모든 차단 IP를 초기화 ([]).
+        - source_ip와 unblock_all 중 적어도 하나는 유효해야 함.
+        - max_retries: WAFOptimisticLockException 시 최대 재시도 횟수.
+
+    Side-effects / Edge-cases:
+        - 대상 IP가 이미 목록에 없으면 멱등하게 True 반환.
+        - WAFOptimisticLockException 발생 시 최신 LockToken으로 재시도.
+        - ClientError 등 예외 발생 시 False 반환.
+    """
+    if waf_client is None:
+        region = os.getenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+        waf_client = boto3.client("wafv2", region_name=region)
+
+    target_cidr: str | None = None
+    if not unblock_all:
+        if not source_ip:
+            logger.error("차단 해제할 source_ip가 지정되지 않았으며 unblock_all도 False임")
+            return False
+        try:
+            target_ip_str = source_ip.strip()
+            if "/" in target_ip_str:
+                network = ipaddress.ip_network(target_ip_str, strict=False)
+                if network.version != 4:
+                    logger.error("IPv4 규격이 아닌 주소는 해제 대상에서 거부됨: %s", source_ip)
+                    return False
+                target_cidr = f"{network.network_address}/{network.prefixlen}"
+            else:
+                ip_obj = ipaddress.ip_address(target_ip_str)
+                if ip_obj.version != 4:
+                    logger.error("IPv4 규격이 아닌 주소는 해제 대상에서 거부됨: %s", source_ip)
+                    return False
+                target_cidr = f"{ip_obj}/32"
+        except ValueError as e:
+            logger.error(
+                "유효하지 않은 IP 형식으로 인한 WAF 차단 해제 거부: %s (원인: %s)",
+                source_ip,
+                e,
+            )
+            return False
+
+    for attempt in range(max_retries):
+        try:
+            target_ipset_id = ipset_id
+            if not target_ipset_id:
+                found = find_waf_ip_set(waf_client, ipset_name=ipset_name, scope=scope)
+                if not found:
+                    logger.error("대상 WAF IPSet(%s)을 찾을 수 없음", ipset_name)
+                    return False
+                target_ipset_id = found["id"]
+
+            get_res = waf_client.get_ip_set(
+                Name=ipset_name,
+                Scope=scope,
+                Id=target_ipset_id,
+            )
+            ipset_data = get_res.get("IPSet", {})
+            current_addresses = ipset_data.get("Addresses", [])
+            lock_token = get_res.get("LockToken")
+            description = ipset_data.get("Description")
+
+            if unblock_all:
+                if not current_addresses:
+                    logger.info("WAF IPSet(%s)이 이미 비어 있음 (멱등 처리)", ipset_name)
+                    return True
+                new_addresses: list[str] = []
+            else:
+                assert target_cidr is not None
+                if target_cidr not in current_addresses:
+                    logger.info(
+                        "IP %s는 WAF IPSet(%s) 차단 목록에 존재하지 않음 (멱등 처리)",
+                        target_cidr,
+                        ipset_name,
+                    )
+                    return True
+                new_addresses = [addr for addr in current_addresses if addr != target_cidr]
+
+            update_kwargs: dict[str, Any] = {
+                "Name": ipset_name,
+                "Scope": scope,
+                "Id": target_ipset_id,
+                "Addresses": new_addresses,
+                "LockToken": lock_token,
+            }
+            if description:
+                update_kwargs["Description"] = description
+
+            waf_client.update_ip_set(**update_kwargs)
+
+            verify_res = waf_client.get_ip_set(
+                Name=ipset_name,
+                Scope=scope,
+                Id=target_ipset_id,
+            )
+            verified_addresses = verify_res.get("IPSet", {}).get("Addresses", [])
+            if unblock_all and verified_addresses:
+                logger.error("WAF IPSet(%s) 전체 해제 실패: 잔여 주소 존재", ipset_name)
+                return False
+            if target_cidr and target_cidr in verified_addresses:
+                logger.error(
+                    "WAF IPSet(%s) Read-after-Write 해제 검증 실패: %s가 잔류함",
+                    ipset_name,
+                    target_cidr,
+                )
+                return False
+
+            logger.info(
+                "WAF IPSet(%s) 차단 해제 및 Read-after-Write 확증: target=%s (잔여 %d개)",
+                ipset_name,
+                "전체" if unblock_all else target_cidr,
+                len(verified_addresses),
+            )
+            return True
+
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "WAFOptimisticLockException" and attempt < max_retries - 1:
+                logger.warning(
+                    "WAF IPSet(%s) 동시 수정 충돌(WAFOptimisticLockException). 재시도 (%d/%d)",
+                    ipset_name,
+                    attempt + 1,
+                    max_retries,
+                )
+                continue
+            logger.error("WAF IPSet(%s) 차단 해제 중 ClientError 발생: %s", ipset_name, e)
+            return False
+        except Exception as e:
+            logger.error("WAF IPSet(%s) 차단 해제 중 예기치 않은 오류 발생: %s", ipset_name, e)
+            return False
+
+    logger.error("WAF IPSet(%s) 해제 최대 재시도 횟수(%d회) 초과 실패", ipset_name, max_retries)
+    return False
+
+
 def apply_remediation(
     report: IncidentReport,
     ec2_client: Any = None,
