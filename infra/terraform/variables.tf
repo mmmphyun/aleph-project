@@ -66,11 +66,19 @@ variable "vpc_topology" {
         cidr              = "10.42.0.0/24"
         availability_zone = "ap-northeast-2a"
       }
+      "public-2c" = {
+        cidr              = "10.42.1.0/24"
+        availability_zone = "ap-northeast-2c"
+      }
     }
     private_subnets = {
       "private-2a" = {
         cidr              = "10.42.10.0/24"
         availability_zone = "ap-northeast-2a"
+      }
+      "private-2c" = {
+        cidr              = "10.42.11.0/24"
+        availability_zone = "ap-northeast-2c"
       }
     }
   }

@@ -85,3 +85,24 @@ module "ec2_target" {
   associate_public_ip_address = var.ec2_associate_public_ip
   log_retention_days          = var.ec2_log_retention_days
 }
+
+# ==============================================================================
+# 7. Application Load Balancer 및 Target Group 모듈 (클라우드 A 전담)
+# ==============================================================================
+module "alb" {
+  source = "./modules/alb"
+
+  environment        = var.environment
+  vpc_id             = module.vpc.vpc_id
+  subnet_ids         = values(module.vpc.public_subnet_ids)
+  target_instance_id = module.ec2_target.instance_id
+}
+
+# ==============================================================================
+# 8. AWS WAFv2 WebACL - ALB 영구 바인딩 (클라우드 A 전담)
+# ==============================================================================
+resource "aws_wafv2_web_acl_association" "alb" {
+  resource_arn = module.alb.alb_arn
+  web_acl_arn  = module.waf.web_acl_arn
+}
+
