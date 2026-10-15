@@ -32,7 +32,6 @@ import time
 from typing import Any
 
 import boto3
-from botocore.exceptions import ClientError
 from scripts.restore_baseline_sg import (
     DEFAULT_BASELINE_SG_ID,
     DEFAULT_INSTANCE_ID,
@@ -122,6 +121,12 @@ def simulate_threat_and_verify(
     )
 
     start_time = time.perf_counter()
+    original_error: Exception | None = None
+    restore_result: dict[str, Any] | None = None
+    result_data: dict[str, Any] = {}
+    status_code: int = 0
+    function_error: str | None = None
+    invoke_duration_ms: float = 0.0
 
     try:
         # 1. Lambda 동기 호출
@@ -131,49 +136,93 @@ def simulate_threat_and_verify(
             Payload=json.dumps(event_payload),
         )
         invoke_duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
-
-        raw_payload = response["Payload"].read().decode("utf-8")
-        result_data = json.loads(raw_payload) if raw_payload else {}
-
         status_code = response.get("StatusCode", 0)
+        function_error = response.get("FunctionError")
+
+        raw_payload = response.get("Payload")
+        if raw_payload is not None:
+            if hasattr(raw_payload, "read"):
+                payload_bytes = raw_payload.read()
+                payload_str = (
+                    payload_bytes.decode("utf-8")
+                    if isinstance(payload_bytes, bytes)
+                    else str(payload_bytes)
+                )
+            else:
+                payload_str = str(raw_payload)
+            result_data = json.loads(payload_str) if payload_str else {}
+
         logger.info(
-            "Lambda 호출 완료 (HTTP %d, 소요 시간: %0.2f ms)",
+            "Lambda 호출 완료 (HTTP %d, FunctionError: %s, 소요 시간: %0.2f ms)",
             status_code,
+            function_error,
             invoke_duration_ms,
         )
-
-        threats = result_data.get("threats_detected", [])
-        slack_notified = result_data.get("slack_notified", False)
-        remediation_results = result_data.get("remediation_results", [])
-
-        logger.info("탐지된 위협: %s", threats)
-        logger.info("차단 집행 결과: %s", remediation_results)
-        logger.info("Slack 카드 전파 성공 여부: %s", slack_notified)
-
-        # 2. 자동 롤백 복구 실행
-        restore_result = None
+    except Exception as e:
+        original_error = e
+        logger.error("Lambda 호출 또는 응답 처리 중 오류 발생: %s", e)
+    finally:
+        # 2. 실패 경로에서도 자동 롤백 복구 보장
         if auto_restore:
-            logger.info("자동 복구 플래그 활성화: Baseline SG(%s)로 복원 시작", baseline_sg_id)
-            restore_result = restore_baseline_security_group(
-                instance_id=instance_id,
-                baseline_sg_id=baseline_sg_id,
-                ec2_client=ec2_client,
+            try:
+                logger.info("자동 복구 플래그 활성화: Baseline SG(%s)로 복원 시작", baseline_sg_id)
+                restore_result = restore_baseline_security_group(
+                    instance_id=instance_id,
+                    baseline_sg_id=baseline_sg_id,
+                    ec2_client=ec2_client,
+                )
+                logger.info("자동 복구 완료 (상태: %s)", restore_result.get("status"))
+            except Exception as restore_err:
+                logger.error("자동 복구 실행 중 오류 발생: %s", restore_err)
+                if original_error is not None:
+                    # 원본 오류와 복구 오류를 모두 보존하여 전파
+                    raise restore_err from original_error
+                raise
+
+        # Lambda 호출 단계에서 발생한 원본 오류 전파
+        if original_error is not None:
+            raise original_error
+
+    threats = result_data.get("threats_detected", [])
+    slack_notified = result_data.get("slack_notified", False)
+    remediation_results = result_data.get("remediation_results", [])
+
+    logger.info("탐지된 위협: %s", threats)
+    logger.info("차단 집행 결과: %s", remediation_results)
+    logger.info("Slack 카드 전파 성공 여부: %s", slack_notified)
+
+    remediation_ok = False
+    if isinstance(remediation_results, list) and len(remediation_results) > 0:
+        remediation_ok = any(
+            isinstance(r, dict)
+            and (
+                r.get("quarantine_applied") is True
+                or r.get("waf_blocked") is True
+                or r.get("status") == "success"
             )
-            logger.info("자동 복구 완료 (상태: %s)", restore_result.get("status"))
+            for r in remediation_results
+        )
 
-        return {
-            "status": "success" if status_code == 200 else "failed",
-            "status_code": status_code,
-            "invoke_duration_ms": invoke_duration_ms,
-            "lambda_response": result_data,
-            "threats_detected": threats,
-            "slack_notified": slack_notified,
-            "restore_result": restore_result,
-        }
+    # 3. 엄격한 성공 조건 판정 (FunctionError 없음, 위협 탐지, 차단 성공, Slack 알림 성공 필수)
+    is_success = (
+        status_code == 200
+        and not function_error
+        and bool(threats)
+        and remediation_ok
+        and (slack_notified is True)
+    )
 
-    except ClientError as e:
-        logger.error("AWS API 호출 실패: %s", e)
-        raise
+    return {
+        "status": "success" if is_success else "failed",
+        "status_code": status_code,
+        "function_error": function_error,
+        "invoke_duration_ms": invoke_duration_ms,
+        "lambda_response": result_data,
+        "threats_detected": threats,
+        "remediation_results": remediation_results,
+        "slack_notified": slack_notified,
+        "restore_result": restore_result,
+    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -48,6 +48,8 @@ def monitor_quarantine(
     instance_id: str = DEFAULT_INSTANCE_ID,
     quarantine_sg_id: str = DEFAULT_QUARANTINE_SG_ID,
     lambda_log_group: str = DEFAULT_LAMBDA_LOG_GROUP,
+    incident_id: str | None = None,
+    source_ip: str | None = None,
     timeout_seconds: int = 300,
     poll_interval: float = 0.5,
     ec2_client: Any = None,
@@ -67,7 +69,13 @@ def monitor_quarantine(
         logs_client = logs_client or session.client("logs")
 
     logger.info("관통 실측 모니터링 개시: 타깃 EC2=%s, 격리 SG=%s", instance_id, quarantine_sg_id)
-    logger.info("Lambda 로그 그룹: %s (최대 대기: %d초)", lambda_log_group, timeout_seconds)
+    logger.info(
+        "Lambda 로그 그룹: %s (최대 대기: %d초, 사건 식별자: %s, 소스 IP: %s)",
+        lambda_log_group,
+        timeout_seconds,
+        incident_id or "전체",
+        source_ip or "전체",
+    )
 
     start_monitor_time = time.time()
     t_sg_verified_iso = None
@@ -102,8 +110,12 @@ def monitor_quarantine(
         return {
             "status": "timeout",
             "instance_id": instance_id,
+            "incident_id": incident_id,
+            "source_ip": source_ip,
             "t_sg_verified_iso": None,
             "t_sg_verified_epoch": None,
+            "t_block_iso": None,
+            "t_block_epoch": None,
             "lambda_logs": [],
         }
 
@@ -128,17 +140,33 @@ def monitor_quarantine(
             msg = ev.get("message", "")
             ts_ms = ev.get("timestamp", 0)
             lambda_logs.append({"timestamp": ts_ms, "message": msg.strip()})
-            if "격리 완료" in msg or "quarantine" in msg.lower() or "차단" in msg:
+
+            # 사건 연결성 검증: 식별자가 지정된 경우 해당 식별자가 포함되어야 함
+            matches_incident = True
+            if incident_id and incident_id not in msg:
+                matches_incident = False
+            if source_ip and source_ip not in msg:
+                matches_incident = False
+
+            is_quarantine_msg = "격리 완료" in msg or "quarantine" in msg.lower() or "차단" in msg
+            if matches_incident and is_quarantine_msg:
                 t_block_epoch = ts_ms / 1000.0
                 t_block_iso = datetime.datetime.fromtimestamp(
                     t_block_epoch, datetime.UTC
                 ).isoformat()
+                logger.info(
+                    "사건 연결 차단 로그 감지 (T_block): %s (메시지: %s)",
+                    t_block_iso,
+                    msg.strip(),
+                )
 
-        if t_block_iso is None and events:
-            # 첫 번째 이벤트 또는 REPORT 이벤트 기준
-            last_ev = events[-1]
-            t_block_epoch = last_ev["timestamp"] / 1000.0
-            t_block_iso = datetime.datetime.fromtimestamp(t_block_epoch, datetime.UTC).isoformat()
+        if t_block_iso is None:
+            # 사건과 연결되지 않은 임의 이벤트를 T_block으로 지정하지 않고 미확정(None)으로 유지
+            logger.warning(
+                "사건(%s, %s) 차단 로그 미발견으로 T_block을 미확정(None)으로 유지합니다.",
+                incident_id or "지정 안 됨",
+                source_ip or "지정 안 됨",
+            )
 
     except ClientError as e:
         logger.warning("Lambda 로그 조회 중 ClientError: %s", e)
@@ -146,6 +174,8 @@ def monitor_quarantine(
     result = {
         "status": "quarantined",
         "instance_id": instance_id,
+        "incident_id": incident_id,
+        "source_ip": source_ip,
         "observed_sgs": observed_sgs,
         "t_sg_verified_iso": t_sg_verified_iso,
         "t_sg_verified_epoch": t_sg_verified_epoch,
@@ -158,18 +188,27 @@ def monitor_quarantine(
     return result
 
 
-def main() -> None:
-    """CLI 진입점."""
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """CLI 인자 파서 정의."""
     parser = argparse.ArgumentParser(description="CloudShield 관통 실측 모니터링 도구")
     parser.add_argument("--instance-id", default=DEFAULT_INSTANCE_ID)
     parser.add_argument("--quarantine-sg-id", default=DEFAULT_QUARANTINE_SG_ID)
+    parser.add_argument("--incident-id", default=None, help="추적할 인시던트 식별자")
+    parser.add_argument("--source-ip", default=None, help="추적할 모의 공격자 IP")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--interval", type=float, default=0.5)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main() -> None:
+    """CLI 진입점."""
+    args = parse_args()
 
     res = monitor_quarantine(
         instance_id=args.instance_id,
         quarantine_sg_id=args.quarantine_sg_id,
+        incident_id=args.incident_id,
+        source_ip=args.source_ip,
         timeout_seconds=args.timeout,
         poll_interval=args.interval,
     )

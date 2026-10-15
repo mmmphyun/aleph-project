@@ -128,6 +128,185 @@ def test_simulate_threat_and_verify_success() -> None:
     )
 
 
+def test_simulate_threat_and_verify_function_error() -> None:
+    """Lambda FunctionError 발생 시 status=failed 판정 검증.
+
+    Why:
+        HTTP 상태 코드가 200이더라도 Lambda 런타임 FunctionError가 반환되면
+        대응 실패로 판정하여 오탐을 차단해야 함.
+    """
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "FunctionError": "Unhandled",
+        "Payload": io.BytesIO(b'{"errorMessage": "Memory limit exceeded"}'),
+    }
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test12345",
+        auto_restore=False,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+    )
+
+    assert result["status"] == "failed"
+    assert result["function_error"] == "Unhandled"
+
+
+def test_simulate_threat_and_verify_slack_notified_false() -> None:
+    """Slack 알림 전파 실패 시 status=failed 판정 검증."""
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_response = {
+        "threats_detected": ["SSH_BRUTE_FORCE"],
+        "remediation_results": [{"quarantine_applied": True}],
+        "slack_notified": False,
+    }
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(json.dumps(mock_response).encode("utf-8")),
+    }
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test12345",
+        auto_restore=False,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+    )
+
+    assert result["status"] == "failed"
+    assert result["slack_notified"] is False
+
+
+def test_simulate_threat_and_verify_remediation_failure() -> None:
+    """차단 조치 미집행 시 status=failed 판정 검증."""
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_response = {
+        "threats_detected": ["SSH_BRUTE_FORCE"],
+        "remediation_results": [{"quarantine_applied": False, "status": "failed"}],
+        "slack_notified": True,
+    }
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(json.dumps(mock_response).encode("utf-8")),
+    }
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test12345",
+        auto_restore=False,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+    )
+
+    assert result["status"] == "failed"
+
+
+def test_simulate_threat_and_verify_threats_detected_empty() -> None:
+    """위협 미탐지 시 status=failed 판정 검증."""
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_response = {
+        "threats_detected": [],
+        "remediation_results": [],
+        "slack_notified": True,
+    }
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(json.dumps(mock_response).encode("utf-8")),
+    }
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test12345",
+        auto_restore=False,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+    )
+
+    assert result["status"] == "failed"
+
+
+def test_simulate_threat_and_verify_auto_restore_on_lambda_exception() -> None:
+    """Lambda 호출 중 예외가 발생해도 Baseline SG 롤백이 반드시 수행되는지 검증.
+
+    Why:
+        Lambda 실행 단계에서 타임아웃이나 역직렬화 실패가 발생해도
+        인프라가 격리 상태로 방치되지 않고 안전하게 원상 복구되어야 함.
+    """
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_lambda.invoke.side_effect = RuntimeError("Lambda network failure")
+
+    mock_ec2.describe_instances.side_effect = [
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-test", "SecurityGroups": [{"GroupId": "sg-quarantine"}]}
+                    ]
+                }
+            ]
+        },
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-test", "SecurityGroups": [{"GroupId": "sg-baseline"}]}
+                    ]
+                }
+            ]
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="Lambda network failure"):
+        simulate_threat_and_verify(
+            function_name="CloudShield-Threat-Orchestrator",
+            instance_id="i-test",
+            baseline_sg_id="sg-baseline",
+            auto_restore=True,
+            lambda_client=mock_lambda,
+            ec2_client=mock_ec2,
+        )
+
+    # 롤백 API가 반드시 호출되었는지 검증
+    mock_ec2.modify_instance_attribute.assert_called_once_with(
+        InstanceId="i-test", Groups=["sg-baseline"]
+    )
+
+
+def test_simulate_threat_and_verify_exception_chaining() -> None:
+    """Lambda와 복구 모두 실패 시 원본 예외와 복구 예외가 체이닝되어 전파되는지 검증."""
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_lambda.invoke.side_effect = ValueError("Original Lambda failure")
+    mock_ec2.describe_instances.side_effect = RuntimeError("EC2 restore failure")
+
+    with pytest.raises(RuntimeError, match="EC2 restore failure") as exc_info:
+        simulate_threat_and_verify(
+            function_name="CloudShield-Threat-Orchestrator",
+            instance_id="i-test",
+            baseline_sg_id="sg-baseline",
+            auto_restore=True,
+            lambda_client=mock_lambda,
+            ec2_client=mock_ec2,
+        )
+
+    assert exc_info.value.__cause__ is not None
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "Original Lambda failure" in str(exc_info.value.__cause__)
+
+
 def test_parse_args_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """CLI 파서 기본값 설정 검증."""
     monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
