@@ -107,15 +107,28 @@ data "aws_iam_policy_document" "least_privilege" {
     ]
   }
 
-  # 4-3. WAFv2 ALB 결합 WebACL 조회 권한 (타깃 ALB ARN으로 제한)
+  # 4-3. WAFv2 ALB 결합 WebACL 조회 권한 (공식 명세: WebACL ARN에 wafv2:GetWebACLForResource 및 wafv2:GetWebACL 허용)
   statement {
     sid    = "WAFv2GetWebACLForResource"
     effect = "Allow"
     actions = [
-      "wafv2:GetWebACLForResource"
+      "wafv2:GetWebACLForResource",
+      "wafv2:GetWebACL"
     ]
     resources = [
-      var.target_alb_arn != "" ? var.target_alb_arn : "*"
+      var.target_web_acl_arn != "" ? var.target_web_acl_arn : "arn:aws:wafv2:*:*:regional/webacl/*/*"
+    ]
+  }
+
+  # 4-4. Application Load Balancer WebACL 조회 권한 (공식 명세: ALB ARN에 elasticloadbalancing:GetLoadBalancerWebACL 허용)
+  statement {
+    sid    = "ELBGetLoadBalancerWebACL"
+    effect = "Allow"
+    actions = [
+      "elasticloadbalancing:GetLoadBalancerWebACL"
+    ]
+    resources = [
+      var.target_alb_arn != "" ? var.target_alb_arn : "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
     ]
   }
 }

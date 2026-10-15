@@ -56,6 +56,12 @@ variable "target_alb_arn" {
   default     = ""
 }
 
+variable "target_web_acl_arn" {
+  description = "L7 동기 검증 대상 WAFv2 WebACL ARN"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "추가 리소스 태그 매핑"
   type        = map(string)

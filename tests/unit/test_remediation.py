@@ -1814,6 +1814,35 @@ def test_terraform_lambda_iam_policy_attachment_references_declared_policy() -> 
     assert "least_privilege" not in declared_policies
 
 
+def test_terraform_lambda_iam_policy_webacl_and_alb_action_resource_mapping() -> None:
+    """Terraform Lambda IAM 정책의 WebACL 및 ALB 조회 액션-리소스 매핑 공식 명세 일치 회귀 검증.
+
+    Why:
+        AWS WAFv2 및 ELB 공식 보안 명세에 따르면:
+        1. `wafv2:GetWebACLForResource`는 내부적으로 계정 권한 확인용 `wafv2:GetWebACL`을 요구하며,
+           대상 리소스는 ALB ARN이 아닌 WebACL ARN(`regional/webacl/*/*`)에 매핑되어야 함.
+        2. ALB 자체의 WebACL 연결 상태 조회 시 `elasticloadbalancing:GetLoadBalancerWebACL` 권한이
+           ALB ARN(`loadbalancer/app/*/*`)에 부여되어야 함.
+        리소스나 액션이 잘못 매핑되면 런타임에서 권한 거부(AccessDenied)로 인해 IPSet 차단 등록 전
+        False로 조기 종료되는 치명적 결함이 발생하므로 이를 HCL 정적 분석으로 사전 보장함.
+    """
+    from pathlib import Path
+
+    tf_path = Path(__file__).resolve().parents[2] / "infra/terraform/modules/lambda/main.tf"
+    content = tf_path.read_text(encoding="utf-8")
+
+    # 1. WAFv2 WebACL 조회 Statement 검증
+    assert 'sid    = "WAFv2GetWebACLForResource"' in content
+    assert '"wafv2:GetWebACLForResource"' in content
+    assert '"wafv2:GetWebACL"' in content
+    assert "regional/webacl/*/*" in content
+
+    # 2. ELB WebACL 조회 Statement 검증
+    assert 'sid    = "ELBGetLoadBalancerWebACL"' in content
+    assert '"elasticloadbalancing:GetLoadBalancerWebACL"' in content
+    assert "loadbalancer/app/*/*" in content
+
+
 def test_web_attack_window_expired_history_does_not_block_new_split_batch_attack(
     mocked_ec2_target: MockEc2Target,
     mocked_waf_ipset: MockWafTarget,
