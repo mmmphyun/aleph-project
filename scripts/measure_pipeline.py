@@ -182,7 +182,24 @@ def monitor_quarantine(
             )
 
     except ClientError as e:
-        logger.warning("Lambda 로그 조회 중 ClientError: %s", e)
+        logger.error("타깃 EC2 격리는 확인되었으나 Lambda 로그 조회 중 ClientError 발생: %s", e)
+        # SG 부착 관측 결과는 보존하되 예외를 전파하여 무음 실패 차단
+        partial_res = {
+            "status": "log_query_failed",
+            "instance_id": instance_id,
+            "incident_id": incident_id,
+            "source_ip": source_ip,
+            "observed_sgs": observed_sgs,
+            "t_sg_verified_iso": t_sg_verified_iso,
+            "t_sg_verified_epoch": t_sg_verified_epoch,
+            "t_block_iso": None,
+            "t_block_epoch": None,
+            "lambda_events_count": 0,
+            "lambda_logs": [],
+            "error": str(e),
+        }
+        e.partial_result = partial_res
+        raise
 
     result = {
         "status": "quarantined",
@@ -231,6 +248,8 @@ def main() -> None:
             sys.exit(1)
     except Exception as e:
         logger.error("관통 실측 모니터링 실행 실패: %s", e)
+        if hasattr(e, "partial_result"):
+            print(json.dumps(e.partial_result, indent=2, ensure_ascii=False))
         sys.exit(1)
 
 

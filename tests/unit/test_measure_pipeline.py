@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from botocore.exceptions import ClientError
 from scripts.measure_pipeline import (
     DEFAULT_INSTANCE_ID,
     DEFAULT_QUARANTINE_SG_ID,
@@ -262,6 +264,78 @@ def test_main_cli_success_exits_0(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # 정상 완료 시 SystemExit 미발생
     main()
+
+
+def test_monitor_quarantine_filter_log_events_client_error_propagates() -> None:
+    """filter_log_events에서 ClientError 발생 시 예외가 전파되고 관측이 보존되는지 검증."""
+    mock_ec2 = MagicMock()
+    mock_logs = MagicMock()
+
+    mock_ec2.describe_instances.return_value = {
+        "Reservations": [
+            {
+                "Instances": [
+                    {
+                        "InstanceId": "i-test12345",
+                        "SecurityGroups": [{"GroupId": "sg-quarantine"}],
+                    }
+                ]
+            }
+        ]
+    }
+    client_err = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "Not authorized"}},
+        "FilterLogEvents",
+    )
+    mock_logs.filter_log_events.side_effect = client_err
+
+    with pytest.raises(ClientError) as exc_info:
+        monitor_quarantine(
+            instance_id="i-test12345",
+            quarantine_sg_id="sg-quarantine",
+            incident_id="INC-1234",
+            source_ip="198.51.100.50",
+            timeout_seconds=5,
+            poll_interval=0.01,
+            ec2_client=mock_ec2,
+            logs_client=mock_logs,
+        )
+
+    # 예외가 호출자에게 그대로 전파되었는지 검증
+    assert exc_info.value == client_err
+    # SG 부착 관측 결과가 partial_result에 안전하게 보존되었는지 검증
+    assert hasattr(exc_info.value, "partial_result")
+    partial = exc_info.value.partial_result
+    assert partial["status"] == "log_query_failed"
+    assert partial["instance_id"] == "i-test12345"
+    assert partial["observed_sgs"] == ["sg-quarantine"]
+    assert partial["t_sg_verified_iso"] is not None
+
+
+def test_main_cli_filter_log_events_client_error_exits_code_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """filter_log_events 예외 발생 시 CLI가 비정상 종료 코드 1로 종료되는지 검증."""
+    from scripts.measure_pipeline import main
+
+    client_err = ClientError(
+        {"Error": {"Code": "ResourceNotFoundException", "Message": "Log group not found"}},
+        "FilterLogEvents",
+    )
+    client_err.partial_result = {
+        "status": "log_query_failed",
+        "t_sg_verified_iso": "2026-10-14T13:47:52",
+    }
+
+    def mock_monitor(**kwargs: Any) -> Any:
+        raise client_err
+
+    monkeypatch.setattr("scripts.measure_pipeline.monitor_quarantine", mock_monitor)
+    monkeypatch.setattr("scripts.measure_pipeline.parse_args", lambda: MagicMock())
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
 
 
 def test_parse_args_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
