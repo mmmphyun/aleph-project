@@ -50,8 +50,15 @@ variable "package_zip_path" {
   }
 }
 
+variable "target_alb_arn" {
+  description = "L7 동기 검증 대상 Application Load Balancer ARN"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "추가 리소스 태그 매핑"
   type        = map(string)
   default     = {}
 }
+

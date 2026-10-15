@@ -106,6 +106,18 @@ data "aws_iam_policy_document" "least_privilege" {
       var.waf_ipset_arn
     ]
   }
+
+  # 4-3. WAFv2 ALB 결합 WebACL 조회 권한 (타깃 ALB ARN으로 제한)
+  statement {
+    sid    = "WAFv2GetWebACLForResource"
+    effect = "Allow"
+    actions = [
+      "wafv2:GetWebACLForResource"
+    ]
+    resources = [
+      var.target_alb_arn != "" ? var.target_alb_arn : "*"
+    ]
+  }
 }
 
 resource "aws_iam_policy" "lambda_least_privilege" {
@@ -160,6 +172,7 @@ resource "aws_lambda_function" "orchestrator" {
     variables = {
       AUTH_FAILURE_TABLE_NAME = var.dynamodb_table_name
       SLACK_WEBHOOK_URL       = var.slack_webhook_url
+      TARGET_ALB_ARN          = var.target_alb_arn
     }
   }
 

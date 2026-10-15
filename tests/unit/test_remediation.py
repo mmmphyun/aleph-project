@@ -2620,6 +2620,23 @@ def test_waf_block_with_alb_association_success(
         Name="test-wacl-bound",
         Scope="REGIONAL",
         DefaultAction={"Allow": {}},
+        Rules=[
+            {
+                "Name": "BlockIPSetRule",
+                "Priority": 0,
+                "Action": {"Block": {}},
+                "VisibilityConfig": {
+                    "SampledRequestsEnabled": False,
+                    "CloudWatchMetricsEnabled": False,
+                    "MetricName": "BlockMetric",
+                },
+                "Statement": {
+                    "IPSetReferenceStatement": {
+                        "ARN": mocked_waf_ipset.ipset_arn,
+                    }
+                },
+            }
+        ],
         VisibilityConfig={
             "SampledRequestsEnabled": False,
             "CloudWatchMetricsEnabled": False,
@@ -2638,6 +2655,51 @@ def test_waf_block_with_alb_association_success(
         alb_arn=alb_arn,
     )
     assert success is True
+
+
+def test_waf_block_with_alb_webacl_missing_ipset_rule_fails(
+    mocked_aws: None,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """타깃 ALB의 WebACL에 대상 IPSet 참조 Block 규칙이 없는 경우 차단 거부(False) 검증."""
+    ec2_res = boto3.resource("ec2", region_name="us-east-1")
+    vpc = ec2_res.create_vpc(CidrBlock="10.0.0.0/16")
+    sub1 = ec2_res.create_subnet(
+        VpcId=vpc.id, CidrBlock="10.0.1.0/24", AvailabilityZone="us-east-1a"
+    )
+    sub2 = ec2_res.create_subnet(
+        VpcId=vpc.id, CidrBlock="10.0.2.0/24", AvailabilityZone="us-east-1b"
+    )
+
+    elbv2 = boto3.client("elbv2", region_name="us-east-1")
+    alb = elbv2.create_load_balancer(Name="test-alb-no-rules", Subnets=[sub1.id, sub2.id])
+    alb_arn = alb["LoadBalancers"][0]["LoadBalancerArn"]
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    # Rules가 비어있는 WebACL 생성 (IPSet 차단 규칙 부재)
+    wacl = waf_client.create_web_acl(
+        Name="test-wacl-empty-rules",
+        Scope="REGIONAL",
+        DefaultAction={"Allow": {}},
+        Rules=[],
+        VisibilityConfig={
+            "SampledRequestsEnabled": False,
+            "CloudWatchMetricsEnabled": False,
+            "MetricName": "m_empty",
+        },
+    )
+    wacl_arn = wacl["Summary"]["ARN"]
+    waf_client.associate_web_acl(WebACLArn=wacl_arn, ResourceArn=alb_arn)
+
+    success = block_ip_wafv2(
+        source_ip="198.51.100.103",
+        ipset_name=mocked_waf_ipset.ipset_name,
+        ipset_id=mocked_waf_ipset.ipset_id,
+        scope=mocked_waf_ipset.scope,
+        waf_client=waf_client,
+        alb_arn=alb_arn,
+    )
+    assert success is False
 
 
 def test_waf_block_with_alb_not_associated_fails(
@@ -2689,10 +2751,10 @@ def test_quarantine_active_probe_timeout_success(
     assert success is True
 
 
-def test_quarantine_active_probe_connection_refused_success(
+def test_quarantine_active_probe_connection_refused_fails(
     mocked_ec2_target: MockEc2Target,
 ) -> None:
-    """L4 Active Probe 시 TCP 연결 거부(RST) 발생 시 격리 성공(True) 확증 검증."""
+    """L4 Active Probe 시 TCP 연결 거부(RST) 발생 시 격리 실패(False) 판정 검증."""
     ec2_client = boto3.client("ec2", region_name="us-east-1")
 
     def mock_socket_refused(*args: Any, **kwargs: Any) -> Any:
@@ -2704,7 +2766,25 @@ def test_quarantine_active_probe_connection_refused_success(
         active_probe=True,
         socket_fn=mock_socket_refused,
     )
-    assert success is True
+    assert success is False
+
+
+def test_quarantine_active_probe_oserror_fails(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """L4 Active Probe 시 네트워크/소켓 OSError 발생 시 검증 불가로 격리 실패(False) 판정."""
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+
+    def mock_socket_oserror(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("Network unreachable")
+
+    success = quarantine_ec2_instance(
+        instance_id=mocked_ec2_target.instance_id,
+        ec2_client=ec2_client,
+        active_probe=True,
+        socket_fn=mock_socket_oserror,
+    )
+    assert success is False
 
 
 def test_quarantine_active_probe_connection_success_fails(
@@ -2773,6 +2853,23 @@ def test_apply_remediation_with_alb_and_active_probe_integration(
         Name="test-full-wacl",
         Scope="REGIONAL",
         DefaultAction={"Allow": {}},
+        Rules=[
+            {
+                "Name": "BlockIPSetRule",
+                "Priority": 0,
+                "Action": {"Block": {}},
+                "VisibilityConfig": {
+                    "SampledRequestsEnabled": False,
+                    "CloudWatchMetricsEnabled": False,
+                    "MetricName": "FullBlockMetric",
+                },
+                "Statement": {
+                    "IPSetReferenceStatement": {
+                        "ARN": mocked_waf_ipset.ipset_arn,
+                    }
+                },
+            }
+        ],
         VisibilityConfig={
             "SampledRequestsEnabled": False,
             "CloudWatchMetricsEnabled": False,
@@ -2825,3 +2922,191 @@ def test_probe_socket_dropped_connected_fails() -> None:
 
     assert probe_socket_dropped("10.0.0.1", port=22, socket_fn=mock_connect) is False
     assert mock_sock.close.called
+
+
+def test_probe_socket_dropped_refused_fails() -> None:
+    """probe_socket_dropped에 ConnectionRefusedError 발생 시 검증 불가로 False 반환 검증."""
+
+    def mock_refused(*args: Any, **kwargs: Any) -> Any:
+        raise ConnectionRefusedError("Connection refused")
+
+    assert probe_socket_dropped("10.0.0.1", port=22, socket_fn=mock_refused) is False
+
+
+def test_probe_socket_dropped_oserror_fails() -> None:
+    """probe_socket_dropped에 OSError 발생 시 검증 불가로 False 반환 검증."""
+
+    def mock_oserror(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("Host unreachable")
+
+    assert probe_socket_dropped("10.0.0.1", port=22, socket_fn=mock_oserror) is False
+
+
+def test_quarantine_reprobe_on_already_quarantined_success(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """이미 격리 SG가 적용된 인스턴스를 재호출했을 때 probe 성공(Timeout) 시 True 반환 검증."""
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+
+    # 1차 호출: 격리 SG 교체 및 probe 성공
+    def mock_timeout(*args: Any, **kwargs: Any) -> Any:
+        raise TimeoutError("Packet drop confirmed")
+
+    res1 = quarantine_ec2_instance(
+        instance_id=mocked_ec2_target.instance_id,
+        ec2_client=ec2_client,
+        active_probe=True,
+        socket_fn=mock_timeout,
+    )
+    assert res1 is True
+
+    # 2차 호출 (재호출): 이미 격리 SG가 할당된 상태에서 probe 재수행 후 True 반환
+    res2 = quarantine_ec2_instance(
+        instance_id=mocked_ec2_target.instance_id,
+        ec2_client=ec2_client,
+        active_probe=True,
+        socket_fn=mock_timeout,
+    )
+    assert res2 is True
+
+
+def test_quarantine_reprobe_on_already_quarantined_fails_when_connected(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """첫 호출 실패 후, 이미 격리 SG 상태에서 재호출해도 연결 체결 시 False 반환 검증."""
+    from unittest.mock import MagicMock
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    mock_sock = MagicMock()
+
+    def mock_connected(*args: Any, **kwargs: Any) -> Any:
+        return mock_sock
+
+    # 1차 호출: SG는 교체되었으나 probe에서 연결 성공 -> False 반환
+    res1 = quarantine_ec2_instance(
+        instance_id=mocked_ec2_target.instance_id,
+        ec2_client=ec2_client,
+        active_probe=True,
+        socket_fn=mock_connected,
+    )
+    assert res1 is False
+
+    # 2차 호출: 이미 격리 SG 상태이나 probe를 생략하지 않고 재수행하여 연결 체결 확인 후 False 반환
+    res2 = quarantine_ec2_instance(
+        instance_id=mocked_ec2_target.instance_id,
+        ec2_client=ec2_client,
+        active_probe=True,
+        socket_fn=mock_connected,
+    )
+    assert res2 is False
+
+
+def test_alb_real_ip_restoration_and_spoofed_xff_defense(
+    mocked_aws: None,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    sample_incident_report: IncidentReport,
+) -> None:
+    """ALB 경유 트래픽에서 Nginx realip 모듈에 의해 위조 XFF가 방어되고 실제 공격자 IP 차단 검증.
+
+    Why:
+        클라이언트가 위조된 X-Forwarded-For(예: 1.1.1.1)를 주입하더라도,
+        신뢰하는 ALB 대역(10.42.0.0/16)을 경유하여 들어올 때 Nginx realip 설정
+        (set_real_ip_from 10.42.0.0/16, real_ip_recursive on)에 의해
+        마지막 비신뢰 IP(실제 공격자 IP: 203.0.113.195)가 $remote_addr로 복원되어
+        NginxAccessLogEvent 파싱 및 WAF IPSet 차단 파이프라인으로 정확히 전달됨을 증빙.
+    """
+    # 1. ALB 및 WebACL 환경 구축
+    ec2_res = boto3.resource("ec2", region_name="us-east-1")
+    vpc = ec2_res.create_vpc(CidrBlock="10.42.0.0/16")
+    sub1 = ec2_res.create_subnet(
+        VpcId=vpc.id, CidrBlock="10.42.1.0/24", AvailabilityZone="us-east-1a"
+    )
+    sub2 = ec2_res.create_subnet(
+        VpcId=vpc.id, CidrBlock="10.42.2.0/24", AvailabilityZone="us-east-1b"
+    )
+
+    elbv2 = boto3.client("elbv2", region_name="us-east-1")
+    alb = elbv2.create_load_balancer(Name="test-xff-alb", Subnets=[sub1.id, sub2.id])
+    alb_arn = alb["LoadBalancers"][0]["LoadBalancerArn"]
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    wacl = waf_client.create_web_acl(
+        Name="test-xff-wacl",
+        Scope="REGIONAL",
+        DefaultAction={"Allow": {}},
+        Rules=[
+            {
+                "Name": "BlockIPSetRule",
+                "Priority": 0,
+                "Action": {"Block": {}},
+                "VisibilityConfig": {
+                    "SampledRequestsEnabled": False,
+                    "CloudWatchMetricsEnabled": False,
+                    "MetricName": "XffBlockMetric",
+                },
+                "Statement": {
+                    "IPSetReferenceStatement": {
+                        "ARN": mocked_waf_ipset.ipset_arn,
+                    }
+                },
+            }
+        ],
+        VisibilityConfig={
+            "SampledRequestsEnabled": False,
+            "CloudWatchMetricsEnabled": False,
+            "MetricName": "XffWaclMetric",
+        },
+    )
+    waf_client.associate_web_acl(WebACLArn=wacl["Summary"]["ARN"], ResourceArn=alb_arn)
+
+    # 2. 위조 XFF 시나리오 로그 생성:
+    # 공격자(203.0.113.195)가 헤더에 'X-Forwarded-For: 1.1.1.1'을 위조하여 전송.
+    # ALB(10.42.1.50)는 수신한 클라이언트 IP(203.0.113.195)를 덧붙여 타깃 Nginx로 전달.
+    # Nginx는 10.42.0.0/16(ALB)을 신뢰하므로 재귀 탐색(real_ip_recursive on)을 거쳐
+    # 첫 비신뢰 IP인 203.0.113.195를 $remote_addr로 기록함.
+    real_attacker_ip = "203.0.113.195"
+    spoofed_ip = "1.1.1.1"
+    alb_internal_ip = "10.42.1.50"
+
+    # Nginx가 복원한 $remote_addr가 기록된 로그 라인 (cloudshield_combined 포맷)
+    # $remote_addr에 real_attacker_ip, $http_x_forwarded_for에 "1.1.1.1, 203.0.113.195"
+    restored_log_line = (
+        f'{real_attacker_ip} - - [28/Sep/2026:11:52:38 +0000] "GET /admin HTTP/1.1" '
+        f'401 150 "-" "curl/7.81.0" 0.002 "{spoofed_ip}, {real_attacker_ip}"'
+    )
+
+    # 3. NginxAccessLogEvent 파싱 검증: 위조 IP나 ALB 내부 IP가 아닌 실제 공격자 IP 추출
+    log_event = NginxAccessLogEvent.parse_line(restored_log_line)
+    assert log_event is not None
+    assert log_event.source_ip == real_attacker_ip
+    assert log_event.source_ip != spoofed_ip
+    assert log_event.source_ip != alb_internal_ip
+
+    # 4. 차단 오케스트레이션 실행 및 WAF IPSet 등록 검증
+    report = sample_incident_report.model_copy(
+        update={
+            "source_ip": log_event.source_ip,
+            "target_identifier": mocked_ec2_target.instance_id,
+            "action_required": "BLOCK_WAF",
+        }
+    )
+
+    result = apply_remediation(
+        report=report,
+        ec2_client=boto3.client("ec2", region_name="us-east-1"),
+        waf_client=waf_client,
+        alb_arn=alb_arn,
+    )
+
+    assert result["waf_blocked"] is True
+
+    # WAF IPSet 조회하여 실제 공격자 IP만 등록되었는지 확인
+    ip_set = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{real_attacker_ip}/32" in ip_set["IPSet"]["Addresses"]
+    assert f"{spoofed_ip}/32" not in ip_set["IPSet"]["Addresses"]
+    assert f"{alb_internal_ip}/32" not in ip_set["IPSet"]["Addresses"]
