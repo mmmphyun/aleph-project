@@ -163,7 +163,7 @@ def test_simulate_threat_and_verify_slack_notified_false() -> None:
 
     mock_response = {
         "threats_detected": ["SSH_BRUTE_FORCE"],
-        "remediation_results": [{"quarantine_applied": True}],
+        "remediation_results": [{"quarantine_applied": True, "waf_blocked": True}],
         "slack_notified": False,
     }
     mock_lambda.invoke.return_value = {
@@ -183,8 +183,65 @@ def test_simulate_threat_and_verify_slack_notified_false() -> None:
     assert result["slack_notified"] is False
 
 
+def test_simulate_threat_and_verify_partial_quarantine_failure() -> None:
+    """L4 격리 실패 시 WAF 차단 성공에도 status=failed 판정 검증 (부분 성공 차단).
+
+    Why:
+        SSH 무차별 대입은 BLOCK_AND_QUARANTINE 정책에 따라 L4 격리가 필수 조치이므로,
+        WAF IP 차단만 성공하고 L4 격리가 실패한 부분 성공 상태를 전체 성공으로 판정해선 안 됨.
+    """
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_response = {
+        "threats_detected": ["SSH_BRUTE_FORCE"],
+        "remediation_results": [{"quarantine_applied": False, "waf_blocked": True}],
+        "slack_notified": True,
+    }
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(json.dumps(mock_response).encode("utf-8")),
+    }
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test12345",
+        auto_restore=False,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+    )
+
+    assert result["status"] == "failed"
+
+
+def test_simulate_threat_and_verify_partial_waf_failure() -> None:
+    """L7 WAF 차단 실패 시 L4 격리 성공에도 status=failed 판정 검증."""
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_response = {
+        "threats_detected": ["SSH_BRUTE_FORCE"],
+        "remediation_results": [{"quarantine_applied": True, "waf_blocked": False}],
+        "slack_notified": True,
+    }
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(json.dumps(mock_response).encode("utf-8")),
+    }
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test12345",
+        auto_restore=False,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+    )
+
+    assert result["status"] == "failed"
+
+
 def test_simulate_threat_and_verify_remediation_failure() -> None:
-    """차단 조치 미집행 시 status=failed 판정 검증."""
+    """차단 조치 전체 미집행 시 status=failed 판정 검증."""
     mock_lambda = MagicMock()
     mock_ec2 = MagicMock()
 

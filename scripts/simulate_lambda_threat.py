@@ -38,6 +38,7 @@ from scripts.restore_baseline_sg import (
     DEFAULT_REGION,
     restore_baseline_security_group,
 )
+from src.remediation.orchestrator import is_remediation_successful
 
 DEFAULT_FUNCTION_NAME = "CloudShield-Threat-Orchestrator"
 DEFAULT_TEST_SOURCE_IP = "198.51.100.50"
@@ -191,17 +192,26 @@ def simulate_threat_and_verify(
     logger.info("차단 집행 결과: %s", remediation_results)
     logger.info("Slack 카드 전파 성공 여부: %s", slack_notified)
 
+    incidents = result_data.get("incidents", [])
+
     remediation_ok = False
     if isinstance(remediation_results, list) and len(remediation_results) > 0:
-        remediation_ok = any(
-            isinstance(r, dict)
-            and (
-                r.get("quarantine_applied") is True
-                or r.get("waf_blocked") is True
-                or r.get("status") == "success"
+        if isinstance(incidents, list) and len(incidents) == len(remediation_results):
+            remediation_ok = all(
+                is_remediation_successful(
+                    inc.get("action_required", "BLOCK_AND_QUARANTINE"),
+                    rem,
+                )
+                for inc, rem in zip(incidents, remediation_results, strict=True)
             )
-            for r in remediation_results
-        )
+        else:
+            remediation_ok = all(
+                is_remediation_successful(
+                    rem.get("action_required", "BLOCK_AND_QUARANTINE"),
+                    rem,
+                )
+                for rem in remediation_results
+            )
 
     # 3. 엄격한 성공 조건 판정 (FunctionError 없음, 위협 탐지, 차단 성공, Slack 알림 성공 필수)
     is_success = (

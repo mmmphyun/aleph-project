@@ -151,6 +151,119 @@ def test_monitor_quarantine_timeout() -> None:
     assert res["t_block_iso"] is None
 
 
+def test_monitor_quarantine_no_identifier_leaves_t_block_none() -> None:
+    """식별자(incident_id, source_ip) 미지정 시 T_block을 확정하지 않고 None 유지 검증."""
+    mock_ec2 = MagicMock()
+    mock_logs = MagicMock()
+
+    mock_ec2.describe_instances.return_value = {
+        "Reservations": [
+            {
+                "Instances": [
+                    {
+                        "InstanceId": "i-test12345",
+                        "SecurityGroups": [{"GroupId": "sg-quarantine"}],
+                    }
+                ]
+            }
+        ]
+    }
+    mock_logs.filter_log_events.return_value = {
+        "events": [
+            {
+                "timestamp": 1791953270994,
+                "message": "L4 격리 완료 (임의의 로그)",
+            }
+        ]
+    }
+
+    res = monitor_quarantine(
+        instance_id="i-test12345",
+        quarantine_sg_id="sg-quarantine",
+        incident_id=None,
+        source_ip=None,
+        timeout_seconds=5,
+        poll_interval=0.01,
+        ec2_client=mock_ec2,
+        logs_client=mock_logs,
+    )
+
+    assert res["status"] == "quarantined"
+    assert res["t_block_iso"] is None
+    assert res["t_block_epoch"] is None
+
+
+def test_monitor_quarantine_failure_log_excluded() -> None:
+    """차단 실패 로그 메시지가 존재하는 경우 T_block으로 오판하지 않고 None 유지 검증."""
+    mock_ec2 = MagicMock()
+    mock_logs = MagicMock()
+
+    mock_ec2.describe_instances.return_value = {
+        "Reservations": [
+            {
+                "Instances": [
+                    {
+                        "InstanceId": "i-test12345",
+                        "SecurityGroups": [{"GroupId": "sg-quarantine"}],
+                    }
+                ]
+            }
+        ]
+    }
+    mock_logs.filter_log_events.return_value = {
+        "events": [
+            {
+                "timestamp": 1791953270994,
+                "message": "[INC-1234] 198.51.100.50 L4 격리 실패 (ClientError)",
+            }
+        ]
+    }
+
+    res = monitor_quarantine(
+        instance_id="i-test12345",
+        quarantine_sg_id="sg-quarantine",
+        incident_id="INC-1234",
+        source_ip="198.51.100.50",
+        timeout_seconds=5,
+        poll_interval=0.01,
+        ec2_client=mock_ec2,
+        logs_client=mock_logs,
+    )
+
+    assert res["status"] == "quarantined"
+    assert res["t_block_iso"] is None
+    assert res["t_block_epoch"] is None
+
+
+def test_main_cli_timeout_exits_code_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    """격리 감지 타임아웃 시 CLI가 종료 코드 1로 종료되는지 검증."""
+    from scripts.measure_pipeline import main
+
+    monkeypatch.setattr(
+        "scripts.measure_pipeline.monitor_quarantine",
+        lambda **kwargs: {"status": "timeout"},
+    )
+    monkeypatch.setattr("scripts.measure_pipeline.parse_args", lambda: MagicMock())
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
+
+
+def test_main_cli_success_exits_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정상 격리 감지 시 CLI가 종료 코드 0으로 정상 완료되는지 검증."""
+    from scripts.measure_pipeline import main
+
+    monkeypatch.setattr(
+        "scripts.measure_pipeline.monitor_quarantine",
+        lambda **kwargs: {"status": "quarantined"},
+    )
+    monkeypatch.setattr("scripts.measure_pipeline.parse_args", lambda: MagicMock())
+
+    # 정상 완료 시 SystemExit 미발생
+    main()
+
+
 def test_parse_args_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """CLI 파서 기본값 설정 검증."""
     args = parse_args([])

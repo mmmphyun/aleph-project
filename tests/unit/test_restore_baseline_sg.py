@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import boto3
 import pytest
 from botocore.exceptions import ClientError
@@ -88,6 +90,93 @@ def test_restore_baseline_security_group_instance_not_found(
             instance_id="i-nonexistent999",
             baseline_sg_id=mocked_ec2_target.normal_sg_id,
             ec2_client=ec2_client,
+        )
+
+
+def test_restore_baseline_security_group_extra_sg_fails(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """복구 후 다른 보안 그룹이 함께 잔존하여 단독 적용 계약을 위반할 때 예외 검증."""
+    mock_ec2 = MagicMock()
+    mock_ec2.describe_instances.side_effect = [
+        # 1차: 현재 격리 SG 상태
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": mocked_ec2_target.instance_id,
+                            "SecurityGroups": [{"GroupId": mocked_ec2_target.quarantine_sg_id}],
+                        }
+                    ]
+                }
+            ]
+        },
+        # 2차 검증: Baseline SG 외에 다른 SG가 함께 잔존
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": mocked_ec2_target.instance_id,
+                            "SecurityGroups": [
+                                {"GroupId": mocked_ec2_target.normal_sg_id},
+                                {"GroupId": "sg-extra-leaked"},
+                            ],
+                        }
+                    ]
+                }
+            ]
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="Baseline SG 단독 적용 불일치"):
+        restore_baseline_security_group(
+            instance_id=mocked_ec2_target.instance_id,
+            baseline_sg_id=mocked_ec2_target.normal_sg_id,
+            ec2_client=mock_ec2,
+        )
+
+
+def test_restore_baseline_security_group_mismatch_fails(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """복구 후 완전히 다른 보안 그룹으로 조회될 때 예외 검증."""
+    mock_ec2 = MagicMock()
+    mock_ec2.describe_instances.side_effect = [
+        # 1차: 현재 격리 SG 상태
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": mocked_ec2_target.instance_id,
+                            "SecurityGroups": [{"GroupId": mocked_ec2_target.quarantine_sg_id}],
+                        }
+                    ]
+                }
+            ]
+        },
+        # 2차 검증: 다른 SG만 존재
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": mocked_ec2_target.instance_id,
+                            "SecurityGroups": [{"GroupId": "sg-wrong-group"}],
+                        }
+                    ]
+                }
+            ]
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="Baseline SG 단독 적용 불일치"):
+        restore_baseline_security_group(
+            instance_id=mocked_ec2_target.instance_id,
+            baseline_sg_id=mocked_ec2_target.normal_sg_id,
+            ec2_client=mock_ec2,
         )
 
 

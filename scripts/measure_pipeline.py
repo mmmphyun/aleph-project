@@ -24,6 +24,7 @@ import datetime
 import json
 import logging
 import os
+import sys
 import time
 from typing import Any
 
@@ -136,34 +137,46 @@ def monitor_quarantine(
             limit=50,
         )
         events = log_res.get("events", [])
+        has_identifier = bool(incident_id or source_ip)
         for ev in events:
             msg = ev.get("message", "")
             ts_ms = ev.get("timestamp", 0)
             lambda_logs.append({"timestamp": ts_ms, "message": msg.strip()})
 
-            # 사건 연결성 검증: 식별자가 지정된 경우 해당 식별자가 포함되어야 함
+            # 사건 연결성 검증: 식별자(incident_id 또는 source_ip)가 반드시 일치해야 함
+            if not has_identifier:
+                continue
+
             matches_incident = True
             if incident_id and incident_id not in msg:
                 matches_incident = False
             if source_ip and source_ip not in msg:
                 matches_incident = False
 
-            is_quarantine_msg = "격리 완료" in msg or "quarantine" in msg.lower() or "차단" in msg
-            if matches_incident and is_quarantine_msg:
+            # 차단 실패/오류 메시지는 성공 타임스탬프(T_block)에서 엄격히 배제
+            is_failure_msg = any(
+                kw in msg.lower() for kw in ("실패", "미완료", "error", "failed", "failure")
+            )
+            is_success_msg = ("격리 완료" in msg or "격리 성공" in msg or "차단 성공" in msg) or (
+                "quarantine" in msg.lower() and "success" in msg.lower()
+            )
+            is_valid_block = is_success_msg and not is_failure_msg
+
+            if matches_incident and is_valid_block:
                 t_block_epoch = ts_ms / 1000.0
                 t_block_iso = datetime.datetime.fromtimestamp(
                     t_block_epoch, datetime.UTC
                 ).isoformat()
                 logger.info(
-                    "사건 연결 차단 로그 감지 (T_block): %s (메시지: %s)",
+                    "사건 연결 차단 성공 로그 감지 (T_block): %s (메시지: %s)",
                     t_block_iso,
                     msg.strip(),
                 )
 
         if t_block_iso is None:
-            # 사건과 연결되지 않은 임의 이벤트를 T_block으로 지정하지 않고 미확정(None)으로 유지
+            # 사건과 연결되지 않거나 차단 성공이 확인되지 않은 경우 T_block을 미확정(None)으로 유지
             logger.warning(
-                "사건(%s, %s) 차단 로그 미발견으로 T_block을 미확정(None)으로 유지합니다.",
+                "사건(%s, %s) 차단 성공 로그 미발견으로 T_block을 미확정(None)으로 유지합니다.",
                 incident_id or "지정 안 됨",
                 source_ip or "지정 안 됨",
             )
@@ -204,15 +217,21 @@ def main() -> None:
     """CLI 진입점."""
     args = parse_args()
 
-    res = monitor_quarantine(
-        instance_id=args.instance_id,
-        quarantine_sg_id=args.quarantine_sg_id,
-        incident_id=args.incident_id,
-        source_ip=args.source_ip,
-        timeout_seconds=args.timeout,
-        poll_interval=args.interval,
-    )
-    print(json.dumps(res, indent=2, ensure_ascii=False))
+    try:
+        res = monitor_quarantine(
+            instance_id=args.instance_id,
+            quarantine_sg_id=args.quarantine_sg_id,
+            incident_id=args.incident_id,
+            source_ip=args.source_ip,
+            timeout_seconds=args.timeout,
+            poll_interval=args.interval,
+        )
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        if res.get("status") != "quarantined":
+            sys.exit(1)
+    except Exception as e:
+        logger.error("관통 실측 모니터링 실행 실패: %s", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

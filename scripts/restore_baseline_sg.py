@@ -121,9 +121,10 @@ def restore_baseline_security_group(
         verified_instance = verify_res["Reservations"][0]["Instances"][0]
         verified_sgs = [sg["GroupId"] for sg in verified_instance.get("SecurityGroups", [])]
 
-        if baseline_sg_id not in verified_sgs:
+        if verified_sgs != [baseline_sg_id]:
             raise RuntimeError(
-                f"보안 그룹 복구 검증 실패: 예상={baseline_sg_id}, 실제={verified_sgs}"
+                f"보안 그룹 복구 검증 실패: Baseline SG 단독 적용 불일치 "
+                f"(예상=[{baseline_sg_id}], 실제={verified_sgs})"
             )
 
         restore_iso = datetime.datetime.now(datetime.UTC).isoformat()
