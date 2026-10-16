@@ -1388,3 +1388,57 @@ def test_collection_latency_cli_and_input_limit(
     monkeypatch.setattr(latency, "MAX_INPUT_BYTES", 1)
     with pytest.raises(ValueError, match="32 MiB"):
         latency.main()
+
+
+def test_summarize_collection_latency_scenario2_nginx_events() -> None:
+    """[P3-7] 시나리오 2 Nginx 15회차 웹 스캔 이벤트 수집 지연 계측 요약 검증.
+
+    Why:
+        실인프라에서 계측된 15건의 Nginx access.log CloudWatch 수집 이벤트 표본
+        (p50: 1810ms, p95: 1815ms) 입력 시 누락/중복 없이 예산(3,000ms) 내 통과
+        판정(within_budget=True) 및 정확한 백분위수와 카운트가 산출되는지 검증함.
+    """
+    from collector.collection_latency import summarize_collection_latency
+
+    base_ts = 1729066182812
+    # 15건 이벤트: 1초 간격 발생, 약 1.8초(1803~1815ms) 수집 지연
+    delays = [
+        1808,
+        1803,
+        1806,
+        1808,
+        1806,
+        1810,
+        1811,
+        1810,
+        1810,
+        1811,
+        1811,
+        1812,
+        1811,
+        1814,
+        1815,
+    ]
+    events = [
+        {
+            "eventId": f"nginx-evt-{i + 1}",
+            "timestamp": base_ts + (i * 1000),
+            "ingestionTime": base_ts + (i * 1000) + delay,
+        }
+        for i, delay in enumerate(delays)
+    ]
+
+    result = summarize_collection_latency(events, expected_count=15, budget_ms=3000)
+
+    assert result["scope"] == "event_timestamp_to_cloudwatch_ingestion"
+    assert result["expected_count"] == 15
+    assert result["observed_count"] == 15
+    assert result["missing_count"] == 0
+    assert result["duplicate_count"] == 0
+    assert result["p50_ms"] == 1810
+    assert result["p95_ms"] == 1815
+    assert result["max_ms"] == 1815
+    assert result["budget_ms"] == 3000
+    assert result["over_budget_count"] == 0
+    assert result["complete"] is True
+    assert result["within_budget"] is True

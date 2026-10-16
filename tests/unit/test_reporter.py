@@ -1648,3 +1648,55 @@ def test_send_slack_alert_network_failure_isolation(
     # 예외 전파 없이 False 반환 확인
     success = send_slack_alert(report, webhook_url="https://hooks.slack.com/services/FAIL")
     assert success is False
+
+
+def test_build_slack_payload_scenario2_web_directory_scanning_waf_block() -> None:
+    """[P3-7] 시나리오 2 Web L7 디렉터리 스캐닝 및 WAF 차단 연계 Slack 카드 렌더링 검증.
+
+    Why:
+        시나리오 2 실인프라 관통 대응 결과(WEB_DIRECTORY_SCANNING, BLOCK_WAF) 인입 시
+        L7 WAF IPSet 차단 완료 상태가 표시되고, L4 SG 격리는 미대상으로 올바르게 분리 렌더링되는지
+        4대 필수 키 및 글자 수 상한과 함께 완결성 있게 검증함.
+    """
+    report = IncidentReport(
+        incident_id="INC-1729066190-WAF",
+        attack_type="WEB_DIRECTORY_SCANNING",
+        mitre_id="T1083",
+        risk_level="HIGH",
+        source_ip="3.26.171.60",
+        target_identifier="i-027b9d94be16b0d77",
+        target_accounts=(),
+        summary_ko="웹 디렉터리 스캐닝(WEB_DIRECTORY_SCANNING) 공격 탐지 및 WAF 차단 조치 완료",
+        action_required="BLOCK_WAF",
+        recommendations=(
+            "공격자 IP WAF 영구 차단 유지",
+            "Nginx 웹서버 404 접근 로그 모니터링",
+        ),
+    )
+    remediation_result = {
+        "waf_blocked": True,
+        "quarantine_applied": False,
+        "iam_revoked": False,
+    }
+
+    payload = build_slack_payload(report, remediation_result=remediation_result)
+
+    # 1. 4대 필수 구조화 키 단언
+    assert payload["incident_id"] == "INC-1729066190-WAF"
+    assert payload["rule_name"] == "WEB_DIRECTORY_SCANNING"
+    assert payload["source_ip"] == "3.26.171.60"
+    assert payload["remediation_action"] == "BLOCK_WAF"
+
+    # 2. Block Kit 구조 검증
+    blocks = payload["blocks"]
+    assert any(b["type"] == "header" for b in blocks)
+    assert any("WEB_DIRECTORY_SCANNING" in json.dumps(b) for b in blocks)
+
+    # 3. 다중 계층 집행 현황 단언 (L7은 차단 완료, L4는 격리 미대상, IAM은 미대상)
+    remediation_block = next(
+        b for b in blocks if "*인프라 원자적 차단 집행 현황:*" in b.get("text", {}).get("text", "")
+    )
+    rem_text = remediation_block["text"]["text"]
+    assert "• L4 EC2 네트워크 격리: ℹ️ 격리 미대상" in rem_text
+    assert "• L7 WAFv2 IP 차단: ✅ IPSet 차단 완료 (/32)" in rem_text
+    assert "• Identity IAM 세션 무효화: ℹ️ 미대상 (SSH 시나리오 제외)" in rem_text
