@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 실제 요청은 숫자형 loopback으로 제한한다. DNS와 프록시를 거치지 않아 승인되지 않은 대상에 닿지 않는다.
+# 실제 요청은 loopback과 사전 승인된 ALB 한 곳으로 제한한다. 외부 curl은 검증한 모바일 IPv4 경로를 사용한다.
 # 경로 후보와 도구 인자는 고정 배열이며 응답 본문, 인증 정보, 원시 도구 출력은 증거에 남기지 않는다.
 readonly -a PATHS=(admin login dashboard api health backup config robots.txt sitemap.xml
   uploads images static assets private internal debug status metrics old test)
 readonly MAX_CANDIDATES=${#PATHS[@]}
+readonly APPROVED_ALB_HOST='cloudshield-alb-dev-308142572.ap-southeast-2.elb.amazonaws.com'
 
 usage() {
-  printf '사용법: %s --url http://127.0.0.1:PORT [--tool curl|gobuster] [--candidates 1..20 | --paths admin,login,...] [--interval 0..11] [--max-runtime 1..300] [--concurrency 1..4] [--timeout 1..10] [--evidence PATH] [--execute]\n' "$0" >&2
+  printf '사용법: %s --url URL [--tool curl|gobuster] [--candidates 1..20 | --paths admin,login,...] [--interval 0..11] [--max-runtime 1..300] [--concurrency 1..4] [--timeout 1..10] [--evidence PATH] [--execute]\n' "$0" >&2
+  printf '대상: 숫자형 loopback 또는 승인 ALB http://%s:80 (curl 전용)\n' "$APPROVED_ALB_HOST" >&2
 }
 
 fail_usage() {
@@ -75,10 +77,14 @@ fi
 (((candidates - 1) * interval < max_runtime)) || fail_usage '요청 간격이 전체 실행 한도를 소진합니다'
 
 # 전체 URL을 앵커로 검증해 사용자 정보, 쿼리, fragment, 경로, 셸 메타문자와 모호한 포트를 거부한다.
-[[ ${#url} -le 128 && $url =~ ^(http|https)://(127\.0\.0\.1|\[::1\])(:([1-9][0-9]{0,4}))?/?$ ]] || fail_usage '숫자형 loopback URL만 허용합니다'
-scheme=${BASH_REMATCH[1]} host=${BASH_REMATCH[2]} port=${BASH_REMATCH[4]:-}
+[[ ${#url} -le 128 && $url =~ ^(http|https)://([a-zA-Z0-9.-]+|\[::1\])(:([1-9][0-9]{0,4}))?/?$ ]] || fail_usage '허용된 origin URL 형식이 아닙니다'
+scheme=${BASH_REMATCH[1]} host=${BASH_REMATCH[2],,} port=${BASH_REMATCH[4]:-}
 if [[ -n $port ]]; then
   bounded_number "$port" 1 65535 || fail_usage '포트는 1..65535입니다'
+fi
+if [[ $host != 127.0.0.1 && $host != '[::1]' ]]; then
+  # ALB 전체나 임의 DNS를 허용하지 않는다. 승인 범위는 HTTP 80·curl이며 HTTPS/다른 포트는 별도 검토한다.
+  [[ $host == "$APPROVED_ALB_HOST" && $scheme == http && ( -z $port || $port == 80 ) && $tool == curl ]] || fail_usage '승인 ALB의 HTTP 80 curl 요청만 허용합니다'
 fi
 origin="$scheme://$host${port:+:$port}"
 
@@ -103,6 +109,14 @@ started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 state=tool_error attempted=0 observed=0
 status_200=0 status_301=0 status_302=0 status_403=0 status_404=0 status_other=0
 child_pid='' temp_dir=''
+request_started=() request_observed=() request_statuses=() request_exits=()
+
+# 클라이언트 시각은 PCAP과 대조할 관측 경계다. 서버 처리·WAF 적용 시각으로 해석하지 않는다.
+# 고정 후보 최대 20건의 UTC 밀리초만 보존하며 잘못된 시계 출력이나 읽기 오류는 전파한다.
+request_clock() {
+  request_time_value=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) || { state=tool_error; exit 70; }
+  [[ $request_time_value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$ ]] || { state=tool_error; exit 70; }
+}
 
 # 전체 실행 시계는 date로 읽어 테스트에서 가상 시계를 주입할 수 있다. 잘못된 시계는 실패로 닫는다.
 clock_now() {
@@ -155,7 +169,7 @@ collect_gobuster_statuses() {
 }
 
 finish() {
-  local code=$1 ended_at
+  local code=$1 ended_at index prefix summary request_line
   trap - EXIT INT TERM
   if [[ -n $child_pid ]] && kill -0 "$child_pid" 2>/dev/null; then
     kill -TERM "$child_pid" 2>/dev/null || true
@@ -174,15 +188,31 @@ finish() {
     rmdir -- "$temp_dir" 2>/dev/null || true
   fi
   ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  {
-    printf 'started_at=%s\nended_at=%s\n' "$started_at" "$ended_at"
-    printf 'tool=%s\ntarget=%s\nstate=%s\nexit_code=%s\n' "$tool" "$origin" "$state" "$code"
-    printf 'planned_requests=%s\nattempted_requests=%s\nobserved_statuses=%s\n' \
-      "$candidates" "$attempted" "$observed"
-    printf 'http_200=%s\nhttp_301=%s\nhttp_302=%s\nhttp_403=%s\nhttp_404=%s\nhttp_other=%s\n' \
-      "$status_200" "$status_301" "$status_302" "$status_403" "$status_404" "$status_other"
-  } >> "$evidence"
-  printf 'state=%s exit_code=%s evidence=%s\n' "$state" "$code" "$evidence" >&2
+  # 최대 20건의 메타데이터를 한 번에 쓴다. 중간 쓰기 실패가 뒤의 성공으로 가려지는 것을 막는다.
+  printf -v summary '%s\n' \
+    "started_at=$started_at" "ended_at=$ended_at" "tool=$tool" "target=$origin" \
+    "state=$state" "exit_code=$code" "planned_requests=$candidates" \
+    "attempted_requests=$attempted" "observed_statuses=$observed" \
+    "http_200=$status_200" "http_301=$status_301" "http_302=$status_302" \
+    "http_403=$status_403" "http_404=$status_404" "http_other=$status_other"
+  if [[ $tool == curl ]]; then
+    for ((index = 0; index < attempted; index++)); do
+      prefix="request_$((index + 1))"
+      printf -v request_line '%s\n' \
+        "${prefix}_started_at=${request_started[index]:-unknown}" \
+        "${prefix}_observed_at=${request_observed[index]:-unknown}" \
+        "${prefix}_path=/${REQUEST_PATHS[index]}" \
+        "${prefix}_http_status=${request_statuses[index]:-unknown}" \
+        "${prefix}_exit_code=${request_exits[index]:-unknown}"
+      summary+=$request_line
+    done
+  fi
+  if printf '%s' "$summary" >> "$evidence"; then
+    printf 'state=%s exit_code=%s evidence=%s\n' "$state" "$code" "$evidence" >&2
+  else
+    printf 'state=evidence_error exit_code=74; 증거 저장에 실패했습니다\n' >&2
+    exit 74
+  fi
 }
 trap 'finish $?' EXIT
 trap 'state=interrupted; exit 130' INT
@@ -209,19 +239,27 @@ if [[ $tool == curl ]]; then
       ((rc == 0)) || { state=tool_error; exit "$rc"; }
       check_deadline
     fi
+    request_clock
+    request_started[i]=$request_time_value
     ((attempted += 1))
     code=''
-    curl_args=(-q --silent --noproxy '*' --proxy '' --max-redirs 0 --proto '=http,https'
+    curl_args=(-q --silent --noproxy '*' --proxy '' --max-redirs 0 --proto '=http,https')
+    [[ $host != "$APPROVED_ALB_HOST" ]] || curl_args+=(--ipv4)
+    curl_args+=(
       --connect-timeout "$request_timeout" --max-time "$request_timeout"
       --output /dev/null --write-out '%{http_code}' -- "$origin/${REQUEST_PATHS[i]}")
     # 소유 PID를 추적해야 중단·전체 시간 초과 시 curl도 회수할 수 있다. 원시 출력은 증거에 복사하지 않는다.
     curl "${curl_args[@]}" > "$temp_dir/output" 2>/dev/null &
     child_pid=$!
     wait_owned
+    request_exits[i]=$rc
+    request_clock
+    request_observed[i]=$request_time_value
     if ((rc == 0)); then
       code=$(< "$temp_dir/output")
       [[ $code != 000 ]] || { state=connection_failure; exit 7; }
       [[ $code =~ ^[1-5][0-9][0-9]$ ]] || { state=tool_error; exit 70; }
+      request_statuses[i]=$code
       record_status "$code"
       check_deadline
     else

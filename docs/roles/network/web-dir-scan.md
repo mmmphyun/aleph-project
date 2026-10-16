@@ -1,8 +1,37 @@
 # Web 디렉터리 모의 스캔 실행 가이드
 
-이 실험은 합성 경로를 짧은 시간에 요청해 HTTP 경로, 상태 코드, 요청 빈도에 남는 L7 흔적을 확인하기 위한 것이다. TCP 플래그 기반 SG 분석이나 실제 WAF 차단 실험은 포함하지 않는다.
+이 스크립트는 합성 경로의 HTTP 상태와 요청 빈도를 제한된 환경에서 관측한다. 기본 대상은 loopback이며, P3-6에서는 아래 승인 ALB의 HTTP 80 curl 실행과 요청별 증거를 추가했다. WAF 차단 확정에는 별도 PCAP 및 WAF 원본 로그 대조가 필요하다.
 
-## 현재 연계 범위와 후속 티켓
+## P3-6 승인 ALB 실행 및 캡처
+
+- Notion Task: https://notion.so/3f704d37c225801592d4e0d0a10a6911
+- GitHub Issue: https://github.com/mmmphyun/aleph-project/issues/185
+- 승인 origin: `http://cloudshield-alb-dev-308142572.ap-southeast-2.elb.amazonaws.com` (명시적 `:80`도 허용)
+- 이 호스트의 DNS 대소문자는 정규화한다. HTTPS, 다른 포트, 추가 경로·사용자 정보·쿼리·fragment, 유사 접미사 호스트는 거부한다. 다른 ALB를 허용하려면 승인 범위와 테스트를 갱신해야 한다.
+- 외부 실행은 curl 전용이며 IPv4를 강제한다. 기존 loopback의 HTTP/HTTPS·curl/gobuster 동작과 dry-run, 최대 20개 요청·동시성 1·전체 300초 한도는 보존한다.
+
+Windows 호스트는 학원망, VM은 `Remote NDIS based Internet Sharing Device` 브리지로 분리한다. VM의 나머지 네트워크 어댑터는 끈다. 매 실행 직전 VM의 공인 IPv4가 학원 IP와 다르며 클라우드 담당이 인식하는 공격 출발지와 일치하는지 확인한다. 명령은 Kali **Bash**용이며 줄바꿈은 역슬래시를 사용한다.
+
+```bash
+curl -4 --noproxy '*' https://ifconfig.me/ip
+curl -4 -I --noproxy '*' --connect-timeout 5 --max-time 10 \
+  http://cloudshield-alb-dev-308142572.ap-southeast-2.elb.amazonaws.com/
+
+# 먼저 --execute 없이 계획만 확인한다.
+bash network/web_dir_scan.sh \
+  --url http://cloudshield-alb-dev-308142572.ap-southeast-2.elb.amazonaws.com \
+  --tool curl --candidates 15 --interval 1
+```
+
+실측은 수집·원본 로그 확인 및 단일 IP 복구 담당의 준비를 확인한 뒤 한 번 수행한다. 새 실행 폴더에서 `sudo timeout --signal=INT --kill-after=5s 90s tcpdump -i eth0 -nn -s 4096 -U -c 2000 -w p3_6_waf.pcap 'tcp port 80'`을 먼저 시작하고 `listening on eth0`를 확인한다. 인터페이스는 `ip route`와 대조한다. 캡처는 최대 2,000패킷·패킷당 4,096바이트·90초로 제한한다. 시간 한도 종료의 124와 캡처 도구 실패를 구분하고 파일 flush를 확인한다.
+
+준비된 캡처와 같은 실행 폴더에서 위 계획에 `--evidence web-dir-summary.txt --execute`를 추가한다. 기존 증거 파일은 덮어쓰지 않는다. 15개 경로·1초 간격은 대기만 최소 14초이며 응답 시간과 실행 오버헤드가 추가된다. 10초 대응 평가는 전체 실행 시간이 아니라 서버 로그의 탐지 조건 충족 시점부터 각 대응 지점까지 측정한다.
+
+curl 증거는 기존 요약 키에 `request_N_started_at`, `request_N_observed_at`(UTC 밀리초), `request_N_path`, `request_N_http_status`, `request_N_exit_code`를 추가한다. 최대 20건만 보존한다. 관측 시각은 curl 종료를 확인한 클라이언트 시각이며 패킷 도착·서버 처리·WAF 적용 시각과 같지 않다. 응답 없이 실패·중단된 항목은 `unknown`으로 남기며 가짜 403을 만들지 않는다. gobuster는 요청별 시각을 제공하지 않고 기존 요약만 유지한다. 증거 저장 실패는 74로 종료한다.
+
+HTTP 403 최초 수신은 PCAP의 `http.response.code == 403`과 요청·TCP stream으로 대조한다. FIN/RST는 `tcp.flags.fin == 1 || tcp.flags.reset == 1`로 별도 관측하며, 403 자체가 연결 종료를 뜻하지 않는다. WAF 원본 로그의 `action=BLOCK`, 출발지, URI, `terminatingRuleId`를 클라우드 담당이 확인해야 차단 주체를 확정할 수 있다. 헤더·본문이나 민감한 원본 로그를 공개 보고서에 그대로 복사하지 않는다.
+
+## 기존 로컬 보완 당시 연계 범위와 후속 티켓
 
 이 스크립트는 로컬 테스트 HTTP 대상의 요청 계획과 HTTP 상태 코드·요청 수 증거를 다룬다. 2026-10-02 main `7fbe19e` 기준 Web 룰과 Nginx 파서는 구현되어 있어 이번 보완에서는 모의 요청·응답을 기존 파서 및 룰에 연결한다. 운영 CloudWatch 전달, `IncidentReport` 생성, 자동 차단 또는 10초 E2E 성공을 검증한 것은 아니다. main 오케스트레이터의 진입점은 아직 SSH 로그 중심이다.
 
@@ -21,7 +50,7 @@ bash network/web_dir_scan.sh --url http://127.0.0.1:8080 --tool gobuster --candi
 
 ## 명시적 실행
 
-로컬에서 직접 관리하는 테스트 HTTP 서버를 준비하고, 대상 포트가 의도한 서비스인지 확인한다. 실제 요청은 `--execute`가 있어야 시작된다. 숫자형 `127.0.0.1` 또는 `[::1]`만 허용하며 DNS 이름, 외부 주소, URL 사용자 정보, 쿼리, fragment, 추가 경로는 거부한다. 프록시는 비활성화한다. Docker 대상이나 별도 승인 테스트 대상은 현재 스크립트가 직접 소유·검증할 수 없으므로 지원하지 않는다.
+로컬에서 직접 관리하는 테스트 HTTP 서버를 준비하고, 대상 포트가 의도한 서비스인지 확인한다. 실제 요청은 `--execute`가 있어야 시작된다. 기본 대상은 숫자형 `127.0.0.1` 또는 `[::1]`이며, 외부 예외는 위 P3-6 승인 origin 하나다. 그 밖의 DNS 이름과 외부 주소, URL 사용자 정보, 쿼리, fragment, 추가 경로는 거부한다. 프록시는 비활성화한다.
 
 ```bash
 bash network/web_dir_scan.sh --url http://127.0.0.1:8080 --candidates 5 --timeout 2 --evidence ./web-dir-evidence.txt --execute
@@ -36,7 +65,7 @@ bash network/web_dir_scan.sh --url http://127.0.0.1:8080 --tool gobuster --candi
 
 증거는 `--evidence`로 지정한 경로에 새로 생성된다. 생략하면 현재 디렉터리에 `web-dir-scan-<UTC 시각>-<PID>.txt`가 생성된다. 기존 파일은 덮어쓰지 않는다. 시작·종료 UTC 시각, 계획·시도 요청 수, 관측 상태 수, HTTP 200/301/302/403/404/기타 분포를 기록한다. curl은 각 요청의 실제 시도 수와 상태 코드를 집계한다. gobuster는 내부 사전 검사 요청과 필터링 때문에 실제 시도 수를 확정할 수 없어 `attempted_requests=unknown`으로 표시하며, 404는 wildcard 사전 검사와 충돌하므로 결과에서 제외한다. 404 분포가 필요하면 curl 모드를 사용한다. 필요한 증거만 검토·보관하고, 실험 종료 후 본인이 만든 증거 파일을 직접 삭제한다.
 
-SG conntrack 동작 분석과 WAF 403 이후 FIN/RST 패킷 분석 및 PCAP 보고서는 각 전용 후속 티켓에서 다룬다. 이 가이드로 실제 SG 교체나 WAF 차단을 수행하지 않는다.
+SG conntrack 분석은 별도 티켓에서 다룬다. P3-6 실측 증거와 403 이후 FIN/RST 관측은 별도 실행 보고서에 기록하며 스크립트 자체는 SG나 WAF API를 호출하지 않는다.
 
 gobuster가 일부 응답 후 실패하거나 사용자 중단·전체 실행 제한 시간에 도달해도, 소유 프로세스를 종료한 뒤 이미 출력한 합성 후보의 200/301/302/403 결과를 한 번 집계한다. 진단 문구와 필터 밖 404/기타 코드는 관측 수에 포함하지 않는다. 도구 종료 코드 130/143은 `interrupted`, 28/124는 `timeout` 및 증거 종료 코드 124로 기록한다. 1/6/7은 `connection_failure`, 그 밖의 비정상 종료는 `tool_error`로 기록하며 원래 종료 코드를 보존한다. 실제 gobuster의 종료 코드 1만으로 세부 실패 원인을 확정할 수는 없다.
 
@@ -98,4 +127,4 @@ bash network/web_dir_scan.sh --url http://127.0.0.1:8080 --paths admin,login,das
 3. 클라우드 A: main `threat_orchestrator_handler`는 `SyslogAuthEvent`와 `AuthFailureWindow`를 사용한다. Nginx 라우팅, Web 시간창의 배치 간 누적, Web 매퍼 호출 연결이 필요하다. `IncidentReport`의 BLOCK_WAF 액션과 WAF 차단 엔진은 존재하지만 Web 입력에서의 관통 실행 증거는 아니다.
 4. 클라우드 B: `send_slack_alert`는 BLOCK_WAF 보고서에 WAF 카드를 선택할 수 있다. 보고서·실제 대응 결과가 연결된 후 필드 및 카드 조건 검증이 필요하다. 이번 작업에서 Slack 메시지는 보내지 않았다.
 
-증거 파일은 기존 요약 형식을 유지한다. 요청별 경로·시각·상태나 고유 경로 판정을 저장하는 탐지 엔진을 네트워크 코드에 복제하지 않았다. 실제 관측을 판단하려면 별도로 승인된 서버 로그가 필요하며, 이번 결과는 운영 탐지·차단 또는 10초 E2E 성공을 의미하지 않는다. 협업 사항은 이 문서에만 정리하고 별도 이슈를 생성하지 않는다.
+#124 당시 증거는 요약 형식만 유지했다. P3-6에서는 위에 명시한 제한된 curl 요청별 메타데이터를 추가하며, 탐지 엔진의 고유 경로 집계는 네트워크 코드에 복제하지 않는다. 과거 모의 테스트 결과는 운영 탐지·차단 또는 10초 E2E 성공을 의미하지 않는다.
