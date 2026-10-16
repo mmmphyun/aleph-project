@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from contracts.events import (
+    CloudWatchLogEvent,
     CloudWatchLogsPayload,
     NginxAccessLogEvent,
     SyslogAuthEvent,
@@ -213,6 +214,18 @@ def test_contract_schema_immutability() -> None:
         f"{actual_cw_fields ^ expected_cw_fields}"
     )
 
+    expected_cw_event_fields = {
+        "id",
+        "timestamp",
+        "message",
+        "extractedFields",
+    }
+    actual_cw_event_fields = set(CloudWatchLogEvent.model_fields.keys())
+    assert actual_cw_event_fields == expected_cw_event_fields, (
+        f"CloudWatchLogEvent 스키마가 변조되었습니다! 누락/추가 필드: "
+        f"{actual_cw_event_fields ^ expected_cw_event_fields}"
+    )
+
     expected_nginx_fields = {
         "source_ip",
         "timestamp_str",
@@ -228,6 +241,70 @@ def test_contract_schema_immutability() -> None:
         f"NginxAccessLogEvent 스키마가 변조되었습니다! 누락/추가 필드: "
         f"{actual_nginx_fields ^ expected_nginx_fields}"
     )
+
+
+def test_cw_event_with_extracted_fields_support() -> None:
+    """구독 필터 패턴 매칭 시 자동 주입되는 extractedFields 호환성 검증.
+
+    Why:
+        Nginx 필터 등 공백 구분자 추출 패턴([ip, ident, ...])을 사용하는 구독 필터는
+        Lambda로 페이로드를 전달할 때 logEvents 내부에 extractedFields 딕셔너리를 포함함.
+        Pydantic V2 엄격 모드(extra='forbid') 환경에서 해당 필드가 거부되지 않고
+        정상적으로 파싱 및 보존되는지 단언함.
+    """
+    raw_payload_dict = {
+        "messageType": "DATA_MESSAGE",
+        "owner": "123456789012",
+        "logGroup": "/cloudshield/target/nginx-access-log",
+        "logStream": "i-0abcd1234ef567890",
+        "subscriptionFilters": ["CloudShield-Nginx-Access-Filter"],
+        "logEvents": [
+            {
+                "id": "event-extracted-001",
+                "timestamp": 1729065017000,
+                "message": (
+                    '223.39.83.60 - - [16/Oct/2026:15:50:17 +0900] "GET /admin HTTP/1.1" '
+                    '404 153 "-" "curl/7.88.1"'
+                ),
+                "extractedFields": {
+                    "ip": "223.39.83.60",
+                    "ident": "-",
+                    "user": "-",
+                    "timestamp": "[16/Oct/2026:15:50:17 +0900]",
+                    "request": "GET /admin HTTP/1.1",
+                    "status_code": "404",
+                },
+            },
+            {
+                "id": "event-no-extracted-002",
+                "timestamp": 1729065018000,
+                "message": (
+                    "Sep 03 14:20:01 target-ec2 sshd[12341]: Failed password for "
+                    "invalid user admin from 198.51.100.50 port 49152 ssh2"
+                ),
+            },
+        ],
+    }
+
+    payload = CloudWatchLogsPayload.model_validate(raw_payload_dict)
+    assert len(payload.logEvents) == 2
+
+    # 1. extractedFields 포함 이벤트 검증
+    event_with_extracted = payload.logEvents[0]
+    assert event_with_extracted.id == "event-extracted-001"
+    assert event_with_extracted.extractedFields.get("ip") == "223.39.83.60"
+    assert event_with_extracted.extractedFields.get("status_code") == "404"
+
+    # 2. extractedFields 누락 이벤트(기존 하위 호환성) 검증
+    event_without_extracted = payload.logEvents[1]
+    assert event_without_extracted.id == "event-no-extracted-002"
+    assert event_without_extracted.extractedFields == {}
+
+    # 3. Base64 + Gzip 직렬화 및 역직렬화 왕복 무결성 검증
+    encoded = payload.to_awslogs_data()
+    restored = CloudWatchLogsPayload.from_awslogs_data(encoded)
+    assert restored == payload
+    assert restored.logEvents[0].extractedFields == event_with_extracted.extractedFields
 
 
 @pytest.mark.parametrize(
