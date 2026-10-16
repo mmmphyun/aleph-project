@@ -5,7 +5,9 @@
 - 기존 작업 PR: https://github.com/mmmphyun/aleph-project/pull/186
 - 입력 계약 수정: https://github.com/mmmphyun/aleph-project/pull/188
 - 실행 ID: `20261016T075925Z-p3-6-fixed-ip`
-- 판정: **전·중·후 외부 관측 IP 일치 / 15개 GET 및 5개 HEAD 응답 확보 / 403 미관측 / 클라우드 원본 로그 대조 대기**
+- 판정: **고정 IP 및 WEB_DIRECTORY_SCANNING 탐지 확인 / WAF 결합 조회 권한 오류로 차단 실패 / 403 미관측**
+
+IAM 권한 핫픽스 후 별도 1회 실행의 결과는 [HTTP 403 재실측 보고서](2026-10-16-p3-6-waf-403-retest.md)에 기록한다. 이 문서는 권한 오류가 있었던 첫 고정 IP 실행을 보존한다.
 
 ## 1. 실행 준비와 범위
 
@@ -63,4 +65,22 @@ TShark 4.6.6의 원본 TCP CSV를 보존하고 정확한 `True/False` 값만 `1/
 
 이번 추가 변경은 실측 문서뿐이다. 스캔 코드·테스트는 PR #186에서 필수 `powershell .\scripts\check.ps1` 1,072 passed / 4 skipped 및 GitHub CI를 통과한 그대로다. 계약·탐지·수집·플랫폼·인프라 파일은 수정하지 않았다.
 
-클라우드 B·A에게 **16:59:25~17:00:16 KST** 구간의 실제 source_ip/clientIp 및 요청 수, `extractedFields` 오류 해소 여부, Web 탐지·BLOCK_WAF 실행 또는 오류, WAF `action`·`terminatingRuleId`·차단 IP를 요청했다. 현재 응답은 대기 중이다. 이전 입력 오류가 이번에도 발생했다고 추정하지 않으며, 원인 대조 전 추가 스캔을 반복하지 않는다. 증거는 로컬 회수됐으므로 일회용 노드 삭제는 클라우드 A가 담당한다.
+클라우드 B·A에게 **16:59:25~17:00:16 KST** 구간의 실제 source_ip/clientIp 및 요청 수, `extractedFields` 오류 해소 여부, Web 탐지·BLOCK_WAF 실행 또는 오류, WAF `action`·`terminatingRuleId`·차단 IP를 요청했고 아래 결과를 전달받았다. 증거는 로컬 회수됐으며 일회용 노드 삭제는 클라우드 A가 담당한다.
+
+## 4. 클라우드 A 원본 로그 분석 결과
+
+사용자가 전달한 클라우드 A의 확인 결과이며 네트워크 담당이 AWS 원본 로그를 직접 조회한 것은 아니다.
+
+| 항목 | 클라우드 A 확인 결과 |
+| --- | --- |
+| 실제 출발지 | `3.26.171.60`, 공격 노드와 일치 |
+| Nginx 수집 | 19건: 404 13건, 401 1건, 정상 200 5건 |
+| WAF 원본 로그 | 19건, `ALLOW` / `Default_Action` |
+| 입력 계약 | Pydantic 역직렬화 오류 0건, `extractedFields` 파싱 정상 |
+| Web 탐지 | `WEB_DIRECTORY_SCANNING` 정상 탐지 |
+| 차단 실행 | `waf_blocked: False`; ALB WebACL 결합 검증 중 `wafv2:GetWebACLForResource`의 `AccessDeniedException` |
+| IPSet 반영 | 등록 API 호출 전 검증 실패, 차단 IP 0건 |
+
+클라이언트 PCAP의 20쌍과 서버 측 19건을 같은 수라고 기술하지 않는다. Nginx는 `/health`의 access log 비활성화와 일치하는 수지만, WAF의 한 건 차이는 URI별 원본 매핑 없이는 확정하지 않는다.
+
+이번 직접 실패 원인은 입력 계약이나 IP 분산이 아닌 **WAF 결합 조회 IAM 권한**이다. 클라우드 A가 Lambda의 `GetWebACLForResource` 조회 권한 인라인 핫픽스 배포를 완료했다고 전달했고 동일 조건의 1회 재실측을 요청했다. 네트워크 담당은 해당 IAM 정책을 변경하지 않았다. 후속 실행은 별도 실행 폴더·보고서로 보존한다.
