@@ -1654,24 +1654,18 @@ def test_build_slack_payload_scenario2_web_directory_scanning_waf_block() -> Non
     """[P3-7] 시나리오 2 Web L7 디렉터리 스캐닝 및 WAF 차단 연계 Slack 카드 렌더링 검증.
 
     Why:
-        시나리오 2 실인프라 관통 대응 결과(WEB_DIRECTORY_SCANNING, BLOCK_WAF) 인입 시
-        L7 WAF IPSet 차단 완료 상태가 표시되고, L4 SG 격리는 미대상으로 올바르게 분리 렌더링되는지
-        4대 필수 키 및 글자 수 상한과 함께 완결성 있게 검증함.
+        보안 탐지 매퍼(map_threat_to_incident)가 산출한 실제 계약 객체(Web Directory Scanning,
+        T1595.003, BLOCK_WAF) 인입 시 L7 WAF IPSet 차단 완료 상태가 표시되고,
+        L4 SG 격리는 미대상으로 올바르게 분리 렌더링되는지 4대 필수 키와 함께 검증함.
     """
-    report = IncidentReport(
-        incident_id="INC-1729066190-WAF",
-        attack_type="WEB_DIRECTORY_SCANNING",
-        mitre_id="T1083",
-        risk_level="HIGH",
+    from detection.incident_mapper import map_threat_to_incident
+
+    report = map_threat_to_incident(
+        is_threat=True,
+        rule_name="WEB_DIRECTORY_SCANNING",
         source_ip="3.26.171.60",
         target_identifier="i-027b9d94be16b0d77",
-        target_accounts=(),
-        summary_ko="웹 디렉터리 스캐닝(WEB_DIRECTORY_SCANNING) 공격 탐지 및 WAF 차단 조치 완료",
-        action_required="BLOCK_WAF",
-        recommendations=(
-            "공격자 IP WAF 영구 차단 유지",
-            "Nginx 웹서버 404 접근 로그 모니터링",
-        ),
+        incident_id="INC-1729066190-WAF",
     )
     remediation_result = {
         "waf_blocked": True,
@@ -1681,16 +1675,17 @@ def test_build_slack_payload_scenario2_web_directory_scanning_waf_block() -> Non
 
     payload = build_slack_payload(report, remediation_result=remediation_result)
 
-    # 1. 4대 필수 구조화 키 단언
+    # 1. 4대 필수 구조화 키 단언 (매퍼의 attack_type 'Web Directory Scanning' 정합성 확인)
     assert payload["incident_id"] == "INC-1729066190-WAF"
-    assert payload["rule_name"] == "WEB_DIRECTORY_SCANNING"
+    assert payload["rule_name"] == "Web Directory Scanning"
     assert payload["source_ip"] == "3.26.171.60"
     assert payload["remediation_action"] == "BLOCK_WAF"
 
-    # 2. Block Kit 구조 검증
+    # 2. Block Kit UI 구조 검증
     blocks = payload["blocks"]
-    assert any(b["type"] == "header" for b in blocks)
-    assert any("WEB_DIRECTORY_SCANNING" in json.dumps(b) for b in blocks)
+    header_block = next(b for b in blocks if b.get("type") == "header")
+    assert header_block["text"]["text"] == "🚨 [CloudShield] 침해사고 긴급 탐지 및 자동 대응 알림"
+    assert any("Web Directory Scanning" in json.dumps(b) for b in blocks)
 
     # 3. 다중 계층 집행 현황 단언 (L7은 차단 완료, L4는 격리 미대상, IAM은 미대상)
     remediation_block = next(

@@ -1391,53 +1391,52 @@ def test_collection_latency_cli_and_input_limit(
 
 
 def test_summarize_collection_latency_scenario2_nginx_events() -> None:
-    """[P3-7] 시나리오 2 Nginx 15회차 웹 스캔 이벤트 수집 지연 계측 요약 검증.
+    """[P3-7] 시나리오 2 Nginx 14건 웹 스캔 이벤트 수집 지연 계측 요약 검증.
 
     Why:
-        실인프라에서 계측된 15건의 Nginx access.log CloudWatch 수집 이벤트 표본
-        (p50: 1810ms, p95: 1815ms) 입력 시 누락/중복 없이 예산(3,000ms) 내 통과
-        판정(within_budget=True) 및 정확한 백분위수와 카운트가 산출되는지 검증함.
+        Nginx 설정상 /health(200)는 access_log off 처리되어 15개 네트워크 스캔 요청 중
+        14건(401 1건, 404 13건)이 초 단위 해상도(%d/%b/%Y:%H:%M:%S %z, 2026-10-16 기준)로 기록됨.
+        실인프라 수집 표본(p50: 1815ms, p95: 1825ms) 입력 시 누락 없이 3초 예산 내 통과를 검증함.
     """
     from collector.collection_latency import summarize_collection_latency
 
-    base_ts = 1729066182812
-    # 15건 이벤트: 1초 간격 발생, 약 1.8초(1803~1815ms) 수집 지연
-    delays = [
-        1808,
-        1803,
-        1806,
-        1808,
-        1806,
+    base_sec = 1792138182  # 2026-10-16 17:09:42 KST
+    sec_offsets = [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    delays_ms = [
         1810,
-        1811,
-        1810,
-        1810,
-        1811,
-        1811,
-        1812,
-        1811,
-        1814,
         1815,
+        1812,
+        1818,
+        1825,
+        1810,
+        1815,
+        1820,
+        1812,
+        1818,
+        1822,
+        1815,
+        1820,
+        1825,
     ]
     events = [
         {
             "eventId": f"nginx-evt-{i + 1}",
-            "timestamp": base_ts + (i * 1000),
-            "ingestionTime": base_ts + (i * 1000) + delay,
+            "timestamp": (base_sec + sec) * 1000,
+            "ingestionTime": (base_sec + sec) * 1000 + delay,
         }
-        for i, delay in enumerate(delays)
+        for i, (sec, delay) in enumerate(zip(sec_offsets, delays_ms, strict=True))
     ]
 
-    result = summarize_collection_latency(events, expected_count=15, budget_ms=3000)
+    result = summarize_collection_latency(events, expected_count=14, budget_ms=3000)
 
     assert result["scope"] == "event_timestamp_to_cloudwatch_ingestion"
-    assert result["expected_count"] == 15
-    assert result["observed_count"] == 15
+    assert result["expected_count"] == 14
+    assert result["observed_count"] == 14
     assert result["missing_count"] == 0
     assert result["duplicate_count"] == 0
-    assert result["p50_ms"] == 1810
-    assert result["p95_ms"] == 1815
-    assert result["max_ms"] == 1815
+    assert result["p50_ms"] == 1815
+    assert result["p95_ms"] == 1825
+    assert result["max_ms"] == 1825
     assert result["budget_ms"] == 3000
     assert result["over_budget_count"] == 0
     assert result["complete"] is True
