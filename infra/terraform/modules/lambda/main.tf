@@ -12,6 +12,9 @@
 #   - IAM Policy: ec2, wafv2, dynamodb 액션은 명시된 ARN으로만 제한.
 #   - packaging: 사전 빌더(scripts/package_lambda.py)로 생성된 의존성 포함 Linux x86_64 ZIP 아티팩트 강제.
 
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
 locals {
   lambda_archive_path = var.package_zip_path
   lambda_archive_hash = filebase64sha256(var.package_zip_path)
@@ -107,7 +110,7 @@ data "aws_iam_policy_document" "least_privilege" {
     ]
   }
 
-  # 4-3. WAFv2 ALB 결합 WebACL 조회 권한 (공식 명세: WebACL ARN에 wafv2:GetWebACLForResource 및 wafv2:GetWebACL 허용)
+  # 4-3. WAFv2 ALB 결합 WebACL 조회 권한 (최소 권한: 주입된 target_web_acl_arn 우선, 미지정 시 현재 배포 리전/계정 한정)
   statement {
     sid    = "WAFv2GetWebACLForResource"
     effect = "Allow"
@@ -116,7 +119,7 @@ data "aws_iam_policy_document" "least_privilege" {
       "wafv2:GetWebACL"
     ]
     resources = [
-      var.target_web_acl_arn != "" ? var.target_web_acl_arn : "arn:aws:wafv2:*:*:regional/webacl/*/*"
+      var.target_web_acl_arn != "" ? var.target_web_acl_arn : "arn:aws:wafv2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:regional/webacl/*/*"
     ]
   }
 

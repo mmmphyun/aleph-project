@@ -29,11 +29,11 @@ resource "aws_security_group" "alb" {
   tags        = merge(local.resource_tags, { Name = "CloudShield-ALB-SG-${var.environment}" })
 
   ingress {
-    description = "HTTP ingress from internet"
+    description = "HTTP ingress from approved test origins"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.ingress_cidrs
   }
 
   egress {
