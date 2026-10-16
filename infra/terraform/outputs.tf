@@ -86,3 +86,13 @@ output "target_group_arn" {
   value       = module.alb.target_group_arn
 }
 
+output "waf_log_group_name" {
+  description = "WAFv2 원본 로그 저장 CloudWatch Log Group 명칭"
+  value       = aws_cloudwatch_log_group.waf_logs.name
+}
+
+output "waf_log_group_arn" {
+  description = "WAFv2 원본 로그 저장 CloudWatch Log Group ARN"
+  value       = aws_cloudwatch_log_group.waf_logs.arn
+}
+

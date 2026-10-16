@@ -607,6 +607,424 @@ def block_ip_wafv2(
     return False
 
 
+DEFAULT_WAF_VERIFY_TIMEOUT = 30.0
+DEFAULT_WAF_POLL_INTERVAL = 1.0
+DEFAULT_HTTP_PROBE_TIMEOUT = 2.0
+
+
+def _find_covering_cidrs(
+    target_net: ipaddress.IPv4Network,
+    addresses: list[str],
+) -> list[str]:
+    """IPSet 주소 목록에서 target_net(/32)을 포함하는 모든 IPv4 CIDR(동일 /32 및 상위 대역)을 반환.
+
+    Why:
+        단일 IP(/32)만 문자열 비교로 제거하거나 멱등 성공 처리할 경우,
+        동일 IP를 포함하는 상위 대역(예: /24)이 IPSet에 남아 실제 차단이 지속됨에도
+        성공으로 오판하는 보안/운영 결함을 차단함.
+    """
+    covering: list[str] = []
+    for addr in addresses:
+        try:
+            net = ipaddress.ip_network(addr.strip(), strict=False)
+        except ValueError:
+            continue
+        if isinstance(net, ipaddress.IPv4Network) and target_net.subnet_of(net):
+            covering.append(addr)
+    return covering
+
+
+def normalize_single_ipv4(ip_str: str) -> str:
+    """단일 IPv4 주소 또는 /32 CIDR 문자열에서 순수 IPv4 호스트 문자열 반환.
+
+    Why:
+        복구 스크립트 및 WAF API에서 출발지 IP와 차단 대상 IP의 정합성을 비교할 때
+        /32 CIDR 표기 유무와 관계없이 동일한 IPv4 호스트 주소로 정규화하여 검증함.
+    """
+    cleaned = ip_str.strip()
+    if "/" in cleaned:
+        net = ipaddress.ip_network(cleaned, strict=True)
+        if not isinstance(net, ipaddress.IPv4Network) or net.prefixlen != 32:
+            raise ValueError(f"단일 IPv4(/32) 규격이 아닙니다: {ip_str}")
+        return str(net.network_address)
+    addr = ipaddress.ip_address(cleaned)
+    if not isinstance(addr, ipaddress.IPv4Address):
+        raise ValueError(f"IPv4 규격이 아닙니다: {ip_str}")
+    return str(addr)
+
+
+def _default_http_probe(url: str, timeout: float) -> int:
+    """대상 HTTP/HTTPS 엔드포인트로 GET 요청을 전송하고 HTTP 상태 코드를 반환."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"지원하지 않는 URL 스킴입니다 (http/https만 허용): {url}")
+
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return int(resp.status)
+    except urllib.error.HTTPError as e:
+        return int(e.code)
+
+
+def verify_waf_traffic_restored(
+    verify_url: str,
+    timeout: float = DEFAULT_WAF_VERIFY_TIMEOUT,
+    poll_interval: float = DEFAULT_WAF_POLL_INTERVAL,
+    request_timeout: float = DEFAULT_HTTP_PROBE_TIMEOUT,
+    http_probe_fn: Callable[[str, float], int] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+    clock_fn: Callable[[], float] | None = None,
+) -> bool:
+    """WAF IPSet 설정 갱신 후 실제 데이터 평면(ALB/WAF 엣지)에서 HTTP 요청 성공 여부를 폴링 확증.
+
+    Why:
+        AWS WAFv2 UpdateIPSet 및 GetIPSet 재조회는 제어 평면(Control Plane) 설정 반영만 확인하며,
+        실제 Regional ALB의 WAF 적용 지점까지 전파되는 데 수초-수분의 전파 지연이 발생할 수 있음.
+        전파 지연 동안 HTTP 403이 지속되는 상태에서 조기 복구 완료로 판정하는 문제를 방지함.
+
+    Constraints:
+        - verify_url: 검증 대상 HTTP/HTTPS URL.
+        - timeout: 최대 폴링 대기 시간(초). 0 이하일 경우 1회만 즉시 검증.
+        - 반환값: 제한 시간 내 2xx/3xx 응답 확인 시 True, 403 지속 또는 타임아웃 시 False.
+    """
+    import time
+
+    probe = http_probe_fn or _default_http_probe
+    sleeper = sleep_fn or time.sleep
+    clock = clock_fn or time.monotonic
+
+    # 1. timeout <= 0: 명시된 1회 즉시 검사 정책
+    if timeout <= 0.0:
+        try:
+            status_code = probe(verify_url, request_timeout)
+            return 200 <= status_code < 400
+        except Exception:
+            return False
+
+    # 2. timeout > 0: 마감 시각(Deadline) 기반 엄격한 잔여 시간 폴링
+    start = clock()
+    deadline = start + timeout
+    last_status: int | str = "none"
+
+    while True:
+        now = clock()
+        if now >= deadline:
+            logger.error(
+                "WAF 데이터 평면 트래픽 복구 확인 시간 초과(%.2fs): url=%s (마지막 상태=%s)",
+                timeout,
+                verify_url,
+                last_status,
+            )
+            return False
+
+        remaining = deadline - now
+        current_req_timeout = min(request_timeout, remaining)
+
+        try:
+            status_code = probe(verify_url, current_req_timeout)
+            last_status = status_code
+        except Exception as e:
+            if SocketBlockedError and isinstance(e, SocketBlockedError):
+                logger.warning(
+                    "WAF 트래픽 복구 검증 불가(pytest-socket 차단): url=%s (%s)",
+                    verify_url,
+                    e,
+                )
+                return False
+            last_status = f"error:{e}"
+            status_code = -1
+
+        now_after = clock()
+        if now_after > deadline:
+            logger.error(
+                "WAF 트래픽 프로브 응답이 제한 시간(%.2fs) 초과하여 도착함: 경과=%.2fs, status=%s",
+                timeout,
+                now_after - start,
+                last_status,
+            )
+            return False
+
+        if 200 <= status_code < 400:
+            logger.info(
+                "WAF 데이터 평면 트래픽 복구 확증 완료: url=%s, status=%d (경과=%.2fs)",
+                verify_url,
+                status_code,
+                now_after - start,
+            )
+            return True
+
+        if now_after >= deadline:
+            return False
+
+        remaining_sleep = deadline - now_after
+        sleep_dur = min(max(0.0, poll_interval), remaining_sleep)
+        if sleep_dur <= 0.0:
+            return False
+
+        sleeper(sleep_dur)
+        if clock() >= deadline:
+            return False
+
+
+def unblock_ip_wafv2(
+    source_ip: str | None = None,
+    unblock_all: bool = False,
+    ipset_name: str = DEFAULT_WAF_IPSET_NAME,
+    ipset_id: str | None = None,
+    scope: str = DEFAULT_WAF_SCOPE,
+    waf_client: Any = None,
+    max_retries: int = MAX_WAF_UPDATE_RETRIES,
+    verify_url: str | None = None,
+    verify_timeout: float = DEFAULT_WAF_VERIFY_TIMEOUT,
+    poll_interval: float = DEFAULT_WAF_POLL_INTERVAL,
+    probe_source_ip: str | None = None,
+    observed_source_ip: str | None = None,
+    observed_source_ip_fn: Callable[[], str | None] | None = None,
+    http_probe_fn: Callable[[str, float], int] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+    clock_fn: Callable[[], float] | None = None,
+) -> bool:
+    """공격자 IP를 WAFv2 IPSet에서 제거하고 제어 평면 및 선택적 트래픽 복구를 검증.
+
+    Why:
+        침해사고 실측 또는 오탐 발생 시 특정 단일 IP(/32)의 WAF 차단을 해제하되,
+        비정규 CIDR(/24 등) 입력으로 인한 대역 전체 오삭제(Blast Radius)와
+        상위 CIDR 잔류로 인한 허위 해제 성공 판정을 원천 차단함.
+
+    Constraints:
+        - source_ip: 단일 유효 IPv4 문자열 또는 엄격한 /32 CIDR
+          (예: '198.51.100.77' 또는 '198.51.100.77/32').
+          /32 이외의 프리픽스 또는 호스트 비트가 켜진 CIDR 입력은 API 호출 전에 즉시 거부됨.
+        - unblock_all: True일 경우 IPSet 내 모든 차단 IP를 초기화 ([]).
+        - verify_url: 지정 시 제어 평면 갱신 후 HTTP 2xx/3xx 응답 복구를 폴링 검증.
+        - observed_source_ip / observed_source_ip_fn: 단일 IP 해제 시 실제 프로브 요청의
+          관측된 출발지 IP (source_ip와 일치 필수).
+
+    Side-effects / Edge-cases:
+        - 대상 IP를 포함하는 상위 CIDR(예: /24)이 존재할 경우 멱등 성공 대신 False 반환.
+        - 대상 /32와 상위 CIDR이 함께 등록된 경우에도 최종 검증에서 잔류를 감지하여 False 반환.
+        - verify_url 지정 시 제한 시간(verify_timeout) 내 403이 해소되지 않으면 False 반환.
+        - verify_url 지정 단일 IP 해제 시 실제 관측 출발지 IP 미제공 또는 불일치 시 False 반환.
+        - WAFOptimisticLockException 발생 시 최신 LockToken으로 재시도.
+    """
+    if verify_url and not unblock_all and source_ip:
+        actual_observed_ip = observed_source_ip or (
+            observed_source_ip_fn() if observed_source_ip_fn else None
+        )
+        if not actual_observed_ip:
+            logger.error(
+                "WAF 트래픽 복구 검증을 위해 실제 프로브 출발지 IP 관측 근거가 필수이나 "
+                "미제공됨: target=%s",
+                source_ip,
+            )
+            return False
+        try:
+            target_norm = normalize_single_ipv4(source_ip)
+            observed_norm = normalize_single_ipv4(actual_observed_ip)
+            if target_norm != observed_norm:
+                logger.error(
+                    "실제 프로브 출발지 IP(%s)가 해제 대상 IP(%s)와 불일치함",
+                    observed_norm,
+                    target_norm,
+                )
+                return False
+            if probe_source_ip and normalize_single_ipv4(probe_source_ip) != target_norm:
+                logger.error(
+                    "사용자 지정 출발지 IP(%s)가 해제 대상 IP(%s)와 불일치함",
+                    probe_source_ip,
+                    target_norm,
+                )
+                return False
+        except ValueError as e:
+            logger.error("출발지 IP 규격 오류로 인한 트래픽 복구 검증 거부: %s", e)
+            return False
+    if waf_client is None:
+        region = os.getenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+        waf_client = boto3.client("wafv2", region_name=region)
+
+    target_cidr: str | None = None
+    target_net: ipaddress.IPv4Network | None = None
+    if not unblock_all:
+        if not source_ip or not isinstance(source_ip, str) or not source_ip.strip():
+            logger.error("차단 해제할 source_ip가 지정되지 않았으며 unblock_all도 False임")
+            return False
+        try:
+            target_ip_str = source_ip.strip()
+            if "/" in target_ip_str:
+                network = ipaddress.ip_network(target_ip_str, strict=True)
+                if not isinstance(network, ipaddress.IPv4Network) or network.prefixlen != 32:
+                    logger.error(
+                        "단일 IPv4(/32) 규격이 아닌 CIDR은 해제 대상에서 거부됨: %s",
+                        source_ip,
+                    )
+                    return False
+                target_net = network
+                target_cidr = f"{network.network_address}/32"
+            else:
+                ip_obj = ipaddress.ip_address(target_ip_str)
+                if not isinstance(ip_obj, ipaddress.IPv4Address):
+                    logger.error("IPv4 규격이 아닌 주소는 해제 대상에서 거부됨: %s", source_ip)
+                    return False
+                target_net = ipaddress.IPv4Network(f"{ip_obj}/32")
+                target_cidr = f"{ip_obj}/32"
+        except ValueError as e:
+            logger.error(
+                "유효하지 않은 IP/CIDR 형식으로 인한 WAF 차단 해제 거부: %s (원인: %s)",
+                source_ip,
+                e,
+            )
+            return False
+
+    for attempt in range(max_retries):
+        try:
+            target_ipset_id = ipset_id
+            if not target_ipset_id:
+                found = find_waf_ip_set(waf_client, ipset_name=ipset_name, scope=scope)
+                if not found:
+                    logger.error("대상 WAF IPSet(%s)을 찾을 수 없음", ipset_name)
+                    return False
+                target_ipset_id = found["id"]
+
+            get_res = waf_client.get_ip_set(
+                Name=ipset_name,
+                Scope=scope,
+                Id=target_ipset_id,
+            )
+            ipset_data = get_res.get("IPSet", {})
+            current_addresses = ipset_data.get("Addresses", [])
+            lock_token = get_res.get("LockToken")
+            description = ipset_data.get("Description")
+
+            if unblock_all:
+                if not current_addresses:
+                    logger.info("WAF IPSet(%s)이 이미 비어 있음 (멱등 처리)", ipset_name)
+                    if verify_url:
+                        return verify_waf_traffic_restored(
+                            verify_url=verify_url,
+                            timeout=verify_timeout,
+                            poll_interval=poll_interval,
+                            http_probe_fn=http_probe_fn,
+                            sleep_fn=sleep_fn,
+                            clock_fn=clock_fn,
+                        )
+                    return True
+                new_addresses: list[str] = []
+            else:
+                assert target_cidr is not None
+                assert target_net is not None
+                covering_before = _find_covering_cidrs(target_net, current_addresses)
+                supernets_before = [addr for addr in covering_before if addr != target_cidr]
+
+                if target_cidr not in current_addresses:
+                    if supernets_before:
+                        logger.error(
+                            "WAF IPSet(%s) 내 상위 CIDR(%s)이 대상 IP(%s)를 차단 중이므로 "
+                            "단일 IP 해제 불가",
+                            ipset_name,
+                            supernets_before,
+                            target_cidr,
+                        )
+                        return False
+                    logger.info(
+                        "IP %s는 WAF IPSet(%s) 차단 목록에 존재하지 않음 (멱등 처리)",
+                        target_cidr,
+                        ipset_name,
+                    )
+                    if verify_url:
+                        return verify_waf_traffic_restored(
+                            verify_url=verify_url,
+                            timeout=verify_timeout,
+                            poll_interval=poll_interval,
+                            http_probe_fn=http_probe_fn,
+                            sleep_fn=sleep_fn,
+                            clock_fn=clock_fn,
+                        )
+                    return True
+                new_addresses = [addr for addr in current_addresses if addr != target_cidr]
+
+            update_kwargs: dict[str, Any] = {
+                "Name": ipset_name,
+                "Scope": scope,
+                "Id": target_ipset_id,
+                "Addresses": new_addresses,
+                "LockToken": lock_token,
+            }
+            if description:
+                update_kwargs["Description"] = description
+
+            waf_client.update_ip_set(**update_kwargs)
+
+            verify_res = waf_client.get_ip_set(
+                Name=ipset_name,
+                Scope=scope,
+                Id=target_ipset_id,
+            )
+            verified_addresses = verify_res.get("IPSet", {}).get("Addresses", [])
+            if unblock_all and verified_addresses:
+                logger.error("WAF IPSet(%s) 전체 해제 실패: 잔여 주소 존재", ipset_name)
+                return False
+            if target_net is not None:
+                remaining_covering = _find_covering_cidrs(target_net, verified_addresses)
+                if remaining_covering:
+                    logger.error(
+                        "WAF IPSet(%s) Read-after-Write 해제 검증 실패: "
+                        "%s를 차단하는 항목(%s)이 잔류함",
+                        ipset_name,
+                        target_cidr,
+                        remaining_covering,
+                    )
+                    return False
+
+            if verify_url:
+                if not verify_waf_traffic_restored(
+                    verify_url=verify_url,
+                    timeout=verify_timeout,
+                    poll_interval=poll_interval,
+                    http_probe_fn=http_probe_fn,
+                    sleep_fn=sleep_fn,
+                    clock_fn=clock_fn,
+                ):
+                    return False
+
+            verify_note = (
+                "트래픽 복구 확인 완료"
+                if verify_url
+                else "IPSet 설정 갱신 확인, 트래픽 복구 미검증"
+            )
+            logger.info(
+                "WAF IPSet(%s) 설정 갱신 확증 완료(%s): target=%s (잔여 %d개)",
+                ipset_name,
+                verify_note,
+                "전체" if unblock_all else target_cidr,
+                len(verified_addresses),
+            )
+            return True
+
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "WAFOptimisticLockException" and attempt < max_retries - 1:
+                logger.warning(
+                    "WAF IPSet(%s) 동시 수정 충돌(WAFOptimisticLockException). 재시도 (%d/%d)",
+                    ipset_name,
+                    attempt + 1,
+                    max_retries,
+                )
+                continue
+            logger.error("WAF IPSet(%s) 차단 해제 중 ClientError 발생: %s", ipset_name, e)
+            return False
+        except Exception as e:
+            logger.error("WAF IPSet(%s) 차단 해제 중 예기치 않은 오류 발생: %s", ipset_name, e)
+            return False
+
+    logger.error("WAF IPSet(%s) 해제 최대 재시도 횟수(%d회) 초과 실패", ipset_name, max_retries)
+    return False
+
+
 def apply_remediation(
     report: IncidentReport,
     ec2_client: Any = None,

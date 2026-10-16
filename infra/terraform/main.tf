@@ -108,3 +108,30 @@ resource "aws_wafv2_web_acl_association" "alb" {
   web_acl_arn  = module.waf.web_acl_arn
 }
 
+# ==============================================================================
+# 9. AWS WAFv2 원본 로그 저장 파이프라인 (클라우드 A 전담)
+# ==============================================================================
+# Why:
+#   보안 담당(P3-8)의 WAF 차단 원본 로그 분석 및 탐지 정확도/오탐 평가를 위해
+#   AWS WAFv2 WebACL의 실시간 트래픽 로그를 CloudWatch Logs로 원자적 스트리밍함.
+#
+# Constraints:
+#   - AWS WAFv2 로깅 대상 CloudWatch Log Group 이름은 반드시 'aws-waf-logs-' 접두사로 시작해야 함.
+#   - 리텐션은 비용 절감을 위해 7일로 제한함.
+resource "aws_cloudwatch_log_group" "waf_logs" {
+  name              = "aws-waf-logs-cloudshield-${var.environment}"
+  retention_in_days = 7
+
+  tags = {
+    Project     = "CloudShield"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+    Component   = "WAF-Logging"
+  }
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "waf_logs" {
+  log_destination_configs = [aws_cloudwatch_log_group.waf_logs.arn]
+  resource_arn            = module.waf.web_acl_arn
+}
+
