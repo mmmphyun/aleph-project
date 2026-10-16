@@ -1580,6 +1580,7 @@ def test_capture_unrelated_process_survives(capture, bash):
 
 
 WEB_SCRIPT = SCRIPT.with_name("web_dir_scan.sh")
+WEB_ALB_HOST = "cloudshield-alb-dev-308142572.ap-southeast-2.elb.amazonaws.com"
 
 
 @pytest.fixture
@@ -2005,6 +2006,123 @@ def test_web_bad_urls_never_invoke_tools(web_scan, url):
     assert result.returncode == 2, result.stderr
     assert not args_file.exists()
     assert not (args_file.parent / "web fake bin" / "INJECTED").exists()
+
+
+@pytest.mark.parametrize("host", [WEB_ALB_HOST, WEB_ALB_HOST.upper()])
+@pytest.mark.parametrize("suffix", ["", "/", ":80/"])
+def test_web_approved_alb_plan_normalizes_dns_case_without_requests(web_scan, host, suffix):
+    run, evidence, args_file, _, _, _ = web_scan
+    result = run(["--url", f"http://{host}{suffix}", "--candidates", "15", "--interval", "1"])
+    assert result.returncode == 0, result.stderr
+    assert WEB_ALB_HOST in result.stdout and "dry-run" in result.stdout
+    assert not evidence.exists() and not args_file.exists()
+
+
+@pytest.mark.parametrize(
+    "url,tool",
+    [
+        (f"http://{WEB_ALB_HOST}.evil.invalid", "curl"),
+        (f"http://evil-{WEB_ALB_HOST}", "curl"),
+        (f"http://{WEB_ALB_HOST}.", "curl"),
+        (f"http://{WEB_ALB_HOST}@evil.invalid", "curl"),
+        (f"http://user@{WEB_ALB_HOST}", "curl"),
+        (f"http://{WEB_ALB_HOST}/admin", "curl"),
+        (f"http://{WEB_ALB_HOST}?token=MOCK-SECRET", "curl"),
+        (f"http://{WEB_ALB_HOST}#fragment", "curl"),
+        (f"http://{WEB_ALB_HOST}:8080", "curl"),
+        (f"https://{WEB_ALB_HOST}", "curl"),
+        (f"http://{WEB_ALB_HOST}:080", "curl"),
+        (f"http://{WEB_ALB_HOST}", "gobuster"),
+    ],
+)
+def test_web_external_target_stays_within_approved_origin(web_scan, url, tool):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    result = run(["--url", url, "--tool", tool, "--evidence", bash_path(evidence), "--execute"])
+    assert result.returncode == 2
+    assert not evidence.exists() and not args_file.exists()
+    assert "MOCK-SECRET" not in result.stdout + result.stderr
+
+
+def test_web_approved_alb_uses_ipv4_and_records_client_observation_boundaries(web_scan):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    result = run(
+        [
+            "--url",
+            f"http://{WEB_ALB_HOST.upper()}",
+            "--candidates",
+            "3",
+            "--evidence",
+            bash_path(evidence),
+            "--execute",
+        ],
+        codes="404 403 200",
+    )
+    assert result.returncode == 0, result.stderr
+    arguments = args_file.read_text().splitlines()
+    assert arguments.count("--ipv4") == 3
+    summary = dict(line.split("=", 1) for line in evidence.read_text().splitlines())
+    for index, (path, status) in enumerate(
+        zip(["admin", "login", "dashboard"], [404, 403, 200], strict=True), 1
+    ):
+        prefix = f"request_{index}"
+        start = datetime.fromisoformat(summary[f"{prefix}_started_at"])
+        observed = datetime.fromisoformat(summary[f"{prefix}_observed_at"])
+        assert start.tzinfo == observed.tzinfo == UTC and start <= observed
+        assert len(summary[f"{prefix}_observed_at"]) == 24
+        assert summary[f"{prefix}_path"] == f"/{path}"
+        assert summary[f"{prefix}_http_status"] == str(status)
+        assert summary[f"{prefix}_exit_code"] == "0"
+        assert f"http://{WEB_ALB_HOST}/{path}" in arguments
+    assert not any(key.startswith("request_4_") for key in summary)
+
+
+def test_web_partial_failure_keeps_attempt_and_does_not_invent_http_status(web_sequence):
+    result, summary = web_sequence[0](codes="404 !7 403")
+    assert result.returncode == 7
+    assert summary["attempted_requests"] == "2" and summary["observed_statuses"] == "1"
+    assert summary["request_1_http_status"] == "404"
+    assert summary["request_2_http_status"] == "unknown"
+    assert summary["request_2_exit_code"] == "7"
+    assert summary["request_2_observed_at"].endswith("Z")
+    assert not any(key.startswith("request_3_") for key in summary)
+
+
+def test_web_bad_observation_clock_stops_before_request(web_scan):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    (args_file.parent / "web fake bin" / "date").write_text(
+        '#!/bin/bash\nif [[ $* == *%3NZ* ]]; then printf "MOCK-SECRET\\n"; '
+        'else exec /usr/bin/date "$@"; fi\n',
+        newline="\n",
+    )
+    result = run(["--url", "http://127.0.0.1", "--evidence", bash_path(evidence), "--execute"])
+    assert result.returncode == 70
+    assert not args_file.exists()
+    assert "state=tool_error" in evidence.read_text()
+    assert "MOCK-SECRET" not in evidence.read_text() + result.stdout + result.stderr
+
+
+def test_web_evidence_write_failure_is_nonzero_and_never_reports_completed(web_scan, monkeypatch):
+    run, evidence, args_file, _, _, bash_path = web_scan
+    monkeypatch.setenv("MOCK_EVIDENCE", bash_path(evidence))
+    (args_file.parent / "web fake bin" / "curl").write_text(
+        '#!/bin/bash\n/usr/bin/rm -- "$MOCK_EVIDENCE" || exit\n'
+        '/usr/bin/mkdir -- "$MOCK_EVIDENCE" || exit\nprintf 200\n',
+        newline="\n",
+    )
+    result = run(
+        [
+            "--url",
+            "http://127.0.0.1",
+            "--candidates",
+            "1",
+            "--evidence",
+            bash_path(evidence),
+            "--execute",
+        ]
+    )
+    assert result.returncode == 74
+    assert "state=evidence_error" in result.stderr
+    assert "state=completed" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2539,7 +2657,7 @@ def test_web_gobuster_partial_signal_or_deadline_keeps_counts_and_cleans_files(
 
 
 @pytest.mark.parametrize("tool", ["curl", "gobuster"])
-def test_web_evidence_is_only_summary_without_sensitive_raw_output(
+def test_web_evidence_has_only_bounded_metadata_without_sensitive_raw_output(
     web_sequence, web_scan, monkeypatch, tool
 ):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "MOCK-AWS-SECRET")
@@ -2553,7 +2671,7 @@ def test_web_evidence_is_only_summary_without_sensitive_raw_output(
         planned=7,
         attempted=7 if tool == "curl" else "unknown",
     )
-    assert set(summary) == {
+    expected_keys = {
         "started_at",
         "ended_at",
         "tool",
@@ -2570,6 +2688,13 @@ def test_web_evidence_is_only_summary_without_sensitive_raw_output(
         "http_404",
         "http_other",
     }
+    if tool == "curl":
+        expected_keys.update(
+            f"request_{index}_{field}"
+            for index in range(1, 8)
+            for field in ("started_at", "observed_at", "path", "http_status", "exit_code")
+        )
+    assert set(summary) == expected_keys
     assert summary["tool"] == tool and summary["target"] == "https://[::1]:65535"
     assert summary["started_at"] <= summary["ended_at"]
     for timestamp in (summary["started_at"], summary["ended_at"]):
