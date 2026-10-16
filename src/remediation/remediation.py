@@ -634,6 +634,25 @@ def _find_covering_cidrs(
     return covering
 
 
+def normalize_single_ipv4(ip_str: str) -> str:
+    """단일 IPv4 주소 또는 /32 CIDR 문자열에서 순수 IPv4 호스트 문자열 반환.
+
+    Why:
+        복구 스크립트 및 WAF API에서 출발지 IP와 차단 대상 IP의 정합성을 비교할 때
+        /32 CIDR 표기 유무와 관계없이 동일한 IPv4 호스트 주소로 정규화하여 검증함.
+    """
+    cleaned = ip_str.strip()
+    if "/" in cleaned:
+        net = ipaddress.ip_network(cleaned, strict=True)
+        if not isinstance(net, ipaddress.IPv4Network) or net.prefixlen != 32:
+            raise ValueError(f"단일 IPv4(/32) 규격이 아닙니다: {ip_str}")
+        return str(net.network_address)
+    addr = ipaddress.ip_address(cleaned)
+    if not isinstance(addr, ipaddress.IPv4Address):
+        raise ValueError(f"IPv4 규격이 아닙니다: {ip_str}")
+    return str(addr)
+
+
 def _default_http_probe(url: str, timeout: float) -> int:
     """대상 HTTP/HTTPS 엔드포인트로 GET 요청을 전송하고 HTTP 상태 코드를 반환."""
     import urllib.error
@@ -679,41 +698,20 @@ def verify_waf_traffic_restored(
     sleeper = sleep_fn or time.sleep
     clock = clock_fn or time.monotonic
 
+    # 1. timeout <= 0: 명시된 1회 즉시 검사 정책
+    if timeout <= 0.0:
+        try:
+            status_code = probe(verify_url, request_timeout)
+            return 200 <= status_code < 400
+        except Exception:
+            return False
+
+    # 2. timeout > 0: 마감 시각(Deadline) 기반 엄격한 잔여 시간 폴링
     start = clock()
-    deadline = start + max(0.0, timeout)
+    deadline = start + timeout
     last_status: int | str = "none"
 
     while True:
-        try:
-            status_code = probe(verify_url, request_timeout)
-            last_status = status_code
-            if 200 <= status_code < 400:
-                logger.info(
-                    "WAF 데이터 평면 트래픽 복구 확증 완료: url=%s, status=%d",
-                    verify_url,
-                    status_code,
-                )
-                return True
-            logger.warning(
-                "WAF 데이터 평면 전파 대기 중 (미복구 상태): url=%s, status=%d",
-                verify_url,
-                status_code,
-            )
-        except Exception as e:
-            if SocketBlockedError and isinstance(e, SocketBlockedError):
-                logger.warning(
-                    "WAF 트래픽 복구 검증 불가(pytest-socket 차단): url=%s (%s)",
-                    verify_url,
-                    e,
-                )
-                return False
-            last_status = f"error:{e}"
-            logger.warning(
-                "WAF 트래픽 프로브 중 네트워크/요청 예외 발생: url=%s (%s)",
-                verify_url,
-                e,
-            )
-
         now = clock()
         if now >= deadline:
             logger.error(
@@ -725,7 +723,52 @@ def verify_waf_traffic_restored(
             return False
 
         remaining = deadline - now
-        sleeper(min(max(0.0, poll_interval), remaining))
+        current_req_timeout = min(request_timeout, remaining)
+
+        try:
+            status_code = probe(verify_url, current_req_timeout)
+            last_status = status_code
+        except Exception as e:
+            if SocketBlockedError and isinstance(e, SocketBlockedError):
+                logger.warning(
+                    "WAF 트래픽 복구 검증 불가(pytest-socket 차단): url=%s (%s)",
+                    verify_url,
+                    e,
+                )
+                return False
+            last_status = f"error:{e}"
+            status_code = -1
+
+        now_after = clock()
+        if now_after > deadline:
+            logger.error(
+                "WAF 트래픽 프로브 응답이 제한 시간(%.2fs) 초과하여 도착함: 경과=%.2fs, status=%s",
+                timeout,
+                now_after - start,
+                last_status,
+            )
+            return False
+
+        if 200 <= status_code < 400:
+            logger.info(
+                "WAF 데이터 평면 트래픽 복구 확증 완료: url=%s, status=%d (경과=%.2fs)",
+                verify_url,
+                status_code,
+                now_after - start,
+            )
+            return True
+
+        if now_after >= deadline:
+            return False
+
+        remaining_sleep = deadline - now_after
+        sleep_dur = min(max(0.0, poll_interval), remaining_sleep)
+        if sleep_dur <= 0.0:
+            return False
+
+        sleeper(sleep_dur)
+        if clock() >= deadline:
+            return False
 
 
 def unblock_ip_wafv2(
@@ -739,6 +782,7 @@ def unblock_ip_wafv2(
     verify_url: str | None = None,
     verify_timeout: float = DEFAULT_WAF_VERIFY_TIMEOUT,
     poll_interval: float = DEFAULT_WAF_POLL_INTERVAL,
+    probe_source_ip: str | None = None,
     http_probe_fn: Callable[[str, float], int] | None = None,
     sleep_fn: Callable[[float], None] | None = None,
     clock_fn: Callable[[], float] | None = None,
@@ -756,13 +800,36 @@ def unblock_ip_wafv2(
           /32 이외의 프리픽스 또는 호스트 비트가 켜진 CIDR 입력은 API 호출 전에 즉시 거부됨.
         - unblock_all: True일 경우 IPSet 내 모든 차단 IP를 초기화 ([]).
         - verify_url: 지정 시 제어 평면 갱신 후 HTTP 2xx/3xx 응답 복구를 폴링 검증.
+        - probe_source_ip: 단일 IP 해제 시 트래픽 복구 검증 출발지 IP (source_ip와 일치 필수).
 
     Side-effects / Edge-cases:
         - 대상 IP를 포함하는 상위 CIDR(예: /24)이 존재할 경우 멱등 성공 대신 False 반환.
         - 대상 /32와 상위 CIDR이 함께 등록된 경우에도 최종 검증에서 잔류를 감지하여 False 반환.
         - verify_url 지정 시 제한 시간(verify_timeout) 내 403이 해소되지 않으면 False 반환.
+        - verify_url 지정 단일 IP 해제 시 probe_source_ip 미지정 또는 불일치 시 False 반환.
         - WAFOptimisticLockException 발생 시 최신 LockToken으로 재시도.
     """
+    if verify_url and not unblock_all and source_ip:
+        if not probe_source_ip:
+            logger.error(
+                "WAF 트래픽 복구 검증을 위해 해제 대상 출발지 IP(probe_source_ip)가 필수이나 "
+                "미제공됨: target=%s",
+                source_ip,
+            )
+            return False
+        try:
+            target_norm = normalize_single_ipv4(source_ip)
+            probe_norm = normalize_single_ipv4(probe_source_ip)
+            if target_norm != probe_norm:
+                logger.error(
+                    "트래픽 복구 검증 출발지 IP(%s)가 해제 대상 IP(%s)와 불일치함",
+                    probe_norm,
+                    target_norm,
+                )
+                return False
+        except ValueError as e:
+            logger.error("출발지 IP 규격 오류로 인한 트래픽 복구 검증 거부: %s", e)
+            return False
     if waf_client is None:
         region = os.getenv("AWS_DEFAULT_REGION", "ap-southeast-2")
         waf_client = boto3.client("wafv2", region_name=region)

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import ipaddress
 import json
 import logging
 import os
@@ -42,6 +41,7 @@ from remediation.remediation import (
     DEFAULT_WAF_SCOPE,
     DEFAULT_WAF_VERIFY_TIMEOUT,
     find_waf_ip_set,
+    normalize_single_ipv4,
     unblock_ip_wafv2,
     verify_waf_traffic_restored,
 )
@@ -54,20 +54,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("unblock_waf_ip")
-
-
-def _normalize_single_ipv4(ip_str: str) -> str:
-    """단일 IPv4 주소 또는 /32 CIDR 문자열에서 순수 IPv4 호스트 문자열 반환."""
-    cleaned = ip_str.strip()
-    if "/" in cleaned:
-        net = ipaddress.ip_network(cleaned, strict=True)
-        if not isinstance(net, ipaddress.IPv4Network) or net.prefixlen != 32:
-            raise ValueError(f"단일 IPv4(/32) 규격이 아닙니다: {ip_str}")
-        return str(net.network_address)
-    addr = ipaddress.ip_address(cleaned)
-    if not isinstance(addr, ipaddress.IPv4Address):
-        raise ValueError(f"IPv4 규격이 아닙니다: {ip_str}")
-    return str(addr)
 
 
 def list_blocked_ips(
@@ -107,14 +93,26 @@ def unblock_waf_ip_entry(
     clock_fn: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     """WAF IPSet에서 차단 해제 후 API 갱신 시각과 실제 트래픽 복구 시각을 분리 계측."""
-    if verify_url and not unblock_all and source_ip and probe_source_ip:
-        target_host_ip = _normalize_single_ipv4(source_ip)
-        actual_probe_ip = _normalize_single_ipv4(probe_source_ip)
-        if target_host_ip != actual_probe_ip:
-            raise ValueError(
-                f"트래픽 복구 검증 출발지 IP({actual_probe_ip})가 해제 대상 IP({target_host_ip})와 "
-                "일치하지 않아 T_restored를 확정할 수 없습니다."
+    should_verify_traffic = bool(verify_url)
+    unverified_reason = ""
+
+    if should_verify_traffic and not unblock_all and source_ip:
+        if not probe_source_ip:
+            should_verify_traffic = False
+            unverified_reason = " (출발지 미확인)"
+            logger.warning(
+                "검증 대상 출발지 IP(probe_source_ip)가 미제공되어 실제 트래픽 복구(T_restored)를 "
+                "확정할 수 없습니다. (IPSet 설정 갱신만 수행)"
             )
+        else:
+            target_host_ip = normalize_single_ipv4(source_ip)
+            actual_probe_ip = normalize_single_ipv4(probe_source_ip)
+            if target_host_ip != actual_probe_ip:
+                raise ValueError(
+                    f"트래픽 복구 검증 출발지 IP({actual_probe_ip})가 "
+                    f"해제 대상 IP({target_host_ip})와 일치하지 않아 "
+                    "T_restored를 확정할 수 없습니다."
+                )
 
     if waf_client is None:
         region = os.getenv("AWS_DEFAULT_REGION", DEFAULT_REGION)
@@ -145,18 +143,19 @@ def unblock_waf_ip_entry(
     t_api_updated_epoch = time.time()
     api_duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
-    if not verify_url:
+    if not should_verify_traffic:
+        status_msg = f"IPSet 설정 갱신 확인, 트래픽 복구 미검증{unverified_reason}"
         logger.info(
-            "WAF IPSet(%s) 설정 갱신 확인, 트래픽 복구 미검증: "
-            "잔여 목록=%s (총 %d건, API 소요 시간: %0.2f ms)",
+            "WAF IPSet(%s) %s: 잔여 목록=%s (총 %d건, API 소요 시간: %0.2f ms)",
             ipset_name,
+            status_msg,
             final_ips,
             len(final_ips),
             api_duration_ms,
         )
         return {
             "status": "api_updated",
-            "verification_status": "IPSet 설정 갱신 확인, 트래픽 복구 미검증",
+            "verification_status": status_msg,
             "traffic_verified": False,
             "ipset_name": ipset_name,
             "target": "ALL" if unblock_all else source_ip,

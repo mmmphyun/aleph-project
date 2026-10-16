@@ -130,10 +130,46 @@ def test_unblock_waf_ip_entry_verify_timeout_raises_error(mocked_waf_ipset: Any)
             verify_url="http://alb.example.com/",
             verify_timeout=3.0,
             poll_interval=1.0,
+            probe_source_ip=target_ip,
             http_probe_fn=lambda _url, _timeout: 403,
             sleep_fn=fake_sleep,
             clock_fn=fake_clock,
         )
+
+
+def test_unblock_waf_ip_entry_missing_probe_source_ip_unverified(mocked_waf_ipset: Any) -> None:
+    """verify_url 지정 시 probe_source_ip 미입력 시 200 응답이라도 T_restored 미확정 검증."""
+    from remediation.remediation import block_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    target_ip = "203.0.113.55"
+
+    block_ip_wafv2(
+        source_ip=target_ip,
+        ipset_name=mocked_waf_ipset.ipset_name,
+        ipset_id=mocked_waf_ipset.ipset_id,
+        waf_client=waf_client,
+    )
+
+    result = unblock_waf_ip_entry(
+        source_ip=target_ip,
+        unblock_all=False,
+        ipset_name=mocked_waf_ipset.ipset_name,
+        scope=mocked_waf_ipset.scope,
+        waf_client=waf_client,
+        verify_url="http://alb.example.com/",
+        probe_source_ip=None,
+        http_probe_fn=lambda _url, _timeout: 200,
+    )
+
+    assert result["status"] == "api_updated"
+    assert (
+        result["verification_status"] == "IPSet 설정 갱신 확인, 트래픽 복구 미검증 (출발지 미확인)"
+    )
+    assert result["traffic_verified"] is False
+    assert result["t_restored_iso"] is None
+    assert result["t_restored_epoch"] is None
+    assert result["t_api_updated_iso"] is not None
 
 
 def test_unblock_waf_ip_entry_probe_source_ip_mismatch_raises(mocked_waf_ipset: Any) -> None:

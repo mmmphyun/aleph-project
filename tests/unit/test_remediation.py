@@ -3417,7 +3417,7 @@ def test_unblock_ip_wafv2_non_slash32_with_host_bits_rejected_preserves_list(
 
 
 def test_unblock_ip_wafv2_propagation_delay_and_timeout(mocked_waf_ipset: Any) -> None:
-    """IPSet 제거 후 WAF 전파 지연(403 지속 후 200 복구) 및 시간 초과 시 미복구(False) 판정 검증."""
+    """IPSet 제거 후 WAF 전파 지연(403 후 200 복구) 및 시간 초과 시 False 반환 검증."""
     from remediation.remediation import block_ip_wafv2, unblock_ip_wafv2
 
     waf_client = boto3.client("wafv2", region_name="us-east-1")
@@ -3448,6 +3448,7 @@ def test_unblock_ip_wafv2_propagation_delay_and_timeout(mocked_waf_ipset: Any) -
             verify_url="http://alb.example.com/",
             verify_timeout=5.0,
             poll_interval=1.0,
+            probe_source_ip=target_ip,
             http_probe_fn=lambda _url, _timeout: next(responses_delayed),
             sleep_fn=fake_sleep,
             clock_fn=fake_clock,
@@ -3474,9 +3475,104 @@ def test_unblock_ip_wafv2_propagation_delay_and_timeout(mocked_waf_ipset: Any) -
             verify_url="http://alb.example.com/",
             verify_timeout=3.0,
             poll_interval=1.0,
+            probe_source_ip=target_ip,
             http_probe_fn=lambda _url, _timeout: 403,
             sleep_fn=fake_sleep,
             clock_fn=fake_clock,
         )
         is False
+    )
+
+
+def test_unblock_ip_wafv2_probe_source_ip_validation(mocked_waf_ipset: Any) -> None:
+    """verify_url 지정 시 probe_source_ip 미입력 또는 불일치 시 False 반환 검증."""
+    from remediation.remediation import unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    target_ip = "198.51.100.89"
+
+    # 1. probe_source_ip 미제공 시 200 응답이라도 False 반환
+    assert (
+        unblock_ip_wafv2(
+            source_ip=target_ip,
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+            verify_url="http://alb.example.com/",
+            probe_source_ip=None,
+            http_probe_fn=lambda _url, _timeout: 200,
+        )
+        is False
+    )
+
+    # 2. probe_source_ip 불일치 시 200 응답이라도 False 반환
+    assert (
+        unblock_ip_wafv2(
+            source_ip=target_ip,
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+            verify_url="http://alb.example.com/",
+            probe_source_ip="198.51.100.99",
+            http_probe_fn=lambda _url, _timeout: 200,
+        )
+        is False
+    )
+
+
+def test_verify_waf_traffic_restored_deadline_enforcement() -> None:
+    """마감 시각 초과, 제한 시간 초과 도착 응답, 마감 도달 후 새 요청 금지 검증."""
+    from remediation.remediation import verify_waf_traffic_restored
+
+    # 1. 마감 시각 도달 후 새 요청 금지: 0.5초 경과 후 403, 0.5초 슬립으로 1.0초 도달 시 종료
+    call_count = [0]
+    fake_time = [0.0]
+
+    def probe_stop_at_deadline(_url: str, _timeout: float) -> int:
+        call_count[0] += 1
+        fake_time[0] += 0.5
+        return 403
+
+    def fake_sleep(sec: float) -> None:
+        fake_time[0] += sec
+
+    assert (
+        verify_waf_traffic_restored(
+            verify_url="http://alb.example.com/",
+            timeout=1.0,
+            poll_interval=1.0,
+            http_probe_fn=probe_stop_at_deadline,
+            sleep_fn=fake_sleep,
+            clock_fn=lambda: fake_time[0],
+        )
+        is False
+    )
+    assert call_count[0] == 1
+    assert fake_time[0] == 1.0
+
+    # 2. 제한 시간을 넘겨 도착한 200 응답은 실패 처리
+    fake_time_late = [0.0]
+
+    def probe_late_200(_url: str, _timeout: float) -> int:
+        fake_time_late[0] += 1.5
+        return 200
+
+    assert (
+        verify_waf_traffic_restored(
+            verify_url="http://alb.example.com/",
+            timeout=1.0,
+            http_probe_fn=probe_late_200,
+            clock_fn=lambda: fake_time_late[0],
+        )
+        is False
+    )
+
+    # 3. timeout <= 0 1회 검사 정책 정상 통과
+    assert (
+        verify_waf_traffic_restored(
+            verify_url="http://alb.example.com/",
+            timeout=0.0,
+            http_probe_fn=lambda _url, _timeout: 200,
+        )
+        is True
     )
