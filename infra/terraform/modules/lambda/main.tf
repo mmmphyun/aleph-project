@@ -116,7 +116,7 @@ data "aws_iam_policy_document" "least_privilege" {
       "wafv2:GetWebACL"
     ]
     resources = [
-      var.target_web_acl_arn != "" ? var.target_web_acl_arn : "arn:aws:wafv2:*:*:regional/webacl/*/*"
+      "arn:aws:wafv2:*:*:regional/webacl/*/*"
     ]
   }
 
