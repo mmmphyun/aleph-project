@@ -4,29 +4,33 @@
 
 Why:
     시나리오 2(Web L7) 관통 대응 실측 완료 또는 오탐 발생 후,
-    WAF IPSet(CloudShield-Block-IPSet)에 등록된 공격자 IP를 원자적으로 제거하여
-    테스트베드 인프라의 가용성을 회복하고 단절 복구 시점(T_restored)을 정밀 계측함.
+    WAF IPSet(CloudShield-Block-IPSet)에 등록된 공격자 IP(/32)를 원자적으로 제거하고,
+    제어 평면 설정 갱신 시각(T_api_updated)과 데이터 평면 실제 트래픽 복구 시각(T_restored)을
+    엄격히 분리 계측하여 전파 지연(Propagation Delay) 중 허위 복구 보고를 원천 차단함.
 
 Constraints:
     - Boto3 WAFv2 API를 사용하여 단일 IP(/32) 또는 전체 목록을 원자적 갱신.
     - 동시 수정 충돌(WAFOptimisticLockException) 시 최신 LockToken 기반 최대 3회 재시도.
-    - Read-after-Write 재조회를 통해 물리적 주소 목록 제외를 확증.
-    - 복구 시점(T_restored)을 ISO-8601 및 Epoch 밀리초 단위로 정확히 계측 및 출력.
+    - Read-after-Write 재조회를 통해 물리적 주소 목록 및 상위 CIDR 잔류 여부를 검증.
+    - 실제 트래픽 복구 시각(T_restored)은 --verify-url을 통해 제한 시간 내 HTTP 2xx/3xx 응답이
+      확증된 경우에만 기록하며, 미검증 시 'IPSet 설정 갱신 확인, 트래픽 복구 미검증'으로 명시.
 
 Side-effects / Edge-cases:
-    - IPSet에 대상 IP가 이미 없으면 멱등(Idempotency) 성공 처리.
-    - WAFv2 리소스 미존재 또는 권한 부족 시 ClientError 로깅 및 sys.exit(1) 전파.
+    - IPSet에 대상 IP 및 상위 CIDR이 이미 없으면 멱등(Idempotency) 성공 처리.
+    - 트래픽 복구 확인 시간 초과(403 지속) 시 RuntimeError 발생 및 sys.exit(1) 전파.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
+import ipaddress
 import json
 import logging
 import os
 import sys
 import time
+from collections.abc import Callable
 from typing import Any
 
 import boto3
@@ -34,9 +38,12 @@ from botocore.exceptions import ClientError
 
 from remediation.remediation import (
     DEFAULT_WAF_IPSET_NAME,
+    DEFAULT_WAF_POLL_INTERVAL,
     DEFAULT_WAF_SCOPE,
+    DEFAULT_WAF_VERIFY_TIMEOUT,
     find_waf_ip_set,
     unblock_ip_wafv2,
+    verify_waf_traffic_restored,
 )
 
 DEFAULT_REGION = "ap-southeast-2"
@@ -47,6 +54,20 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("unblock_waf_ip")
+
+
+def _normalize_single_ipv4(ip_str: str) -> str:
+    """단일 IPv4 주소 또는 /32 CIDR 문자열에서 순수 IPv4 호스트 문자열 반환."""
+    cleaned = ip_str.strip()
+    if "/" in cleaned:
+        net = ipaddress.ip_network(cleaned, strict=True)
+        if not isinstance(net, ipaddress.IPv4Network) or net.prefixlen != 32:
+            raise ValueError(f"단일 IPv4(/32) 규격이 아닙니다: {ip_str}")
+        return str(net.network_address)
+    addr = ipaddress.ip_address(cleaned)
+    if not isinstance(addr, ipaddress.IPv4Address):
+        raise ValueError(f"IPv4 규격이 아닙니다: {ip_str}")
+    return str(addr)
 
 
 def list_blocked_ips(
@@ -77,8 +98,24 @@ def unblock_waf_ip_entry(
     ipset_name: str = DEFAULT_WAF_IPSET_NAME,
     scope: str = DEFAULT_WAF_SCOPE,
     waf_client: Any = None,
+    verify_url: str | None = None,
+    verify_timeout: float = DEFAULT_WAF_VERIFY_TIMEOUT,
+    poll_interval: float = DEFAULT_WAF_POLL_INTERVAL,
+    probe_source_ip: str | None = None,
+    http_probe_fn: Callable[[str, float], int] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+    clock_fn: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
-    """WAF IPSet에서 특정 IP 또는 전체 IP를 원자적으로 차단 해제하고 복구 시점 계측."""
+    """WAF IPSet에서 차단 해제 후 API 갱신 시각과 실제 트래픽 복구 시각을 분리 계측."""
+    if verify_url and not unblock_all and source_ip and probe_source_ip:
+        target_host_ip = _normalize_single_ipv4(source_ip)
+        actual_probe_ip = _normalize_single_ipv4(probe_source_ip)
+        if target_host_ip != actual_probe_ip:
+            raise ValueError(
+                f"트래픽 복구 검증 출발지 IP({actual_probe_ip})가 해제 대상 IP({target_host_ip})와 "
+                "일치하지 않아 T_restored를 확정할 수 없습니다."
+            )
+
     if waf_client is None:
         region = os.getenv("AWS_DEFAULT_REGION", DEFAULT_REGION)
         profile = os.getenv("AWS_PROFILE")
@@ -102,29 +139,78 @@ def unblock_waf_ip_entry(
     if not success:
         raise RuntimeError(f"WAF IPSet({ipset_name}) 차단 해제 적용에 실패했습니다.")
 
-    # 해제 후 최종 상태 조회
+    # 제어 평면(Control Plane) 설정 갱신 최종 조회 및 시각 기록
     final_ips = list_blocked_ips(ipset_name=ipset_name, scope=scope, waf_client=waf_client)
+    t_api_updated_iso = datetime.datetime.now(datetime.UTC).isoformat()
+    t_api_updated_epoch = time.time()
+    api_duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+    if not verify_url:
+        logger.info(
+            "WAF IPSet(%s) 설정 갱신 확인, 트래픽 복구 미검증: "
+            "잔여 목록=%s (총 %d건, API 소요 시간: %0.2f ms)",
+            ipset_name,
+            final_ips,
+            len(final_ips),
+            api_duration_ms,
+        )
+        return {
+            "status": "api_updated",
+            "verification_status": "IPSet 설정 갱신 확인, 트래픽 복구 미검증",
+            "traffic_verified": False,
+            "ipset_name": ipset_name,
+            "target": "ALL" if unblock_all else source_ip,
+            "previous_addresses": initial_ips,
+            "current_addresses": final_ips,
+            "t_api_updated_iso": t_api_updated_iso,
+            "t_api_updated_epoch": t_api_updated_epoch,
+            "t_restored_iso": None,
+            "t_restored_epoch": None,
+            "api_duration_ms": api_duration_ms,
+            "duration_ms": api_duration_ms,
+        }
+
+    # 데이터 평면(Data Plane) 실제 트래픽 복구 폴링 검증
+    is_restored = verify_waf_traffic_restored(
+        verify_url=verify_url,
+        timeout=verify_timeout,
+        poll_interval=poll_interval,
+        http_probe_fn=http_probe_fn,
+        sleep_fn=sleep_fn,
+        clock_fn=clock_fn,
+    )
+    if not is_restored:
+        raise RuntimeError(
+            f"WAF IPSet({ipset_name}) 설정은 갱신되었으나 제한 시간({verify_timeout}s) 내 "
+            f"실제 트래픽 복구({verify_url})가 확인되지 않았습니다."
+        )
+
     restore_iso = datetime.datetime.now(datetime.UTC).isoformat()
     restore_epoch = time.time()
-    duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    total_duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
     logger.info(
-        "WAF IPSet(%s) 복구 완료: 잔여 차단 목록=%s (총 %d건, 소요 시간: %0.2f ms)",
+        "WAF IPSet(%s) 트래픽 복구 확인 완료: 잔여 목록=%s (총 %d건, 총 소요 시간: %0.2f ms)",
         ipset_name,
         final_ips,
         len(final_ips),
-        duration_ms,
+        total_duration_ms,
     )
 
     return {
-        "status": "success",
+        "status": "restored",
+        "verification_status": "트래픽 복구 확인 완료",
+        "traffic_verified": True,
         "ipset_name": ipset_name,
         "target": "ALL" if unblock_all else source_ip,
         "previous_addresses": initial_ips,
         "current_addresses": final_ips,
+        "t_api_updated_iso": t_api_updated_iso,
+        "t_api_updated_epoch": t_api_updated_epoch,
         "t_restored_iso": restore_iso,
         "t_restored_epoch": restore_epoch,
-        "duration_ms": duration_ms,
+        "api_duration_ms": api_duration_ms,
+        "duration_ms": total_duration_ms,
     }
 
 
@@ -169,6 +255,30 @@ def parse_args() -> argparse.Namespace:
         help="AWS 리전 (기본값: ap-southeast-2)",
     )
     parser.add_argument(
+        "--verify-url",
+        type=str,
+        default=None,
+        help="실제 트래픽 복구 확인을 위한 대상 URL (미지정 시 제어 평면 설정 갱신만 확인)",
+    )
+    parser.add_argument(
+        "--verify-timeout",
+        type=float,
+        default=DEFAULT_WAF_VERIFY_TIMEOUT,
+        help="트래픽 복구 확인 최대 대기 시간(초)",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=DEFAULT_WAF_POLL_INTERVAL,
+        help="트래픽 복구 폴링 간격(초)",
+    )
+    parser.add_argument(
+        "--probe-source-ip",
+        type=str,
+        default=None,
+        help="프로브 요청 출발지 IPv4 (단일 IP 해제 시 대상 IP와 일치 여부 검증)",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="결과를 JSON 포맷으로 표준 출력",
@@ -202,21 +312,32 @@ def main() -> None:
             ipset_name=args.ipset_name,
             scope=args.scope,
             waf_client=waf_client,
+            verify_url=args.verify_url,
+            verify_timeout=args.verify_timeout,
+            poll_interval=args.poll_interval,
+            probe_source_ip=args.probe_source_ip,
         )
 
         if args.json:
-            print(json.dumps(result, indent=2))
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        elif result["traffic_verified"]:
+            print(
+                f"[성공] WAF 트래픽 복구 확인 완료: target={result['target']} | "
+                f"T_api_updated={result['t_api_updated_iso']} | "
+                f"T_restored={result['t_restored_iso']} | 소요시간={result['duration_ms']}ms"
+            )
         else:
             print(
-                f"[성공] WAF IPSet 복구 완료: target={result['target']} | "
-                f"T_restored={result['t_restored_iso']} | 소요시간={result['duration_ms']}ms"
+                f"[성공] IPSet 설정 갱신 확인, 트래픽 복구 미검증: target={result['target']} | "
+                f"T_api_updated={result['t_api_updated_iso']} | "
+                f"T_restored=None | API소요시간={result['api_duration_ms']}ms"
             )
         sys.exit(0)
 
     except (ClientError, ValueError, RuntimeError) as e:
         logger.error("WAF IPSet 차단 해제 실패: %s", e)
         if args.json:
-            print(json.dumps({"status": "error", "message": str(e)}, indent=2))
+            print(json.dumps({"status": "error", "message": str(e)}, indent=2, ensure_ascii=False))
         sys.exit(1)
 
 

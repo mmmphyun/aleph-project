@@ -3293,3 +3293,190 @@ def test_unblock_ip_wafv2_invalid_ip_rejected(mocked_waf_ipset: Any) -> None:
         )
         is False
     )
+
+
+def test_unblock_ip_wafv2_supernet_only_returns_false(mocked_waf_ipset: Any) -> None:
+    """상위 CIDR(198.51.100.0/24)만 존재할 때 단일 IP 해제 시 미해제 오류(False) 반환 검증."""
+    from remediation.remediation import unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    get_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    waf_client.update_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+        Addresses=["198.51.100.0/24"],
+        LockToken=get_res["LockToken"],
+    )
+
+    assert (
+        unblock_ip_wafv2(
+            source_ip="198.51.100.77",
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+        )
+        is False
+    )
+
+    after_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert after_res["IPSet"]["Addresses"] == ["198.51.100.0/24"]
+
+
+def test_unblock_ip_wafv2_slash32_and_supernet_duplicate_returns_false(
+    mocked_waf_ipset: Any,
+) -> None:
+    """해당 IP의 /32와 상위 CIDR(/24)이 중복 등록된 경우 최종 검증에서 미해제(False) 반환 검증."""
+    from remediation.remediation import unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    get_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    waf_client.update_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+        Addresses=["198.51.100.77/32", "198.51.100.0/24"],
+        LockToken=get_res["LockToken"],
+    )
+
+    assert (
+        unblock_ip_wafv2(
+            source_ip="198.51.100.77",
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+        )
+        is False
+    )
+
+    after_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert "198.51.100.0/24" in after_res["IPSet"]["Addresses"]
+
+
+def test_unblock_ip_wafv2_non_slash32_with_host_bits_rejected_preserves_list(
+    mocked_waf_ipset: Any,
+) -> None:
+    """호스트 비트가 있는 /24 입력(198.51.100.77/24) 거부 및 기존 목록 보존 검증."""
+    from remediation.remediation import unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    get_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    waf_client.update_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+        Addresses=["198.51.100.0/24"],
+        LockToken=get_res["LockToken"],
+    )
+
+    assert (
+        unblock_ip_wafv2(
+            source_ip="198.51.100.77/24",
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+        )
+        is False
+    )
+    assert (
+        unblock_ip_wafv2(
+            source_ip="198.51.100.0/24",
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+        )
+        is False
+    )
+
+    after_res = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert after_res["IPSet"]["Addresses"] == ["198.51.100.0/24"]
+
+
+def test_unblock_ip_wafv2_propagation_delay_and_timeout(mocked_waf_ipset: Any) -> None:
+    """IPSet 제거 후 WAF 전파 지연(403 지속 후 200 복구) 및 시간 초과 시 미복구(False) 판정 검증."""
+    from remediation.remediation import block_ip_wafv2, unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    target_ip = "198.51.100.88"
+
+    # 1. 전파 지연 후 제한 시간 내 복구(403 -> 403 -> 200)
+    block_ip_wafv2(
+        source_ip=target_ip,
+        ipset_name=mocked_waf_ipset.ipset_name,
+        ipset_id=mocked_waf_ipset.ipset_id,
+        waf_client=waf_client,
+    )
+    responses_delayed = iter([403, 403, 200])
+    fake_time = [0.0]
+
+    def fake_clock() -> float:
+        return fake_time[0]
+
+    def fake_sleep(sec: float) -> None:
+        fake_time[0] += sec
+
+    assert (
+        unblock_ip_wafv2(
+            source_ip=target_ip,
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+            verify_url="http://alb.example.com/",
+            verify_timeout=5.0,
+            poll_interval=1.0,
+            http_probe_fn=lambda _url, _timeout: next(responses_delayed),
+            sleep_fn=fake_sleep,
+            clock_fn=fake_clock,
+        )
+        is True
+    )
+    assert fake_time[0] == 2.0
+
+    # 2. IPSet에서는 제거됐으나 제한 시간(3.0초) 내 계속 403인 경우 False 반환
+    block_ip_wafv2(
+        source_ip=target_ip,
+        ipset_name=mocked_waf_ipset.ipset_name,
+        ipset_id=mocked_waf_ipset.ipset_id,
+        waf_client=waf_client,
+    )
+    fake_time[0] = 0.0
+
+    assert (
+        unblock_ip_wafv2(
+            source_ip=target_ip,
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+            verify_url="http://alb.example.com/",
+            verify_timeout=3.0,
+            poll_interval=1.0,
+            http_probe_fn=lambda _url, _timeout: 403,
+            sleep_fn=fake_sleep,
+            clock_fn=fake_clock,
+        )
+        is False
+    )
