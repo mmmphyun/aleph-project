@@ -89,13 +89,32 @@ class SyslogAuthEvent(BaseModel):
 
 
 class CloudWatchLogEvent(BaseModel):
-    """CloudWatch Logs 개별 로그 레코드 모델."""
+    """CloudWatch Logs 개별 로그 레코드 모델.
+
+    Why:
+        CloudWatch Logs Subscription Filter를 통해 전달되는 개별 로그 레코드의
+        식별자, 타임스탬프, 원본 메시지 및 필터 패턴 추출 필드를 정형화하여
+        Lambda 오케스트레이터 및 디코더에서 안전하게 역직렬화하기 위함.
+
+    Constraints:
+        - id, timestamp, message는 필수 필드.
+        - extractedFields는 공백 구분자 패턴([ip, ident, ...]) 매칭 시 AWS가 자동 주입하는
+          선택적 필드이므로 기본값을 빈 딕셔너리로 제공.
+
+    Side-effects / Edge-cases:
+        - AWS Subscription Filter가 단순 문자열 매칭일 때는 extractedFields가 누락되어 전달되며,
+          필드 추출 패턴일 때만 키-값 맵이 포함되므로 기본값({}) 처리를 통해 하위 호환성을 보장함.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str = Field(..., description="CloudWatch 로그 이벤트 고유 ID")
     timestamp: int = Field(..., description="이벤트 발생 시각 Epoch Milliseconds")
     message: str = Field(..., description="실제 로그 원문 문자열")
+    extractedFields: dict[str, str] = Field(
+        default_factory=dict,
+        description="CloudWatch Logs Subscription Filter 필터 패턴 매칭 시 자동 주입된 필드 맵",
+    )
 
 
 class CloudWatchLogsPayload(BaseModel):
