@@ -3449,6 +3449,7 @@ def test_unblock_ip_wafv2_propagation_delay_and_timeout(mocked_waf_ipset: Any) -
             verify_timeout=5.0,
             poll_interval=1.0,
             probe_source_ip=target_ip,
+            observed_source_ip=target_ip,
             http_probe_fn=lambda _url, _timeout: next(responses_delayed),
             sleep_fn=fake_sleep,
             clock_fn=fake_clock,
@@ -3476,6 +3477,7 @@ def test_unblock_ip_wafv2_propagation_delay_and_timeout(mocked_waf_ipset: Any) -
             verify_timeout=3.0,
             poll_interval=1.0,
             probe_source_ip=target_ip,
+            observed_source_ip=target_ip,
             http_probe_fn=lambda _url, _timeout: 403,
             sleep_fn=fake_sleep,
             clock_fn=fake_clock,
@@ -3491,7 +3493,7 @@ def test_unblock_ip_wafv2_probe_source_ip_validation(mocked_waf_ipset: Any) -> N
     waf_client = boto3.client("wafv2", region_name="us-east-1")
     target_ip = "198.51.100.89"
 
-    # 1. probe_source_ip 미제공 시 200 응답이라도 False 반환
+    # 1. probe_source_ip/observed_source_ip 미제공 시 200 응답이라도 False 반환
     assert (
         unblock_ip_wafv2(
             source_ip=target_ip,
@@ -3514,6 +3516,31 @@ def test_unblock_ip_wafv2_probe_source_ip_validation(mocked_waf_ipset: Any) -> N
             waf_client=waf_client,
             verify_url="http://alb.example.com/",
             probe_source_ip="198.51.100.99",
+            observed_source_ip="198.51.100.99",
+            http_probe_fn=lambda _url, _timeout: 200,
+        )
+        is False
+    )
+
+
+def test_unblock_ip_wafv2_same_input_strings_different_observed_egress_returns_false(
+    mocked_waf_ipset: Any,
+) -> None:
+    """입력 IP 문자열은 같지만 실제 프로브 출발지가 다른 경우 대상 IP 복구 미확정(False) 검증."""
+    from remediation.remediation import unblock_ip_wafv2
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    target_ip = "203.0.113.50"
+
+    assert (
+        unblock_ip_wafv2(
+            source_ip=target_ip,
+            ipset_name=mocked_waf_ipset.ipset_name,
+            ipset_id=mocked_waf_ipset.ipset_id,
+            waf_client=waf_client,
+            verify_url="http://alb.example.com/",
+            probe_source_ip=target_ip,
+            observed_source_ip="198.51.100.99",
             http_probe_fn=lambda _url, _timeout: 200,
         )
         is False

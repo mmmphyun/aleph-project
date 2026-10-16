@@ -783,6 +783,8 @@ def unblock_ip_wafv2(
     verify_timeout: float = DEFAULT_WAF_VERIFY_TIMEOUT,
     poll_interval: float = DEFAULT_WAF_POLL_INTERVAL,
     probe_source_ip: str | None = None,
+    observed_source_ip: str | None = None,
+    observed_source_ip_fn: Callable[[], str | None] | None = None,
     http_probe_fn: Callable[[str, float], int] | None = None,
     sleep_fn: Callable[[float], None] | None = None,
     clock_fn: Callable[[], float] | None = None,
@@ -800,30 +802,41 @@ def unblock_ip_wafv2(
           /32 이외의 프리픽스 또는 호스트 비트가 켜진 CIDR 입력은 API 호출 전에 즉시 거부됨.
         - unblock_all: True일 경우 IPSet 내 모든 차단 IP를 초기화 ([]).
         - verify_url: 지정 시 제어 평면 갱신 후 HTTP 2xx/3xx 응답 복구를 폴링 검증.
-        - probe_source_ip: 단일 IP 해제 시 트래픽 복구 검증 출발지 IP (source_ip와 일치 필수).
+        - observed_source_ip / observed_source_ip_fn: 단일 IP 해제 시 실제 프로브 요청의
+          관측된 출발지 IP (source_ip와 일치 필수).
 
     Side-effects / Edge-cases:
         - 대상 IP를 포함하는 상위 CIDR(예: /24)이 존재할 경우 멱등 성공 대신 False 반환.
         - 대상 /32와 상위 CIDR이 함께 등록된 경우에도 최종 검증에서 잔류를 감지하여 False 반환.
         - verify_url 지정 시 제한 시간(verify_timeout) 내 403이 해소되지 않으면 False 반환.
-        - verify_url 지정 단일 IP 해제 시 probe_source_ip 미지정 또는 불일치 시 False 반환.
+        - verify_url 지정 단일 IP 해제 시 실제 관측 출발지 IP 미제공 또는 불일치 시 False 반환.
         - WAFOptimisticLockException 발생 시 최신 LockToken으로 재시도.
     """
     if verify_url and not unblock_all and source_ip:
-        if not probe_source_ip:
+        actual_observed_ip = observed_source_ip or (
+            observed_source_ip_fn() if observed_source_ip_fn else None
+        )
+        if not actual_observed_ip:
             logger.error(
-                "WAF 트래픽 복구 검증을 위해 해제 대상 출발지 IP(probe_source_ip)가 필수이나 "
+                "WAF 트래픽 복구 검증을 위해 실제 프로브 출발지 IP 관측 근거가 필수이나 "
                 "미제공됨: target=%s",
                 source_ip,
             )
             return False
         try:
             target_norm = normalize_single_ipv4(source_ip)
-            probe_norm = normalize_single_ipv4(probe_source_ip)
-            if target_norm != probe_norm:
+            observed_norm = normalize_single_ipv4(actual_observed_ip)
+            if target_norm != observed_norm:
                 logger.error(
-                    "트래픽 복구 검증 출발지 IP(%s)가 해제 대상 IP(%s)와 불일치함",
-                    probe_norm,
+                    "실제 프로브 출발지 IP(%s)가 해제 대상 IP(%s)와 불일치함",
+                    observed_norm,
+                    target_norm,
+                )
+                return False
+            if probe_source_ip and normalize_single_ipv4(probe_source_ip) != target_norm:
+                logger.error(
+                    "사용자 지정 출발지 IP(%s)가 해제 대상 IP(%s)와 불일치함",
+                    probe_source_ip,
                     target_norm,
                 )
                 return False

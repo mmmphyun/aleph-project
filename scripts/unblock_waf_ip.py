@@ -88,6 +88,8 @@ def unblock_waf_ip_entry(
     verify_timeout: float = DEFAULT_WAF_VERIFY_TIMEOUT,
     poll_interval: float = DEFAULT_WAF_POLL_INTERVAL,
     probe_source_ip: str | None = None,
+    observed_source_ip: str | None = None,
+    observed_source_ip_fn: Callable[[], str | None] | None = None,
     http_probe_fn: Callable[[str, float], int] | None = None,
     sleep_fn: Callable[[float], None] | None = None,
     clock_fn: Callable[[], float] | None = None,
@@ -97,21 +99,34 @@ def unblock_waf_ip_entry(
     unverified_reason = ""
 
     if should_verify_traffic and not unblock_all and source_ip:
-        if not probe_source_ip:
+        target_host_ip = normalize_single_ipv4(source_ip)
+        if probe_source_ip and normalize_single_ipv4(probe_source_ip) != target_host_ip:
+            raise ValueError(
+                f"트래픽 복구 검증 출발지 IP({probe_source_ip})가 "
+                f"해제 대상 IP({target_host_ip})와 일치하지 않아 "
+                "T_restored를 확정할 수 없습니다."
+            )
+
+        actual_observed_ip = observed_source_ip or (
+            observed_source_ip_fn() if observed_source_ip_fn else None
+        )
+        if not actual_observed_ip:
             should_verify_traffic = False
-            unverified_reason = " (출발지 미확인)"
+            unverified_reason = " (실제 출발지 관측 근거 부재)"
             logger.warning(
-                "검증 대상 출발지 IP(probe_source_ip)가 미제공되어 실제 트래픽 복구(T_restored)를 "
-                "확정할 수 없습니다. (IPSet 설정 갱신만 수행)"
+                "검증 대상 출발지 IP 관측 근거(observed_source_ip)가 미제공되어 실제 "
+                "트래픽 복구(T_restored)를 확정할 수 없습니다. (IPSet 설정 갱신만 수행)"
             )
         else:
-            target_host_ip = normalize_single_ipv4(source_ip)
-            actual_probe_ip = normalize_single_ipv4(probe_source_ip)
-            if target_host_ip != actual_probe_ip:
-                raise ValueError(
-                    f"트래픽 복구 검증 출발지 IP({actual_probe_ip})가 "
-                    f"해제 대상 IP({target_host_ip})와 일치하지 않아 "
-                    "T_restored를 확정할 수 없습니다."
+            observed_host_ip = normalize_single_ipv4(actual_observed_ip)
+            if target_host_ip != observed_host_ip:
+                should_verify_traffic = False
+                unverified_reason = " (실제 프로브 출발지 불일치)"
+                logger.warning(
+                    "실제 프로브 출발지 IP(%s)가 해제 대상 IP(%s)와 달라 대상 IP 복구를 "
+                    "확정할 수 없습니다. (IPSet 설정 갱신만 확증)",
+                    observed_host_ip,
+                    target_host_ip,
                 )
 
     if waf_client is None:
@@ -278,6 +293,12 @@ def parse_args() -> argparse.Namespace:
         help="프로브 요청 출발지 IPv4 (단일 IP 해제 시 대상 IP와 일치 여부 검증)",
     )
     parser.add_argument(
+        "--observed-source-ip",
+        type=str,
+        default=None,
+        help="프로브 요청 패킷의 실제 관측된 출발지 IPv4 (대상 호스트 관측값)",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="결과를 JSON 포맷으로 표준 출력",
@@ -315,6 +336,7 @@ def main() -> None:
             verify_timeout=args.verify_timeout,
             poll_interval=args.poll_interval,
             probe_source_ip=args.probe_source_ip,
+            observed_source_ip=args.observed_source_ip,
         )
 
         if args.json:
