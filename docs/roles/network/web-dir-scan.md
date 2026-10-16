@@ -31,6 +31,44 @@ curl 증거는 기존 요약 키에 `request_N_started_at`, `request_N_observed_
 
 HTTP 403 최초 수신은 PCAP의 `http.response.code == 403`과 요청·TCP stream으로 대조한다. FIN/RST는 `tcp.flags.fin == 1 || tcp.flags.reset == 1`로 별도 관측하며, 403 자체가 연결 종료를 뜻하지 않는다. WAF 원본 로그의 `action=BLOCK`, 출발지, URI, `terminatingRuleId`를 클라우드 담당이 확인해야 차단 주체를 확정할 수 있다. 헤더·본문이나 민감한 원본 로그를 공개 보고서에 그대로 복사하지 않는다.
 
+### 공인 IP의 실행 전·도중·후 관측
+
+[2026-10-16 초회 실측](2026-10-16-p3-6-waf-measurement.md)에서는 같은 실행의 실제 출발지가 9개로 나뉘었다. 테더링의 최초 IP 확인만으로 고정 출발지를 보장하지 않는다. 아래는 **Kali Bash**에서 별도 터미널에 실행하는 보조 관측 예시다. 실행 전 기록 완료 메시지를 확인하고 다른 터미널에서 승인된 실측을 한 번 진행한 뒤, 이 터미널로 돌아와 실행 후 관측을 남긴다. 도중 표본은 최대 12개·각 5초 대기이며, 요청당 최대 5초다. 원본 증거는 Git에 넣지 않는다.
+
+```bash
+# 새 실행 폴더에서 실행한다. 기존 파일이 있으면 덮어쓰지 않고 실패한다.
+(
+  set -euo pipefail
+  set -o noclobber
+  observe_ip() {
+    printf '\nphase=%s lookup_started_at=' "$1"
+    date -u +%Y-%m-%dT%H:%M:%S.%3NZ
+    ip -4 route get 1.1.1.1
+    # 조회 실패는 기록하고 본 관측도 실패 처리한다. 재시도로 숨기지 않는다.
+    if curl -4 --noproxy '*' --fail --silent --show-error \
+      --connect-timeout 3 --max-time 5 \
+      --write-out 'local=%{local_ip} remote=%{remote_ip} http=%{http_code}\n' \
+      https://checkip.amazonaws.com; then
+      return 0
+    else
+      result=$?
+      printf 'lookup_exit=%s\n' "$result"
+      return "$result"
+    fi
+  }
+  observe_ip before
+  printf '실행 전 기록 완료. 준비된 다른 터미널에서 실측을 시작하세요.\n' >&2
+  for n in {1..12}; do
+    sleep 5
+    observe_ip during
+  done
+  read -r -p '실측 종료를 확인했으면 Enter: ' _
+  observe_ip after
+) > public-ip-observations.txt
+```
+
+위 조회의 공인 IP는 별도 연결의 관측값이므로 특정 ALB 요청의 실제 주소를 증명하지 않는다. 클라우드 B의 WAF `clientIp`·URI·시각 매핑을 반드시 함께 받는다. 캡처는 마지막 HTTP 응답 후 충분히 대기한 다음 SIGINT로 종료하고, 사후 응답까지 PCAP에 있는지 확인한다. 고정 출발지를 확보하지 못한 상태에서는 IP별 탐지 성공 여부를 단일 IP 실험으로 판정하지 않는다.
+
 ## 기존 로컬 보완 당시 연계 범위와 후속 티켓
 
 이 스크립트는 로컬 테스트 HTTP 대상의 요청 계획과 HTTP 상태 코드·요청 수 증거를 다룬다. 2026-10-02 main `7fbe19e` 기준 Web 룰과 Nginx 파서는 구현되어 있어 이번 보완에서는 모의 요청·응답을 기존 파서 및 룰에 연결한다. 운영 CloudWatch 전달, `IncidentReport` 생성, 자동 차단 또는 10초 E2E 성공을 검증한 것은 아니다. main 오케스트레이터의 진입점은 아직 SSH 로그 중심이다.
