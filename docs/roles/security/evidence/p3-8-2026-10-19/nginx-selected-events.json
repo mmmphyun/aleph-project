@@ -1,0 +1,570 @@
+{
+  "artifact_type": "selected_events_from_user_supplied_nginx_exports",
+  "source_archive": {
+    "file": "p3-8-final-20261019.zip",
+    "bytes": 18167,
+    "sha256": "b6cb2b327df1fe3b3233ae18b07de7505c02ac922915a07a979f2a30284acb83",
+    "page_file_count": 8,
+    "history_file_count": 4,
+    "event_count": 147,
+    "event_id_duplicates_across_all_queries": 0
+  },
+  "selection": {
+    "source_ips": {
+      "3.25.82.148": "attacker",
+      "1.245.252.171": "normal_external_client"
+    },
+    "label_basis": "User-supplied controlled-test roles; normal label is limited to the supplied requests."
+  },
+  "omissions": [
+    "internal health probes and other unselected events"
+  ],
+  "cases": {
+    "single": {
+      "source_files": [
+        {
+          "entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "bytes": 17225,
+          "sha256": "cb30780b89eb7c7f8e1b209b1f8a029cff51759c259350982ea976404924eca8"
+        },
+        {
+          "entry": "p3-8-final-20261019/single-nginx-page-002.json",
+          "bytes": 55,
+          "sha256": "1de8dae1887632a3bc790068669788307985e76653f97d72c52e1fde607846db"
+        }
+      ],
+      "source_event_count": 43,
+      "selected_event_count": 27,
+      "events": [
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/1",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392646000,
+          "ingestionTime": 1792392649163,
+          "eventId": "39971691694166098926852908330683384402143362687374655489",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:50:46 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/2",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392646000,
+          "ingestionTime": 1792392652155,
+          "eventId": "39971691694166098926852908334300697034853920794632126464",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:50:46 +0000] \"GET /admin/%2e%2e/config HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/3",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392649000,
+          "ingestionTime": 1792392654663,
+          "eventId": "39971691761068334522444777761939673454595558775285612544",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:50:49 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/5",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392652000,
+          "ingestionTime": 1792392658172,
+          "eventId": "39971691827970570118036647190789067294896069544960655360",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:50:52 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/6",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392655000,
+          "ingestionTime": 1792392661181,
+          "eventId": "39971691894872805713628516619034037497230679834193035264",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:50:55 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/7",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392658000,
+          "ingestionTime": 1792392664189,
+          "eventId": "39971691961775041309220386047277643903981197317708185600",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:50:58 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/8",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392662000,
+          "ingestionTime": 1792392667195,
+          "eventId": "39971692050978022103342878617054805431211881168405790720",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:51:02 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/9",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392664000,
+          "ingestionTime": 1792392669951,
+          "eventId": "39971692095579512500404124903457670699665553510679052288",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:51:04 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/10",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392667000,
+          "ingestionTime": 1792392674622,
+          "eventId": "39971692162481748095995994333712038538787941252052221952",
+          "message": "3.25.82.148 - - [19/Oct/2026:06:51:07 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/15",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392734000,
+          "ingestionTime": 1792392738145,
+          "eventId": "39971693656631676397547744893399346702478427226272235520",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:52:14 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/17",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392742000,
+          "ingestionTime": 1792392744889,
+          "eventId": "39971693835037637985792730033838425146338940089350422528",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:52:22 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/19",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392749000,
+          "ingestionTime": 1792392756630,
+          "eventId": "39971693991142854375507092038782106401090816558760263680",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:52:29 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/20",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392757000,
+          "ingestionTime": 1792392763651,
+          "eventId": "39971694169548815963752077179555655136617909655793500160",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:52:37 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/21",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392764000,
+          "ingestionTime": 1792392768199,
+          "eventId": "39971694325654032353466439175804364482329838075422113792",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:52:44 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/23",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392772000,
+          "ingestionTime": 1792392774715,
+          "eventId": "39971694504059993941711424315967162181855125710924873728",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:52:52 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/25",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392779000,
+          "ingestionTime": 1792392786639,
+          "eventId": "39971694660165210331425786321132277442057059955729301504",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:52:59 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/26",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392787000,
+          "ingestionTime": 1792392793643,
+          "eventId": "39971694838571171919670771461885371076382540196422418432",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:53:07 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/27",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392794000,
+          "ingestionTime": 1792392798272,
+          "eventId": "39971694994676388309385133458231973541327723618583117824",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:53:14 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/29",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392802000,
+          "ingestionTime": 1792392804791,
+          "eventId": "39971695173082349897630118598398227923477795621746376704",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:53:22 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/31",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392809000,
+          "ingestionTime": 1792392815623,
+          "eventId": "39971695329187566287344480602243751331410098213836947456",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:53:29 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/32",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392817000,
+          "ingestionTime": 1792392823641,
+          "eventId": "39971695507593527875589465744222669284976015560680800256",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:53:37 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/33",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392824000,
+          "ingestionTime": 1792392828341,
+          "eventId": "39971695663698744265303827740654575659447164047941697536",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:53:44 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/35",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392831000,
+          "ingestionTime": 1792392834860,
+          "eventId": "39971695819803960655018189739285246245586969254982516736",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:53:51 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/37",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392839000,
+          "ingestionTime": 1792392846634,
+          "eventId": "39971695998209922243263174885805143712419783803326169088",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:53:59 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/38",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392846000,
+          "ingestionTime": 1792392853637,
+          "eventId": "39971696154315138632977536885021271537250674318135590912",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:54:06 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/39",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392854000,
+          "ingestionTime": 1792392858172,
+          "eventId": "39971696332721100221222522022789653648091613954247098368",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:54:14 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "source_json_pointer": "/events/41",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792392861000,
+          "ingestionTime": 1792392864941,
+          "eventId": "39971696488826316610936884021722394182457609871033237504",
+          "message": "1.245.252.171 - - [19/Oct/2026:06:54:21 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        }
+      ]
+    },
+    "double": {
+      "source_files": [
+        {
+          "entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "bytes": 15674,
+          "sha256": "e8edb08b274a570d77169c907995e21405ec4c51a21807ddb51b4646c8b41354"
+        },
+        {
+          "entry": "p3-8-final-20261019/double-nginx-page-002.json",
+          "bytes": 55,
+          "sha256": "1de8dae1887632a3bc790068669788307985e76653f97d72c52e1fde607846db"
+        }
+      ],
+      "source_event_count": 39,
+      "selected_event_count": 24,
+      "events": [
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/1",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393346000,
+          "ingestionTime": 1792393348706,
+          "eventId": "39971707304687737898289108251382276647555400273041293313",
+          "message": "3.25.82.148 - - [19/Oct/2026:07:02:26 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/2",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393346000,
+          "ingestionTime": 1792393351714,
+          "eventId": "39971707304687737898289108255018617020373819283522060288",
+          "message": "3.25.82.148 - - [19/Oct/2026:07:02:26 +0000] \"GET /admin/%252e%252e/config HTTP/1.1\" 401 172 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/3",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393349000,
+          "ingestionTime": 1792393354721,
+          "eventId": "39971707371589973493880977683260957927032069496721702912",
+          "message": "3.25.82.148 - - [19/Oct/2026:07:02:29 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/4",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393352000,
+          "ingestionTime": 1792393357728,
+          "eventId": "39971707438492209089472847111503307954977353291587715072",
+          "message": "3.25.82.148 - - [19/Oct/2026:07:02:32 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/5",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393355000,
+          "ingestionTime": 1792393360736,
+          "eventId": "39971707505394444685064716539746658320712254401733853184",
+          "message": "3.25.82.148 - - [19/Oct/2026:07:02:35 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/6",
+          "evaluation_label": "attacker",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393358000,
+          "ingestionTime": 1792393365621,
+          "eventId": "39971707572296680280656585970259474890296510766117879808",
+          "message": "3.25.82.148 - - [19/Oct/2026:07:02:38 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/7.81.0\" 0.000 \"3.25.82.148\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/13",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393436000,
+          "ingestionTime": 1792393442621,
+          "eventId": "39971709311754805766045191103132753142361291001169117184",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:03:56 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/14",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393443000,
+          "ingestionTime": 1792393450629,
+          "eventId": "39971709467860022155759553103563927695063215985674813440",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:04:03 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/15",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393451000,
+          "ingestionTime": 1792393457635,
+          "eventId": "39971709646265983744004538244319667656451575405195952128",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:04:11 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/17",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393458000,
+          "ingestionTime": 1792393465502,
+          "eventId": "39971709802371200133718900244579993404841885513915367424",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:04:18 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/19",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393466000,
+          "ingestionTime": 1792393472621,
+          "eventId": "39971709980777161721963885385472102142784463975316324352",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:04:26 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/20",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393473000,
+          "ingestionTime": 1792393480639,
+          "eventId": "39971710136882378111678247385915772760332454059681120256",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:04:33 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/21",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393481000,
+          "ingestionTime": 1792393487638,
+          "eventId": "39971710315288339699923232526662503003077443387222786048",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:04:41 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/23",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393488000,
+          "ingestionTime": 1792393495330,
+          "eventId": "39971710471393556089637594526711751789796499943623360512",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:04:48 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/25",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393496000,
+          "ingestionTime": 1792393502623,
+          "eventId": "39971710649799517677882579667813971774452316608536903680",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:04:56 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/26",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393503000,
+          "ingestionTime": 1792393510635,
+          "eventId": "39971710805904734067596941668249879487482323843846111232",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:05:03 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/27",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393511000,
+          "ingestionTime": 1792393517633,
+          "eventId": "39971710984310695655841926808995845741998091390734368768",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:05:11 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/29",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393518000,
+          "ingestionTime": 1792393525414,
+          "eventId": "39971711140415912045556288809152725418471964041627500544",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:05:18 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/31",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393526000,
+          "ingestionTime": 1792393532621,
+          "eventId": "39971711318821873633801273950151142544978090009886916608",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:05:26 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/32",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393533000,
+          "ingestionTime": 1792393540634,
+          "eventId": "39971711474927090023515635950588334721062340664940232704",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:05:33 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/33",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393541000,
+          "ingestionTime": 1792393547638,
+          "eventId": "39971711653333051611760621091340939192981403460999643136",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:05:41 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/35",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393548000,
+          "ingestionTime": 1792393555489,
+          "eventId": "39971711809438268001474983091582420452947985388919193600",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:05:48 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/37",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393556000,
+          "ingestionTime": 1792393562621,
+          "eventId": "39971711987844229589719968232489982679435391158021521408",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:05:56 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        },
+        {
+          "source_entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "source_json_pointer": "/events/38",
+          "evaluation_label": "normal_external_client",
+          "logStreamName": "i-0605f8529598ed820",
+          "timestamp": 1792393563000,
+          "ingestionTime": 1792393570645,
+          "eventId": "39971712143949445979434330232940992296125222305043775488",
+          "message": "1.245.252.171 - - [19/Oct/2026:07:06:03 +0000] \"GET / HTTP/1.1\" 200 1840 \"-\" \"curl/8.21.0\" 0.000 \"1.245.252.171\""
+        }
+      ]
+    }
+  }
+}
