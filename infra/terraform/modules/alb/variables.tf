@@ -33,3 +33,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "ingress_cidrs" {
+  description = "ALB HTTP(80) 접근을 허용할 공인 IPv4 CIDR 목록"
+  type        = list(string)
+  default     = ["1.245.252.171/32"]
+}
