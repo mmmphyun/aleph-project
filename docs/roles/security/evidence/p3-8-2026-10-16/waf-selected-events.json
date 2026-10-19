@@ -1,0 +1,577 @@
+{
+  "artifact_type": "selected_fields_from_user_supplied_waf_export",
+  "source_file": "waf-raw.json",
+  "source_sha256": "24697b453609a3c717e6dad6531d120bf9fe6230ccbf81b88a2ca35af52cf297",
+  "selection": {
+    "client_ip": "3.26.171.60",
+    "selected_event_count": 20,
+    "source_event_count": 22
+  },
+  "omissions": [
+    "httpRequest.headers",
+    "httpRequest.args",
+    "unrelated_ips_and_other_unselected_fields"
+  ],
+  "events": [
+    {
+      "source_json_pointer": "/events/2/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138182765,
+        "ingestionTime": 1792138201411,
+        "eventId": "39966016974399970107241439680487092242077375990857007104"
+      },
+      "waf_fields": {
+        "timestamp": 1792138182765,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "HEAD",
+          "uri": "/",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbc6-03a9cc75725e2fdb6a77579c"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/3/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138182793,
+        "ingestionTime": 1792138201110,
+        "eventId": "39966016975024390972800297128085956763660274553799704576"
+      },
+      "waf_fields": {
+        "timestamp": 1792138182793,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/admin",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbc6-465efd3b4145f6c54ad7abf3"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/4/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138183951,
+        "ingestionTime": 1792138203446,
+        "eventId": "39966017000848653912698758728808227800568198881835155456"
+      },
+      "waf_fields": {
+        "timestamp": 1792138183951,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/login",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbc7-4c981ffa7f01defe35168c59"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/5/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138185110,
+        "ingestionTime": 1792138204203,
+        "eventId": "39966017026695217597795750950763480817915858726508560384"
+      },
+      "waf_fields": {
+        "timestamp": 1792138185110,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/dashboard",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbc9-6c737fcf1dcff6313edc719d"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/6/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138186263,
+        "ingestionTime": 1792138203771,
+        "eventId": "39966017052407976811701559432431678776848030219291000832"
+      },
+      "waf_fields": {
+        "timestamp": 1792138186263,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/api",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbca-67c9de81000637624193b323"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/7/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138187414,
+        "ingestionTime": 1792138206966,
+        "eventId": "39966017078076134535210306672202202862242600653405552640"
+      },
+      "waf_fields": {
+        "timestamp": 1792138187414,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/health",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbcb-29c525cf0610f8db319985b9"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/8/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138188570,
+        "ingestionTime": 1792138196858,
+        "eventId": "39966017103855795984711707011597619171130053260223053824"
+      },
+      "waf_fields": {
+        "timestamp": 1792138188570,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/backup",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbcc-0c9bde111444516c72462115"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/9/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138189723,
+        "ingestionTime": 1792138208623,
+        "eventId": "39966017129568555198617515508011362063069205804878004224"
+      },
+      "waf_fields": {
+        "timestamp": 1792138189723,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/config",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbcd-42cbbf6e4561f5c05eec81e7"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/10/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138190879,
+        "ingestionTime": 1792138204733,
+        "eventId": "39966017155348216648118915854923720732261026543227764736"
+      },
+      "waf_fields": {
+        "timestamp": 1792138190879,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/robots.txt",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbce-26e649de7ee1b61560f412b3"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/11/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138192033,
+        "ingestionTime": 1792138210673,
+        "eventId": "39966017181083276607223254967436889120438094778963197952"
+      },
+      "waf_fields": {
+        "timestamp": 1792138192033,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/sitemap.xml",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbd0-7acb8ee201c3a02f3b3727f4"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/12/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138193184,
+        "ingestionTime": 1792138210673,
+        "eventId": "39966017206751434330732002203344500852256358872346656769"
+      },
+      "waf_fields": {
+        "timestamp": 1792138193184,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/uploads",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbd1-63b2a1c839227fae5a5a77a5"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/13/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138194341,
+        "ingestionTime": 1792138211962,
+        "eventId": "39966017232553396525431933179659422772864890491646115840"
+      },
+      "waf_fields": {
+        "timestamp": 1792138194341,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/images",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbd2-3f2e16516c151fe27b607bbf"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/14/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138195492,
+        "ingestionTime": 1792138217573,
+        "eventId": "39966017258221554248940680422350525908156281415125303296"
+      },
+      "waf_fields": {
+        "timestamp": 1792138195492,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/static",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbd3-5202a3bc1f8d32a81cfaa0ef"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/15/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138196644,
+        "ingestionTime": 1792138212960,
+        "eventId": "39966017283912012717647958275822756009471384130068414464"
+      },
+      "waf_fields": {
+        "timestamp": 1792138196644,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/assets",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbd4-7e0d160026a5e5e91d50bf49"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/16/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138197800,
+        "ingestionTime": 1792138213463,
+        "eventId": "39966017309691674167149358628046344077815963698133794816"
+      },
+      "waf_fields": {
+        "timestamp": 1792138197800,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/private",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbd5-7fef736d28556207299c84a8"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/17/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138198952,
+        "ingestionTime": 1792138211642,
+        "eventId": "39966017335382132635856636484893943396224877654557523968"
+      },
+      "waf_fields": {
+        "timestamp": 1792138198952,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "GET",
+          "uri": "/internal",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbd6-6271cf1165cff9932bffe290"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/18/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138202136,
+        "ingestionTime": 1792138212641,
+        "eventId": "39966017406387705347978140568751640280258975438550990848"
+      },
+      "waf_fields": {
+        "timestamp": 1792138202136,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "Default_Action",
+        "terminatingRuleType": "REGULAR",
+        "action": "ALLOW",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "HEAD",
+          "uri": "/",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbda-53c4a67d30d8d9df6407706e"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/19/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138209112,
+        "ingestionTime": 1792138224331,
+        "eventId": "39966017561957703852927767618236798655006010632413446144"
+      },
+      "waf_fields": {
+        "timestamp": 1792138209112,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "CloudShield-Block-IP",
+        "terminatingRuleType": "REGULAR",
+        "action": "BLOCK",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "HEAD",
+          "uri": "/",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbe1-2b9ff3d56d88a2492bbb1005"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/20/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138219119,
+        "ingestionTime": 1792138238148,
+        "eventId": "39966017785121261054623713412288826636921319678245470208"
+      },
+      "waf_fields": {
+        "timestamp": 1792138219119,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "CloudShield-Block-IP",
+        "terminatingRuleType": "REGULAR",
+        "action": "BLOCK",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "HEAD",
+          "uri": "/",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbeb-152575ce08c72dd42de67c1b"
+        }
+      }
+    },
+    {
+      "source_json_pointer": "/events/21/message",
+      "cloudwatch": {
+        "logStreamName": "ap-southeast-2_CloudShield-WebACL_0",
+        "timestamp": 1792138229117,
+        "ingestionTime": 1792138241003,
+        "eventId": "39966018008084111549532883584814086407273793026285961216"
+      },
+      "waf_fields": {
+        "timestamp": 1792138229117,
+        "formatVersion": 1,
+        "webaclId": "arn:aws:wafv2:ap-southeast-2:885755545044:regional/webacl/CloudShield-WebACL/8ffb0c27-ad7f-4fec-9c27-e0bd7ff2a751",
+        "terminatingRuleId": "CloudShield-Block-IP",
+        "terminatingRuleType": "REGULAR",
+        "action": "BLOCK",
+        "terminatingRuleMatchDetails": [],
+        "httpSourceName": "ALB",
+        "httpSourceId": "885755545044-app/CloudShield-ALB-dev/de4a0a31bdd3e235",
+        "responseCodeSent": null,
+        "httpRequest": {
+          "clientIp": "3.26.171.60",
+          "httpMethod": "HEAD",
+          "uri": "/",
+          "httpVersion": "HTTP/1.1",
+          "requestId": "1-6ad1dbf5-05eb0acd33461c651edebc7e"
+        }
+      }
+    }
+  ]
+}

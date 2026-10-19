@@ -1,0 +1,108 @@
+{
+  "artifact_type": "selected_events_from_user_supplied_nginx_export",
+  "source_file": "nginx-raw.json",
+  "source_sha256": "15a2c14405e2a7a2c2df61375e61874badeba73046f4005f82c4834d9ab502b1",
+  "selection": {
+    "source_ip": "3.26.171.60",
+    "selected_event_count": 16,
+    "source_event_count": 58
+  },
+  "events": [
+    {
+      "source_json_pointer": "/events/21",
+      "timestamp": 1792138182000,
+      "ingestionTime": 1792138184978,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:42 +0000] \"HEAD / HTTP/1.1\" 200 0 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/22",
+      "timestamp": 1792138182000,
+      "ingestionTime": 1792138184978,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:42 +0000] \"GET /admin HTTP/1.1\" 401 172 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/23",
+      "timestamp": 1792138183000,
+      "ingestionTime": 1792138187247,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:43 +0000] \"GET /login HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/24",
+      "timestamp": 1792138185000,
+      "ingestionTime": 1792138187247,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:45 +0000] \"GET /dashboard HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/25",
+      "timestamp": 1792138186000,
+      "ingestionTime": 1792138187247,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:46 +0000] \"GET /api HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/27",
+      "timestamp": 1792138188000,
+      "ingestionTime": 1792138190746,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:48 +0000] \"GET /backup HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/28",
+      "timestamp": 1792138189000,
+      "ingestionTime": 1792138192999,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:49 +0000] \"GET /config HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/29",
+      "timestamp": 1792138190000,
+      "ingestionTime": 1792138192999,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:50 +0000] \"GET /robots.txt HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/30",
+      "timestamp": 1792138192000,
+      "ingestionTime": 1792138195255,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:52 +0000] \"GET /sitemap.xml HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/31",
+      "timestamp": 1792138193000,
+      "ingestionTime": 1792138195255,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:53 +0000] \"GET /uploads HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/32",
+      "timestamp": 1792138194000,
+      "ingestionTime": 1792138197510,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:54 +0000] \"GET /images HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/33",
+      "timestamp": 1792138195000,
+      "ingestionTime": 1792138197510,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:55 +0000] \"GET /static HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/34",
+      "timestamp": 1792138196000,
+      "ingestionTime": 1792138200030,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:56 +0000] \"GET /assets HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/35",
+      "timestamp": 1792138197000,
+      "ingestionTime": 1792138200030,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:57 +0000] \"GET /private HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/36",
+      "timestamp": 1792138198000,
+      "ingestionTime": 1792138204284,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:09:58 +0000] \"GET /internal HTTP/1.1\" 404 146 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    },
+    {
+      "source_json_pointer": "/events/37",
+      "timestamp": 1792138202000,
+      "ingestionTime": 1792138206790,
+      "message": "3.26.171.60 - - [16/Oct/2026:08:10:02 +0000] \"HEAD / HTTP/1.1\" 200 0 \"-\" \"curl/7.81.0\" 0.000 \"3.26.171.60\""
+    }
+  ]
+}

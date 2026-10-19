@@ -1,0 +1,248 @@
+{
+  "analysis_date_kst": "2026-10-19",
+  "baseline_commit": "7f6760aaa90340b22d6e00a49505b5f40d4a750e",
+  "sources": {
+    "waf-raw.json": {
+      "sha256": "24697b453609a3c717e6dad6531d120bf9fe6230ccbf81b88a2ca35af52cf297",
+      "bytes": 30647,
+      "events": 22
+    },
+    "nginx-raw.json": {
+      "sha256": "15a2c14405e2a7a2c2df61375e61874badeba73046f4005f82c4834d9ab502b1",
+      "bytes": 15106,
+      "events": 58
+    }
+  },
+  "provenance_limits": [
+    "user_supplied_export_files; no direct AWS query by this agent",
+    "request_parameters_and_pagination_history_not_supplied",
+    "hashes_identify_the_received_bytes; projections_are_not_complete_native_API_responses"
+  ],
+  "waf": {
+    "total_events": 22,
+    "all_actions": {
+      "ALLOW": 19,
+      "BLOCK": 3
+    },
+    "attacker_events": 20,
+    "attacker_actions": {
+      "ALLOW": 17,
+      "BLOCK": 3
+    },
+    "attacker_methods": {
+      "HEAD": 5,
+      "GET": 15
+    },
+    "first_event_kst": "2026-10-16T17:07:42.549+09:00",
+    "last_event_kst": "2026-10-16T17:10:29.117+09:00",
+    "last_attacker_allow_kst": "2026-10-16T17:10:02.136+09:00",
+    "attacker_block_times_kst": [
+      "2026-10-16T17:10:09.112+09:00",
+      "2026-10-16T17:10:19.119+09:00",
+      "2026-10-16T17:10:29.117+09:00"
+    ],
+    "block_rule_id": "CloudShield-Block-IP",
+    "responseCodeSent_all_null": true,
+    "duplicate_event_ids": 0,
+    "ingestionTime_minus_timestamp": {
+      "count": 22,
+      "min_ms": 8288,
+      "median_ms": 17564.5,
+      "p50_nearest_rank_ms": 17508,
+      "p95_nearest_rank_ms": 19552,
+      "max_ms": 22081
+    }
+  },
+  "nginx": {
+    "total_events": 58,
+    "parsed_events": 58,
+    "status_counts": {
+      "200": 43,
+      "404": 14,
+      "401": 1
+    },
+    "attacker_events": 16,
+    "attacker_status_counts": {
+      "200": 2,
+      "401": 1,
+      "404": 13
+    },
+    "first_event_kst": "2026-10-16T17:05:04.000+09:00",
+    "last_event_kst": "2026-10-16T17:14:47.000+09:00",
+    "all_timestamps_second_resolution": true,
+    "duplicate_timestamp_message_ingestion_triples": 0,
+    "percent_encoded_uri_count": 0,
+    "query_uri_count": 0,
+    "ingestionTime_minus_timestamp": {
+      "count": 58,
+      "min_ms": 1247,
+      "median_ms": 7601.0,
+      "p50_nearest_rank_ms": 7601,
+      "p95_nearest_rank_ms": 7622,
+      "max_ms": 7630
+    },
+    "attacker_ingestionTime_minus_timestamp": {
+      "count": 16,
+      "min_ms": 1247,
+      "median_ms": 3014.5,
+      "p50_nearest_rank_ms": 2999,
+      "p95_nearest_rank_ms": 6284,
+      "max_ms": 6284
+    },
+    "timing_limit": "Nginx and CW event timestamps have second resolution; ingestion deltas include source quantization and are not exact collection latency",
+    "local_filter_pattern": "[ip, ident, user, timestamp, request, status_code = 401 || status_code = 403 || status_code = 404, ...]",
+    "replays": [
+      {
+        "input": "all_nginx",
+        "count": 58,
+        "result": {
+          "is_threat": true,
+          "rule_name": "WEB_DIRECTORY_SCANNING"
+        },
+        "first_positive_prefix_count": 28,
+        "first_positive_source_json_pointer": "/events/27",
+        "first_positive_timestamp_kst": "2026-10-16T17:09:48.000+09:00",
+        "first_positive_ingestion_kst": "2026-10-16T17:09:50.746+09:00",
+        "mapper_check": {
+          "input_identifiers": "synthetic_local_check_only",
+          "mitre_id": "T1595.003",
+          "risk_level": "HIGH",
+          "action_required": "BLOCK_WAF",
+          "target_accounts": []
+        }
+      },
+      {
+        "input": "local_failure_filter",
+        "count": 15,
+        "result": {
+          "is_threat": true,
+          "rule_name": "WEB_DIRECTORY_SCANNING"
+        },
+        "first_positive_prefix_count": 6,
+        "first_positive_source_json_pointer": "/events/27",
+        "first_positive_timestamp_kst": "2026-10-16T17:09:48.000+09:00",
+        "first_positive_ingestion_kst": "2026-10-16T17:09:50.746+09:00",
+        "mapper_check": {
+          "input_identifiers": "synthetic_local_check_only",
+          "mitre_id": "T1595.003",
+          "risk_level": "HIGH",
+          "action_required": "BLOCK_WAF",
+          "target_accounts": []
+        }
+      },
+      {
+        "input": "attacker_all",
+        "count": 16,
+        "result": {
+          "is_threat": true,
+          "rule_name": "WEB_DIRECTORY_SCANNING"
+        },
+        "first_positive_prefix_count": 6,
+        "first_positive_source_json_pointer": "/events/27",
+        "first_positive_timestamp_kst": "2026-10-16T17:09:48.000+09:00",
+        "first_positive_ingestion_kst": "2026-10-16T17:09:50.746+09:00",
+        "mapper_check": {
+          "input_identifiers": "synthetic_local_check_only",
+          "mitre_id": "T1595.003",
+          "risk_level": "HIGH",
+          "action_required": "BLOCK_WAF",
+          "target_accounts": []
+        }
+      },
+      {
+        "input": "attacker_failure_filter",
+        "count": 14,
+        "result": {
+          "is_threat": true,
+          "rule_name": "WEB_DIRECTORY_SCANNING"
+        },
+        "first_positive_prefix_count": 5,
+        "first_positive_source_json_pointer": "/events/27",
+        "first_positive_timestamp_kst": "2026-10-16T17:09:48.000+09:00",
+        "first_positive_ingestion_kst": "2026-10-16T17:09:50.746+09:00",
+        "mapper_check": {
+          "input_identifiers": "synthetic_local_check_only",
+          "mitre_id": "T1595.003",
+          "risk_level": "HIGH",
+          "action_required": "BLOCK_WAF",
+          "target_accounts": []
+        }
+      }
+    ],
+    "health_probe_replays": [
+      {
+        "source_ip": "10.42.0.90",
+        "count": 20,
+        "uri_status": {
+          "/ 200": 20
+        },
+        "is_threat": false,
+        "label_basis": "ELB-HealthChecker/2.0, internal source, GET / 200; internal health probes only"
+      },
+      {
+        "source_ip": "10.42.1.29",
+        "count": 20,
+        "uri_status": {
+          "/ 200": 20
+        },
+        "is_threat": false,
+        "label_basis": "ELB-HealthChecker/2.0, internal source, GET / 200; internal health probes only"
+      }
+    ],
+    "unlabeled_external_replays": [
+      {
+        "source_ip": "45.198.224.124",
+        "count": 1,
+        "paths": [
+          "/"
+        ],
+        "is_threat": false,
+        "rule_name": null,
+        "label": "unlabeled; excluded from FP/FN denominator"
+      },
+      {
+        "source_ip": "77.83.39.94",
+        "count": 1,
+        "paths": [
+          "/.git/index"
+        ],
+        "is_threat": false,
+        "rule_name": null,
+        "label": "unlabeled; excluded from FP/FN denominator"
+      }
+    ]
+  },
+  "remaining_evidence": [
+    "live encoded-path observations",
+    "normal external client availability after block",
+    "original Lambda execution and IPSet update logs",
+    "export request parameters and complete pagination history"
+  ],
+  "slack_direct_read_reference": {
+    "permalink": "https://skt-aleph.slack.com/archives/C0BU9AE6970/p1792138192192929",
+    "message_ts": "1792138192.192929",
+    "incident_id": "INC-1792138191-7160",
+    "source_ip": "3.26.171.60",
+    "action": "BLOCK_WAF",
+    "target_identifier": "i-0605f8529598ed820",
+    "evidence_type": "previously read connector text projection; not GetIPSet verification"
+  },
+  "cross_layer_correlation": {
+    "scope": "selected attacker requests only",
+    "key": [
+      "source_ip",
+      "http_method",
+      "uri",
+      "event_timestamp_floor_to_utc_second"
+    ],
+    "waf_allow_excluding_health_count": 16,
+    "nginx_attacker_count": 16,
+    "matching_unique_tuples": 16,
+    "exact_shared_request_id_join": false,
+    "exclusions": {
+      "waf_get_health_not_logged_by_nginx": 1,
+      "waf_blocked_head_requests_absent_from_nginx": 3
+    },
+    "limit": "field/time correlation within supplied files; no common request ID and no assertion of full export completeness"
+  }
+}
