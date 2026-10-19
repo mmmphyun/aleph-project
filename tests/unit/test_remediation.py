@@ -1843,6 +1843,80 @@ def test_terraform_lambda_iam_policy_webacl_and_alb_action_resource_mapping() ->
     assert "loadbalancer/app/*/*" in content
 
 
+def test_terraform_lambda_eventbridge_and_llm_analyzer_declarations() -> None:
+    """Terraform EventBridge 규칙, 비동기 LLM 분석 Lambda 및 비동기 재시도 0회 설정 정적 검증.
+
+    Why:
+        10초 실시간 차단 Lambda와 30초 사후 비동기 LLM 분석 워커가 물리적으로 격리되고,
+        EventBridge 스키마 규격(Source="cloudshield.security", DetailType="ThreatRemediated")과
+        재시도 폭풍 방지(maximum_retry_attempts = 0)가 선언되었음을 HCL 정적 분석으로 보장함.
+    """
+    from pathlib import Path
+
+    tf_path = Path(__file__).resolve().parents[2] / "infra/terraform/modules/lambda/main.tf"
+    content = tf_path.read_text(encoding="utf-8")
+
+    # 1. aws_lambda_function.llm_analyzer 선언 및 스펙 검증
+    assert 'resource "aws_lambda_function" "llm_analyzer"' in content
+    assert 'handler          = "remediation.llm_worker.llm_analysis_handler"' in content
+    assert "timeout          = 30" in content
+    assert "memory_size      = 256" in content
+    assert "filename         = local.lambda_archive_path" in content
+    assert "source_code_hash = local.lambda_archive_hash" in content
+    assert 'mode = "Active"' in content
+
+    # 2. aws_lambda_function_event_invoke_config 비동기 재시도 0회 검증
+    assert 'resource "aws_lambda_function_event_invoke_config" "llm_analyzer_async"' in content
+    assert "maximum_retry_attempts = 0" in content
+
+    # 3. aws_cloudwatch_event_rule 스키마 및 타깃 검증
+    assert 'resource "aws_cloudwatch_event_rule" "threat_remediated"' in content
+    assert '"cloudshield.security"' in content
+    assert '"ThreatRemediated"' in content
+    assert 'resource "aws_cloudwatch_event_target" "llm_analyzer"' in content
+
+    # 4. aws_lambda_permission EventBridge 호출 허용 검증
+    assert 'resource "aws_lambda_permission" "allow_eventbridge_llm_analyzer"' in content
+    assert 'principal     = "events.amazonaws.com"' in content
+    assert 'action        = "lambda:InvokeFunction"' in content
+
+
+def test_terraform_lambda_eventbridge_and_bedrock_least_privilege_iam() -> None:
+    """EventBridge 발행 및 Bedrock 호출 최소 권한 IAM 정책 정합성 및 역할 분리 검증.
+
+    Why:
+        실시간 Lambda에는 event-bus/default 대상 events:PutEvents만 부여하고,
+        비동기 분석 Lambda에는 bedrock:InvokeModel만 부여하여 런타임 간 권한 누출을 원천 방지함.
+    """
+    from pathlib import Path
+
+    tf_path = Path(__file__).resolve().parents[2] / "infra/terraform/modules/lambda/main.tf"
+    content = tf_path.read_text(encoding="utf-8")
+
+    # 1. 실시간 Lambda의 events:PutEvents 권한 범위 검증 (기본 이벤트 버스로 제한)
+    assert 'sid    = "EventBridgePutEvents"' in content
+    assert '"events:PutEvents"' in content
+    assert "event-bus/default" in content
+
+    # 2. 분석 Lambda의 bedrock:InvokeModel 권한 범위 검증
+    assert 'sid    = "BedrockInvokeModel"' in content
+    assert '"bedrock:InvokeModel"' in content
+    assert "foundation-model/*" in content
+    assert "inference-profile/*" in content
+
+    # 3. 분석 Lambda IAM 정책에는 EC2 격리, WAF 차단, DynamoDB 권한이 없음을 검증 (최소 권한 격리)
+    llm_doc_start = content.find('data "aws_iam_policy_document" "llm_analyzer_least_privilege"')
+    assert llm_doc_start != -1
+    llm_doc_end = content.find(
+        'resource "aws_iam_policy" "llm_analyzer_least_privilege"', llm_doc_start
+    )
+    llm_doc_content = content[llm_doc_start:llm_doc_end]
+
+    assert "ec2:ModifyInstanceAttribute" not in llm_doc_content
+    assert "wafv2:UpdateIPSet" not in llm_doc_content
+    assert "dynamodb:UpdateItem" not in llm_doc_content
+
+
 def test_web_attack_window_expired_history_does_not_block_new_split_batch_attack(
     mocked_ec2_target: MockEc2Target,
     mocked_waf_ipset: MockWafTarget,

@@ -25,6 +25,18 @@ variable "lambda_function_name" {
   default     = "CloudShield-Threat-Orchestrator"
 }
 
+variable "lambda_llm_function_name" {
+  description = "사후 비동기 LLM 분석 워커 Lambda 함수명"
+  type        = string
+  default     = "cloudshield-llm-analyzer"
+}
+
+variable "bedrock_model_id" {
+  description = "사후 비동기 LLM 분석에 사용할 Amazon Bedrock 파운데이션 모델 또는 추론 프로파일 ID"
+  type        = string
+  default     = "apac.amazon.nova-micro-v1:0"
+}
+
 variable "quarantine_sg_arn" {
   description = "L4 격리에 사용할 Security Group ARN (Phase 2에서 네트워크 모듈 출력값 바인딩)"
   type        = string

@@ -57,6 +57,8 @@ module "lambda" {
   source = "./modules/lambda"
 
   function_name       = var.lambda_function_name
+  llm_function_name   = var.lambda_llm_function_name
+  bedrock_model_id    = var.bedrock_model_id
   environment         = var.environment
   dynamodb_table_arn  = module.dynamodb.table_arn
   dynamodb_table_name = module.dynamodb.table_name

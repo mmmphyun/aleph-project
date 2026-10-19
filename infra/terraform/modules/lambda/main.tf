@@ -134,6 +134,18 @@ data "aws_iam_policy_document" "least_privilege" {
       var.target_alb_arn != "" ? var.target_alb_arn : "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
     ]
   }
+
+  # 5. EventBridge 비동기 분석 이벤트 발행 권한 (최소 권한: 기본 이벤트 버스로 제한)
+  statement {
+    sid    = "EventBridgePutEvents"
+    effect = "Allow"
+    actions = [
+      "events:PutEvents"
+    ]
+    resources = [
+      "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:event-bus/default"
+    ]
+  }
 }
 
 resource "aws_iam_policy" "lambda_least_privilege" {
@@ -209,4 +221,157 @@ resource "aws_lambda_function" "orchestrator" {
       Purpose     = "ThreatOrchestrator"
     }
   )
+}
+
+# ==============================================================================
+# 2. 사후 비동기 LLM 침해 분석 워커 IAM 역할 및 최소 권한 정책
+# ==============================================================================
+data "aws_iam_policy_document" "llm_analyzer_least_privilege" {
+  # 1. CloudWatch Logs 로깅 권한
+  statement {
+    sid    = "CloudWatchLogging"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents"
+    ]
+    resources = [
+      "arn:aws:logs:*:*:log-group:/aws/lambda/${var.llm_function_name}:*"
+    ]
+  }
+
+  # 2. Amazon Bedrock 모델 호출 최소 권한 (파운데이션 모델 및 교차 리전 추론 프로파일 한정)
+  statement {
+    sid    = "BedrockInvokeModel"
+    effect = "Allow"
+    actions = [
+      "bedrock:InvokeModel"
+    ]
+    resources = [
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:inference-profile/*"
+    ]
+  }
+}
+
+resource "aws_iam_policy" "llm_analyzer_least_privilege" {
+  name        = "${var.llm_function_name}-least-privilege-policy"
+  description = "CloudShield LLM Analyzer least privilege execution policy"
+  policy      = data.aws_iam_policy_document.llm_analyzer_least_privilege.json
+}
+
+resource "aws_iam_role" "llm_analyzer_exec" {
+  name               = "${var.llm_function_name}-exec-role"
+  description        = "CloudShield LLM Analyzer Lambda execution role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "${var.llm_function_name}-exec-role"
+      Environment = var.environment
+    }
+  )
+}
+
+resource "aws_iam_role_policy_attachment" "llm_analyzer_attach" {
+  role       = aws_iam_role.llm_analyzer_exec.name
+  policy_arn = aws_iam_policy.llm_analyzer_least_privilege.arn
+}
+
+resource "aws_cloudwatch_log_group" "llm_analyzer_log" {
+  name              = "/aws/lambda/${var.llm_function_name}"
+  retention_in_days = 14
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "/aws/lambda/${var.llm_function_name}"
+      Environment = var.environment
+    }
+  )
+}
+
+# ==============================================================================
+# 3. 사후 비동기 LLM 침해 분석 워커 Lambda 함수
+# ==============================================================================
+resource "aws_lambda_function" "llm_analyzer" {
+  function_name    = var.llm_function_name
+  filename         = local.lambda_archive_path
+  source_code_hash = local.lambda_archive_hash
+  handler          = "remediation.llm_worker.llm_analysis_handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 256
+  role             = aws_iam_role.llm_analyzer_exec.arn
+
+  environment {
+    variables = {
+      SLACK_WEBHOOK_URL = var.slack_webhook_url
+      BEDROCK_MODEL_ID  = var.bedrock_model_id
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.llm_analyzer_log,
+    aws_iam_role_policy_attachment.llm_analyzer_attach
+  ]
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = var.llm_function_name
+      Environment = var.environment
+      Purpose     = "LLMAnalyzer"
+    }
+  )
+}
+
+resource "aws_lambda_function_event_invoke_config" "llm_analyzer_async" {
+  function_name          = aws_lambda_function.llm_analyzer.function_name
+  maximum_retry_attempts = 0
+}
+
+# ==============================================================================
+# 4. EventBridge 규칙, 대상(Target) 및 Lambda 호출 권한 바인딩
+# ==============================================================================
+resource "aws_cloudwatch_event_rule" "threat_remediated" {
+  name        = "cloudshield-threat-remediated-${var.environment}"
+  description = "Trigger async LLM deep analysis upon threat remediation completion"
+  event_pattern = jsonencode({
+    source      = ["cloudshield.security"]
+    detail-type = ["ThreatRemediated"]
+  })
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "cloudshield-threat-remediated-${var.environment}"
+      Environment = var.environment
+      Component   = "EventBridge"
+    }
+  )
+}
+
+resource "aws_cloudwatch_event_target" "llm_analyzer" {
+  rule      = aws_cloudwatch_event_rule.threat_remediated.name
+  target_id = "TriggerLLMAnalyzer"
+  arn       = aws_lambda_function.llm_analyzer.arn
+
+  retry_policy {
+    maximum_retry_attempts = 0
+  }
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_llm_analyzer" {
+  statement_id  = "AllowEventBridgeInvokeLLMAnalyzer"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.llm_analyzer.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.threat_remediated.arn
 }
