@@ -23,12 +23,67 @@ from contracts.incident import IncidentReport
 from reporter.slack_notifier import (
     MAX_FIELD_LENGTH,
     MAX_HEADER_LENGTH,
+    build_llm_slack_payload,
     build_slack_payload,
     build_waf_slack_payload,
     escape_slack_text,
     send_slack_alert,
     truncate_text,
 )
+
+
+def test_llm_card_preserves_contract_and_does_not_claim_remediation(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """2차 분석 카드가 사건을 연계하고 집행 결과와 권고를 구분한다."""
+    before = sample_incident_report.model_dump()
+    payload = build_llm_slack_payload(sample_incident_report)
+    assert payload["is_llm_card"] is True
+    assert payload["incident_id"] == sample_incident_report.incident_id
+    assert payload["rule_name"] == sample_incident_report.attack_type
+    assert payload["source_ip"] == sample_incident_report.source_ip
+    assert payload["remediation_action"] == sample_incident_report.action_required
+    assert "remediation_result" not in payload
+    assert "집행 결과 아님" in json.dumps(payload, ensure_ascii=False)
+    assert sample_incident_report.model_dump() == before
+
+
+def test_llm_card_escapes_and_bounds_external_text(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """LLM 및 공격자 입력이 멘션을 발생시키거나 Slack 길이 제한을 넘지 않는다."""
+    hostile = "<!channel>&" + "가" * 3000
+    report = sample_incident_report.model_copy(
+        update={
+            "incident_id": hostile,
+            "attack_type": hostile,
+            "mitre_id": hostile,
+            "summary_ko": hostile,
+            "target_accounts": (hostile,),
+            "recommendations": (hostile,),
+        }
+    )
+    payload = build_llm_slack_payload(report)
+    texts = [payload["text"]]
+    for block in payload["blocks"]:
+        if "text" in block:
+            texts.append(block["text"]["text"])
+        texts.extend(field["text"] for field in block.get("fields", []))
+    assert all(len(text) <= MAX_FIELD_LENGTH for text in texts)
+    assert all("<!channel>" not in text for text in texts)
+    assert "&lt;!channel&gt;&amp;" in payload["blocks"][2]["text"]["text"]
+
+
+def test_llm_card_empty_analysis(sample_incident_report: IncidentReport) -> None:
+    """빈 분석과 목록은 Slack이 수용 가능한 대체 텍스트로 표시한다."""
+    report = sample_incident_report.model_copy(
+        update={"summary_ko": " ", "target_accounts": (), "recommendations": ()}
+    )
+    payload = build_llm_slack_payload(report)
+    rendered = json.dumps(payload, ensure_ascii=False)
+    assert "분석 요약 없음" in rendered
+    assert "지정 대상 없음" in rendered
+    assert "추가 권고 조치 없음" in rendered
 
 
 def test_truncate_text_within_limit() -> None:

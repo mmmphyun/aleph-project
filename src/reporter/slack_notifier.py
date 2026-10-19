@@ -558,6 +558,75 @@ def build_waf_slack_payload(
     return result_payload
 
 
+def build_llm_slack_payload(report: IncidentReport) -> dict[str, Any]:
+    """사후 LLM 심층 분석 결과를 2차 알림 카드로 생성한다.
+
+    Why:
+        초기 차단 알림과 사후 분석을 구분하고 동일 incident_id로 연계한다.
+    Constraints:
+        기존 IncidentReport 계약을 소비하며 최종 표시 텍스트는 500자 이내다.
+        action_required는 분석 권고이며 실제 집행 성공을 의미하지 않는다.
+    Side-effects / Edge-cases:
+        네트워크나 상태 저장 없이 새 페이로드를 반환한다. 빈 분석/권고는
+        대체 문구로 표시하며 잘못된 입력의 예외는 호출자에게 전파한다.
+    """
+
+    def section(label: str, value: str) -> dict[str, Any]:
+        return {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": truncate_text(f"*{label}:*\n{escape_slack_text(value)}"),
+            },
+        }
+
+    fields = [
+        ("사건 ID", report.incident_id),
+        ("공격 유형", report.attack_type),
+        ("출발지 IP", report.source_ip),
+        ("분석 위험도", report.risk_level),
+        ("대상 인스턴스", report.target_identifier),
+        ("MITRE ATT&CK", report.mitre_id),
+    ]
+    # 출력 상한에 필요한 항목만 처리하여 과도한 권고/계정 목록의 중간 문자열을 제한한다.
+    recommendations = "\n".join(
+        f"{index + 1}. {truncate_text(item)}"
+        for index, item in enumerate(report.recommendations[:MAX_FIELD_LENGTH])
+    )
+    accounts = ", ".join(truncate_text(item) for item in report.target_accounts[:MAX_FIELD_LENGTH])
+    return {
+        "text": truncate_text(
+            f"[2차 LLM 심층 분석][{report.risk_level}] "
+            f"{escape_slack_text(report.incident_id)}: {escape_slack_text(report.attack_type)}"
+        ),
+        "blocks": [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "CloudShield 2차 LLM 심층 분석"},
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": truncate_text(f"*{label}:*\n{escape_slack_text(value)}"),
+                    }
+                    for label, value in fields
+                ],
+            },
+            section("LLM 분석 요약", report.summary_ko.strip() or "분석 요약 없음"),
+            section("공격 대상 계정/엔드포인트", accounts or "지정 대상 없음"),
+            section("후속 권고 조치", recommendations or "추가 권고 조치 없음"),
+            section("분석 권고 액션 (집행 결과 아님)", report.action_required),
+        ],
+        "incident_id": report.incident_id,
+        "rule_name": report.attack_type,
+        "source_ip": report.source_ip,
+        "remediation_action": report.action_required,
+        "is_llm_card": True,
+    }
+
+
 def send_slack_alert(
     report: IncidentReport,
     webhook_url: str,
