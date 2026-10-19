@@ -1,0 +1,536 @@
+{
+  "artifact_type": "p3_8_controlled_encoding_evaluation_manifest",
+  "analysis_date_kst": "2026-10-19",
+  "source_archives": {
+    "cloud_b_final": {
+      "file": "p3-8-final-20261019.zip",
+      "bytes": 18167,
+      "sha256": "b6cb2b327df1fe3b3233ae18b07de7505c02ac922915a07a979f2a30284acb83",
+      "page_file_count": 8,
+      "history_file_count": 4,
+      "event_count": 147,
+      "event_id_duplicates_across_all_queries": 0
+    },
+    "network_final": {
+      "file": "p3-8-network-evidence-20261019-final.zip",
+      "bytes": 157752,
+      "sha256": "7d1329e54a7a3515c26d621095db1d58aa1da307d972aec8fd0cc8f7ed63a5b9",
+      "final_file_manifest": {
+        "entry": "final-file-manifest.json",
+        "bytes": 22749,
+        "sha256": "71bc3e8aa264e9061f6eced651b68ba6bf30a070537500cbd321f74de7ac37ce",
+        "verified_file_count": 142,
+        "all_file_sizes_and_hashes_match": true
+      }
+    }
+  },
+  "provenance_limits": [
+    "Archives were supplied by the user; no AWS API was called for this evaluation.",
+    "Selected files preserve source coordinates and allowed fields; they are not complete native API response copies.",
+    "SHA-256 checks establish agreement with the supplied archive bytes and manifests.",
+    "Cloud A Lambda execution, incident IDs, BLOCK_WAF results and cleanup confirmations were supplied as user-forwarded text; no original Lambda or cleanup logs are present in these archives.",
+    "The earlier network cloud-owner-reports.json contains superseded Cloud A first-BLOCK timestamps and missing incident IDs; the corrected text is documented separately.",
+    "Local parser, filter, rule and mapper replays are not deployed Lambda re-executions.",
+    "Normal requests follow the final attacker 403 probes; the two clients do not have overlapping PCAP intervals.",
+    "A terminal query page does not guarantee absence of later-arriving events or completeness of the whole log group."
+  ],
+  "query_audits": [
+    {
+      "case": "single",
+      "source": "nginx",
+      "history_source": {
+        "entry": "p3-8-final-20261019/single-nginx-history.json",
+        "bytes": 1637,
+        "sha256": "db4ff616722a31a185b2507c483f5c8157ed9db6fd68df42a91e86983be7031a"
+      },
+      "api": "FilterLogEvents",
+      "region": "ap-southeast-2",
+      "log_group": "/cloudshield/target/nginx-access-log",
+      "start_utc": "2026-10-19T06:50:40Z",
+      "end_utc_reported_exclusive": "2026-10-19T06:54:30Z",
+      "limit": 100,
+      "event_count": 43,
+      "pages": [
+        {
+          "entry": "p3-8-final-20261019/single-nginx-page-001.json",
+          "bytes": 17225,
+          "sha256": "cb30780b89eb7c7f8e1b209b1f8a029cff51759c259350982ea976404924eca8",
+          "page": 1,
+          "requested_utc": "2026-10-19T07:11:02.3128395+00:00",
+          "event_count": 43,
+          "sha256_matches_history": true,
+          "count_matches_history": true,
+          "input_token_present": false,
+          "response_token_present": true,
+          "response_token_matches_history": true,
+          "input_token_matches_previous_output": null
+        },
+        {
+          "entry": "p3-8-final-20261019/single-nginx-page-002.json",
+          "bytes": 55,
+          "sha256": "1de8dae1887632a3bc790068669788307985e76653f97d72c52e1fde607846db",
+          "page": 2,
+          "requested_utc": "2026-10-19T07:11:05.4840790+00:00",
+          "event_count": 0,
+          "sha256_matches_history": true,
+          "count_matches_history": true,
+          "input_token_present": true,
+          "response_token_present": false,
+          "response_token_matches_history": true,
+          "input_token_matches_previous_output": true
+        }
+      ],
+      "pagination_terminated_without_next_token": true,
+      "event_id_duplicates": 0,
+      "event_id_missing": 0,
+      "stream_timestamp_message_duplicates": 0,
+      "events_outside_reported_half_open_interval": 0,
+      "event_timestamp_nondecreasing": true,
+      "last_ingestion_utc": "2026-10-19T06:54:29.622Z",
+      "all_ingestions_before_first_query": true,
+      "searched_log_streams_used_as_completeness_proof": false,
+      "request_scope_limit": "History provides group, region, limit and UTC bounds; native request JSON, filterPattern, logStreamNames and logStreamNamePrefix are not supplied. Its endUtcExclusive label is preserved without asserting the exact native endTime conversion.",
+      "completeness_scope": "The supplied pagination chain is terminal for the recorded query. No claim of an unfiltered whole-log-group export or exclusion of later arrivals."
+    },
+    {
+      "case": "single",
+      "source": "waf",
+      "history_source": {
+        "entry": "p3-8-final-20261019/single-waf-history.json",
+        "bytes": 1623,
+        "sha256": "6599bbc2b4f36d100d37b415b94c6158395708127106fd7f149dce873f9fa995"
+      },
+      "api": "FilterLogEvents",
+      "region": "ap-southeast-2",
+      "log_group": "aws-waf-logs-cloudshield-dev",
+      "start_utc": "2026-10-19T06:50:40Z",
+      "end_utc_reported_exclusive": "2026-10-19T06:54:30Z",
+      "limit": 100,
+      "event_count": 34,
+      "pages": [
+        {
+          "entry": "p3-8-final-20261019/single-waf-page-001.json",
+          "bytes": 46761,
+          "sha256": "ecc13876f68659b98a40267c88a4064cd9f5cbb774a3eff4a5ae9f49ec58a6b0",
+          "page": 1,
+          "requested_utc": "2026-10-19T07:11:07.5223022+00:00",
+          "event_count": 34,
+          "sha256_matches_history": true,
+          "count_matches_history": true,
+          "input_token_present": false,
+          "response_token_present": true,
+          "response_token_matches_history": true,
+          "input_token_matches_previous_output": null
+        },
+        {
+          "entry": "p3-8-final-20261019/single-waf-page-002.json",
+          "bytes": 55,
+          "sha256": "1de8dae1887632a3bc790068669788307985e76653f97d72c52e1fde607846db",
+          "page": 2,
+          "requested_utc": "2026-10-19T07:11:09.7914188+00:00",
+          "event_count": 0,
+          "sha256_matches_history": true,
+          "count_matches_history": true,
+          "input_token_present": true,
+          "response_token_present": false,
+          "response_token_matches_history": true,
+          "input_token_matches_previous_output": true
+        }
+      ],
+      "pagination_terminated_without_next_token": true,
+      "event_id_duplicates": 0,
+      "event_id_missing": 0,
+      "stream_timestamp_message_duplicates": 0,
+      "events_outside_reported_half_open_interval": 0,
+      "event_timestamp_nondecreasing": true,
+      "last_ingestion_utc": "2026-10-19T06:54:34.707Z",
+      "all_ingestions_before_first_query": true,
+      "searched_log_streams_used_as_completeness_proof": false,
+      "request_scope_limit": "History provides group, region, limit and UTC bounds; native request JSON, filterPattern, logStreamNames and logStreamNamePrefix are not supplied. Its endUtcExclusive label is preserved without asserting the exact native endTime conversion.",
+      "completeness_scope": "The supplied pagination chain is terminal for the recorded query. No claim of an unfiltered whole-log-group export or exclusion of later arrivals."
+    },
+    {
+      "case": "double",
+      "source": "nginx",
+      "history_source": {
+        "entry": "p3-8-final-20261019/double-nginx-history.json",
+        "bytes": 1637,
+        "sha256": "5e1eaf918dd7d0bc6872c9e287a7fbfe158a1ba6b68e12dd6f5a49b0d68306e0"
+      },
+      "api": "FilterLogEvents",
+      "region": "ap-southeast-2",
+      "log_group": "/cloudshield/target/nginx-access-log",
+      "start_utc": "2026-10-19T07:02:20Z",
+      "end_utc_reported_exclusive": "2026-10-19T07:06:15Z",
+      "limit": 100,
+      "event_count": 39,
+      "pages": [
+        {
+          "entry": "p3-8-final-20261019/double-nginx-page-001.json",
+          "bytes": 15674,
+          "sha256": "e8edb08b274a570d77169c907995e21405ec4c51a21807ddb51b4646c8b41354",
+          "page": 1,
+          "requested_utc": "2026-10-19T07:11:11.7260628+00:00",
+          "event_count": 39,
+          "sha256_matches_history": true,
+          "count_matches_history": true,
+          "input_token_present": false,
+          "response_token_present": true,
+          "response_token_matches_history": true,
+          "input_token_matches_previous_output": null
+        },
+        {
+          "entry": "p3-8-final-20261019/double-nginx-page-002.json",
+          "bytes": 55,
+          "sha256": "1de8dae1887632a3bc790068669788307985e76653f97d72c52e1fde607846db",
+          "page": 2,
+          "requested_utc": "2026-10-19T07:11:13.8267072+00:00",
+          "event_count": 0,
+          "sha256_matches_history": true,
+          "count_matches_history": true,
+          "input_token_present": true,
+          "response_token_present": false,
+          "response_token_matches_history": true,
+          "input_token_matches_previous_output": true
+        }
+      ],
+      "pagination_terminated_without_next_token": true,
+      "event_id_duplicates": 0,
+      "event_id_missing": 0,
+      "stream_timestamp_message_duplicates": 0,
+      "events_outside_reported_half_open_interval": 0,
+      "event_timestamp_nondecreasing": true,
+      "last_ingestion_utc": "2026-10-19T07:06:10.645Z",
+      "all_ingestions_before_first_query": true,
+      "searched_log_streams_used_as_completeness_proof": false,
+      "request_scope_limit": "History provides group, region, limit and UTC bounds; native request JSON, filterPattern, logStreamNames and logStreamNamePrefix are not supplied. Its endUtcExclusive label is preserved without asserting the exact native endTime conversion.",
+      "completeness_scope": "The supplied pagination chain is terminal for the recorded query. No claim of an unfiltered whole-log-group export or exclusion of later arrivals."
+    },
+    {
+      "case": "double",
+      "source": "waf",
+      "history_source": {
+        "entry": "p3-8-final-20261019/double-waf-history.json",
+        "bytes": 1623,
+        "sha256": "e3168331cee1415c02757b24b7bd5a4274581c84242e02a51c02baa3f223ea38"
+      },
+      "api": "FilterLogEvents",
+      "region": "ap-southeast-2",
+      "log_group": "aws-waf-logs-cloudshield-dev",
+      "start_utc": "2026-10-19T07:02:20Z",
+      "end_utc_reported_exclusive": "2026-10-19T07:06:15Z",
+      "limit": 100,
+      "event_count": 31,
+      "pages": [
+        {
+          "entry": "p3-8-final-20261019/double-waf-page-001.json",
+          "bytes": 42685,
+          "sha256": "82512f38475fbb0118b4f0b02a56a10a8c1bd36886112313748cfb66868b964f",
+          "page": 1,
+          "requested_utc": "2026-10-19T07:11:15.8202020+00:00",
+          "event_count": 31,
+          "sha256_matches_history": true,
+          "count_matches_history": true,
+          "input_token_present": false,
+          "response_token_present": true,
+          "response_token_matches_history": true,
+          "input_token_matches_previous_output": null
+        },
+        {
+          "entry": "p3-8-final-20261019/double-waf-page-002.json",
+          "bytes": 55,
+          "sha256": "1de8dae1887632a3bc790068669788307985e76653f97d72c52e1fde607846db",
+          "page": 2,
+          "requested_utc": "2026-10-19T07:11:18.0973020+00:00",
+          "event_count": 0,
+          "sha256_matches_history": true,
+          "count_matches_history": true,
+          "input_token_present": true,
+          "response_token_present": false,
+          "response_token_matches_history": true,
+          "input_token_matches_previous_output": true
+        }
+      ],
+      "pagination_terminated_without_next_token": true,
+      "event_id_duplicates": 0,
+      "event_id_missing": 0,
+      "stream_timestamp_message_duplicates": 0,
+      "events_outside_reported_half_open_interval": 0,
+      "event_timestamp_nondecreasing": true,
+      "last_ingestion_utc": "2026-10-19T07:06:20.788Z",
+      "all_ingestions_before_first_query": true,
+      "searched_log_streams_used_as_completeness_proof": false,
+      "request_scope_limit": "History provides group, region, limit and UTC bounds; native request JSON, filterPattern, logStreamNames and logStreamNamePrefix are not supplied. Its endUtcExclusive label is preserved without asserting the exact native endTime conversion.",
+      "completeness_scope": "The supplied pagination chain is terminal for the recorded query. No claim of an unfiltered whole-log-group export or exclusion of later arrivals."
+    }
+  ],
+  "cases": {
+    "single": {
+      "attacker_ip": "3.25.82.148",
+      "normal_external_ip": "1.245.252.171",
+      "raw_attack_uri": "/admin/%2e%2e/config",
+      "nginx": {
+        "source_event_count": 43,
+        "selected_event_count": 27,
+        "attacker_event_count": 9,
+        "normal_external_event_count": 18,
+        "attacker_status_counts": {
+          "200": 8,
+          "404": 1
+        },
+        "normal_status_counts": {
+          "200": 18
+        },
+        "normal_get_root_200_observed": "18/18",
+        "failure_filter_selected_count": 1,
+        "replays": {
+          "selected_all": {
+            "is_threat": true,
+            "rule_name": "PATH_TRAVERSAL"
+          },
+          "attacker_only": {
+            "is_threat": true,
+            "rule_name": "PATH_TRAVERSAL"
+          },
+          "failure_filter_only": {
+            "is_threat": true,
+            "rule_name": "PATH_TRAVERSAL"
+          },
+          "normal_external_only": {
+            "is_threat": false,
+            "rule_name": null
+          }
+        },
+        "failure_filter_pattern": "[ip, ident, user, timestamp, request, status_code = 401 || status_code = 403 || status_code = 404, ...]",
+        "mapper_check": {
+          "incident_id_kind": "synthetic_local_replay_only",
+          "mitre_id": "T1595.002",
+          "risk_level": "HIGH",
+          "action_required": "BLOCK_WAF",
+          "target_accounts": []
+        }
+      },
+      "waf": {
+        "source_event_count": 34,
+        "selected_event_count": 34,
+        "attacker_event_count": 16,
+        "attacker_action_counts": {
+          "ALLOW": 9,
+          "BLOCK": 7
+        },
+        "normal_external_event_count": 18,
+        "normal_action_counts": {
+          "ALLOW": 18
+        },
+        "normal_get_root_allow_observed": "18/18",
+        "attacker_block_rule_match_observed": "7/7",
+        "terminating_rule_id": "CloudShield-Block-IP",
+        "first_attacker_block_utc": "2026-10-19T06:51:10.946Z",
+        "last_attacker_block_utc": "2026-10-19T06:52:10.972Z",
+        "first_normal_allow_utc": "2026-10-19T06:52:14.729Z",
+        "last_normal_allow_utc": "2026-10-19T06:54:21.896Z",
+        "response_code_sent_all_null": true
+      },
+      "network": {
+        "run_id": "20261019T065046Z-p3-8-single",
+        "summary_source": {
+          "entry": "20261019T065046Z-p3-8-single/analysis-summary.json",
+          "bytes": 18117,
+          "sha256": "a0bb0b39dadc898513c24192a074adeb48f0ca7a54067e7ae77b76f869d43798"
+        },
+        "summary_json_pointers": [
+          "/attack",
+          "/first_403",
+          "/attack_to_first_observed_403_seconds",
+          "/http_pairs",
+          "/public_ip_observations"
+        ],
+        "raw_manifest_source": {
+          "entry": "20261019T065046Z-p3-8-single/manifest.json",
+          "bytes": 11451,
+          "sha256": "94b18434746c3a59a15df9f7b27d5ec91540e50899610b0812566c0c156e3af0"
+        },
+        "raw_manifest_files_verified": 35,
+        "analysis_manifest_source": {
+          "entry": "20261019T065046Z-p3-8-single/analysis-manifest.json",
+          "bytes": 5562,
+          "sha256": "e5a82d102bcca1872506bc162b928181c2a37167494fcfc98f980b4105c73b66"
+        },
+        "analysis_manifest_files_verified": 42,
+        "pcap_source": {
+          "entry": "20261019T065046Z-p3-8-single/capture.pcap",
+          "bytes": 34409,
+          "sha256": "29ddff0294acb627d1a3662ded9f5a82f0488d1df73ebda4a5439c164b676bfa"
+        },
+        "http_pair_count": 16,
+        "packet_count": 160,
+        "http_status_counts": {
+          "200": 8,
+          "404": 1,
+          "403": 7
+        },
+        "raw_attack_request_utc": "2026-10-19T06:50:46.920718Z",
+        "raw_attack_request_epoch_seconds": "1792392646.920718000",
+        "first_observed_403_epoch_seconds": "1792392670.946494000",
+        "first_observed_403_kst": "2026-10-19T15:51:10.946494+09:00",
+        "attack_to_first_observed_403_seconds": "24.025776000",
+        "public_ip_before_and_after": "3.25.82.148",
+        "last_attacker_403_epoch_seconds": "1792392730.972481000",
+        "first_waf_normal_allow_minus_last_pcap_403_seconds": "3.756519000",
+        "timing_limit": "PCAP values are client observations; WAF timestamps are server-side observations on a separate clock. Normal WAF ALLOW timestamps are not normal-client response reception times. The clients were observed in adjacent, non-overlapping intervals. First observed 403 is not an exact policy activation timestamp."
+      }
+    },
+    "double": {
+      "attacker_ip": "3.25.82.148",
+      "normal_external_ip": "1.245.252.171",
+      "raw_attack_uri": "/admin/%252e%252e/config",
+      "nginx": {
+        "source_event_count": 39,
+        "selected_event_count": 24,
+        "attacker_event_count": 6,
+        "normal_external_event_count": 18,
+        "attacker_status_counts": {
+          "200": 5,
+          "401": 1
+        },
+        "normal_status_counts": {
+          "200": 18
+        },
+        "normal_get_root_200_observed": "18/18",
+        "failure_filter_selected_count": 1,
+        "replays": {
+          "selected_all": {
+            "is_threat": true,
+            "rule_name": "PATH_TRAVERSAL"
+          },
+          "attacker_only": {
+            "is_threat": true,
+            "rule_name": "PATH_TRAVERSAL"
+          },
+          "failure_filter_only": {
+            "is_threat": true,
+            "rule_name": "PATH_TRAVERSAL"
+          },
+          "normal_external_only": {
+            "is_threat": false,
+            "rule_name": null
+          }
+        },
+        "failure_filter_pattern": "[ip, ident, user, timestamp, request, status_code = 401 || status_code = 403 || status_code = 404, ...]",
+        "mapper_check": {
+          "incident_id_kind": "synthetic_local_replay_only",
+          "mitre_id": "T1595.002",
+          "risk_level": "HIGH",
+          "action_required": "BLOCK_WAF",
+          "target_accounts": []
+        }
+      },
+      "waf": {
+        "source_event_count": 31,
+        "selected_event_count": 31,
+        "attacker_event_count": 13,
+        "attacker_action_counts": {
+          "ALLOW": 6,
+          "BLOCK": 7
+        },
+        "normal_external_event_count": 18,
+        "normal_action_counts": {
+          "ALLOW": 18
+        },
+        "normal_get_root_allow_observed": "18/18",
+        "attacker_block_rule_match_observed": "7/7",
+        "terminating_rule_id": "CloudShield-Block-IP",
+        "first_attacker_block_utc": "2026-10-19T07:02:41.639Z",
+        "last_attacker_block_utc": "2026-10-19T07:03:41.669Z",
+        "first_normal_allow_utc": "2026-10-19T07:03:56.345Z",
+        "last_normal_allow_utc": "2026-10-19T07:06:03.582Z",
+        "response_code_sent_all_null": true
+      },
+      "network": {
+        "run_id": "20261019T070225Z-p3-8-double",
+        "summary_source": {
+          "entry": "20261019T070225Z-p3-8-double/analysis-summary.json",
+          "bytes": 16742,
+          "sha256": "272c0a390db7b17ec70d6091d65d92447dc45ee544615e9b90e19ed7b83bb6ae"
+        },
+        "summary_json_pointers": [
+          "/attack",
+          "/first_403",
+          "/attack_to_first_observed_403_seconds",
+          "/http_pairs",
+          "/public_ip_observations"
+        ],
+        "raw_manifest_source": {
+          "entry": "20261019T070225Z-p3-8-double/manifest.json",
+          "bytes": 9872,
+          "sha256": "b49f349ae0ed23bcbb1ad31dce79823a4a6fe06dd6a9ff1fe5f03faa9ede710a"
+        },
+        "raw_manifest_files_verified": 29,
+        "analysis_manifest_source": {
+          "entry": "20261019T070225Z-p3-8-double/analysis-manifest.json",
+          "bytes": 4780,
+          "sha256": "39ec8d84f8ec1480ebfe37d60e6ca9153eada473435ce841408728846a1932f2"
+        },
+        "analysis_manifest_files_verified": 36,
+        "pcap_source": {
+          "entry": "20261019T070225Z-p3-8-double/capture.pcap",
+          "bytes": 25303,
+          "sha256": "a7bf26d9c17ef01357180abb641842f2e71e6e91ef4bdf61c73ac04e06bc29cd"
+        },
+        "http_pair_count": 13,
+        "packet_count": 130,
+        "http_status_counts": {
+          "200": 5,
+          "401": 1,
+          "403": 7
+        },
+        "raw_attack_request_utc": "2026-10-19T07:02:26.614065Z",
+        "raw_attack_request_epoch_seconds": "1792393346.614065000",
+        "first_observed_403_epoch_seconds": "1792393361.641932000",
+        "first_observed_403_kst": "2026-10-19T16:02:41.641932+09:00",
+        "attack_to_first_observed_403_seconds": "15.027867000",
+        "public_ip_before_and_after": "3.25.82.148",
+        "last_attacker_403_epoch_seconds": "1792393421.670011000",
+        "first_waf_normal_allow_minus_last_pcap_403_seconds": "14.674989000",
+        "timing_limit": "PCAP values are client observations; WAF timestamps are server-side observations on a separate clock. Normal WAF ALLOW timestamps are not normal-client response reception times. The clients were observed in adjacent, non-overlapping intervals. First observed 403 is not an exact policy activation timestamp."
+      }
+    }
+  },
+  "network_initial_failure": {
+    "run_id": "20261019T064543Z-p3-8-single",
+    "summary_source": {
+      "entry": "20261019T064543Z-p3-8-single/analysis-summary.json",
+      "bytes": 13012,
+      "sha256": "f51db88e18e1e27f95882232b607542559aa3dbcaea14e99dad5deea5870bf53"
+    },
+    "pcap_source": {
+      "entry": "20261019T064543Z-p3-8-single/capture.pcap",
+      "bytes": 65519,
+      "sha256": "27409985cc8338c9a377bfe52c07b7e2c57ab9531a54c6934241ae7874416551"
+    },
+    "raw_manifest_source": {
+      "entry": "20261019T064543Z-p3-8-single/manifest.json",
+      "bytes": 14336,
+      "sha256": "cfdeaee350c39dec8883c254f1e53ebcf8d884c98b492fad2e9a03954551c904"
+    },
+    "raw_manifest_files_verified": 47,
+    "http_pair_count": 22,
+    "http_status_counts": {
+      "200": 21,
+      "404": 1
+    },
+    "raw_encoded_uri": "/admin/%2e%2e/config",
+    "first_403_observed": false,
+    "interpretation": "Client observed encoded request 404 and 20 subsequent root 200 responses over 60 seconds. Cloud A reported detection followed by GetWebACLForResource permission failure; this is not evidence of a detection false negative."
+  },
+  "local_artifacts": {
+    "nginx-selected-events.json": {
+      "bytes": 29862,
+      "sha256": "746130b8b06ddf7421a20e00056cbf751f3be7563c881b72c4ea9e8559cde0a7"
+    },
+    "waf-selected-events.json": {
+      "bytes": 87220,
+      "sha256": "925d8c531660da686442966e9f9e29a605461de8454ceb7984ad8e1f5a2e3f6d"
+    }
+  }
+}
