@@ -3342,3 +3342,594 @@ def test_ec2_measurement_shell_syntax(bash):
     script = Path(__file__).resolve().parents[2] / "network/ec2_hydra_measurement.sh"
     result = subprocess.run([bash, "-n", script.as_posix()], capture_output=True, check=False)
     assert result.returncode == 0
+
+
+@pytest.fixture
+def demo_runner(ec2_measurement, monkeypatch):
+    directory = Path(__file__).resolve().parents[2] / "network"
+    spec = importlib.util.spec_from_file_location(
+        "demo_attack_runner", directory / "demo_attack_runner.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    # 잘못 연결된 실행 경로가 생겨도 실제 도구·소켓으로 폴백할 수 없도록 봉쇄한다.
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *a, **k: pytest.fail("real Popen"))
+    monkeypatch.setattr(
+        module.ssh.socket, "create_connection", lambda *a, **k: pytest.fail("socket")
+    )
+    return module
+
+
+def demo_approval_data():
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    return {
+        "approval_id": "mock-approval",
+        "approved_by": "mock-cloud-a",
+        "approved_at": (now - timedelta(minutes=1)).isoformat(),
+        "expires_at": (now + timedelta(minutes=30)).isoformat(),
+        "source_ipv4": "1.1.1.1",
+        "ec2": {"public_ip": "8.8.4.4", "instance_id": "i-0123456789abcdef0"},
+        "alb_origin": "http://" + WEB_ALB_HOST,
+    }
+
+
+@pytest.mark.parametrize("scenario", ["ssh", "web", "all"])
+def test_demo_dry_run_has_no_io_or_network(demo_runner, monkeypatch, tmp_path, capsys, scenario):
+    monkeypatch.setattr(demo_runner, "load_approval", lambda *a: pytest.fail("approval read"))
+    monkeypatch.setattr(demo_runner, "private_root", lambda *a: pytest.fail("directory read"))
+    monkeypatch.setattr(demo_runner.ssh, "require_tool", lambda *a: pytest.fail("tool lookup"))
+    assert demo_runner.main(["--scenario", scenario, "--evidence-root", str(tmp_path)]) == 0
+    output = capsys.readouterr().out
+    assert "dry-run" in output and "start" in output and "end" in output
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--scenario", "other"],
+        ["--execute", "--dry-run"],
+        ["--web-observe-seconds", "0"],
+        ["--web-observe-seconds", "61"],
+        ["--web-observe-seconds", "nan"],
+        ["--web-observe-seconds", "01"],
+        ["--target", "3.26.171.60"],
+    ],
+)
+def test_demo_invalid_cli_fails_before_execution(demo_runner, monkeypatch, arguments):
+    monkeypatch.setattr(demo_runner, "execute", lambda *a: pytest.fail("execute"))
+    with pytest.raises(SystemExit) as exc:
+        demo_runner.main(arguments)
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"approved_by": ""},
+        {"source_ipv4": "127.0.0.1"},
+        {"expires_at": "2000-01-01T00:00:00Z"},
+        {"expires_at": "2099-01-01T00:00:00Z"},
+        {"approved_at": "2098-01-01T00:00:00Z"},
+        {"approved_at": "2026-10-19T12:00:00+09:00"},
+        {"alb_origin": "http://example.com"},
+        {"alb_origin": "http://" + WEB_ALB_HOST + "@example.com"},
+        {"alb_origin": "http://" + WEB_ALB_HOST + ".evil.invalid"},
+        {"alb_origin": "https://" + WEB_ALB_HOST},
+        {"alb_origin": "http://" + WEB_ALB_HOST + "/?x=1"},
+        {"ec2": {"public_ip": "3.26.171.60", "instance_id": "i-0123456789abcdef0"}},
+        {"ec2": {"public_ip": "1.1.1.1", "instance_id": "i-0123456789abcdef0"}},
+        {"ec2": {"public_ip": "8.8.4.4", "instance_id": "attacker-node"}},
+        {"ec2": None},
+    ],
+)
+def test_demo_approval_rejects_stale_spoofed_or_source_targets(demo_runner, change):
+    data = demo_approval_data() | change
+    with pytest.raises(demo_runner.RunnerError):
+        demo_runner.parse_approval(data, "all")
+
+
+def test_demo_approval_is_scenario_specific_and_has_expiry(demo_runner):
+    data = demo_approval_data()
+    approval = demo_runner.parse_approval(data, "all")
+    assert approval.ec2_ip == "8.8.4.4" and approval.alb_origin == "http://" + WEB_ALB_HOST
+    with pytest.raises(demo_runner.RunnerError):
+        approval.require_current(approval.expires_at)
+    del data["ec2"]
+    assert demo_runner.parse_approval(data, "web").ec2_ip is None
+
+
+@pytest.fixture
+def demo_execution(demo_runner, monkeypatch, tmp_path):
+    module = demo_runner
+    approval = module.parse_approval(demo_approval_data(), "all")
+    root = tmp_path / "private"
+    root.mkdir()
+    state = {
+        "now": 0.0,
+        "statuses": [200, 200, 403],
+        "attack_code": 0,
+        "attack_end": 1.5,
+        "terminated": [],
+        "argv": [],
+        "probe_calls": 0,
+        "ssh_states": ["connected", "timeout"],
+        "order": [],
+    }
+    monkeypatch.setattr(module, "private_root", lambda *a: root)
+    monkeypatch.setattr(module, "load_approval", lambda *a: approval)
+    monkeypatch.setattr(module.ssh, "validate_evidence_root", lambda value: Path(value))
+    monkeypatch.setattr(module.time, "monotonic", lambda: state["now"])
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda seconds: state.__setitem__("now", state["now"] + max(seconds, 0.001)),
+    )
+    monkeypatch.setattr(module.ssh, "require_tool", lambda name: "mock-" + name)
+    monkeypatch.setattr(
+        module.ssh, "terminate_owned_process", lambda p: state["terminated"].append(p)
+    )
+    monkeypatch.setattr(module, "confirm_recovery", lambda *a: state["order"].append("recovery"))
+    monkeypatch.setattr(
+        module.ssh,
+        "probe_once",
+        lambda *a: {"state": "connected", "ended_at": module.ssh.utc_now()},
+    )
+
+    def measurement(config, *, observer):
+        state["order"].append("ssh")
+        observer("baseline", {"state": "connected", "ended_at": module.ssh.utc_now()})
+        observer("attack_started", {"started_at": module.ssh.utc_now()})
+        for index, status in enumerate(state["ssh_states"], start=1):
+            state["now"] += 1
+            observer("countdown", {"remaining_seconds": 60 - index})
+            observer("probe", {"state": status, "ended_at": module.ssh.utc_now(), "index": index})
+        return {"hydra_state": "exhausted_without_success"}
+
+    monkeypatch.setattr(module.ssh, "run_measurement", measurement)
+
+    def probe(origin, children, **_kwargs):
+        state["probe_calls"] += 1
+        state["now"] += 0.01
+        statuses = state["statuses"]
+        status = statuses.pop(0) if len(statuses) > 1 else statuses[0]
+        state["order"].append("http")
+        return {"http_status": status, "ended_at": module.ssh.utc_now()}
+
+    monkeypatch.setattr(module, "http_probe", probe)
+
+    class Attack:
+        def __init__(self, argv, **kwargs):
+            state["order"].append("web")
+            state["argv"].append((argv, kwargs))
+            self.end = state["now"] + state["attack_end"]
+            self.returncode = None
+            self.summary = Path(argv[argv.index("--evidence") + 1])
+
+        def poll(self):
+            if self.returncode is None and state["now"] >= self.end:
+                self.returncode = state["attack_code"]
+                if self.returncode == 0:
+                    text = "state=completed\nexit_code=0\n"
+                    for index in range(1, 16):
+                        text += f"request_{index}_observed_at={module.ssh.utc_now()}\n"
+                        text += f"request_{index}_http_status=404\n"
+                    self.summary.write_text(text, encoding="utf-8")
+            return self.returncode
+
+    monkeypatch.setattr(module.subprocess, "Popen", Attack)
+    environment = dict.fromkeys(module.ssh.READY_ENV, "yes") | {
+        "CLOUDSHIELD_TARGET_IP": approval.ec2_ip,
+        "CLOUDSHIELD_TEST_ACCOUNT": "cloudshield_test",
+    }
+
+    def run(scenario="all", extra=(), env=None):
+        return module.main(
+            [
+                "--scenario",
+                scenario,
+                "--execute",
+                "--evidence-root",
+                str(root),
+                "--web-observe-seconds",
+                "5",
+                *extra,
+            ],
+            environment if env is None else env,
+        )
+
+    state.update(run=run, root=root, approval=approval, environment=environment)
+    return module, state
+
+
+@pytest.mark.parametrize("scenario", ["ssh", "web", "all"])
+def test_demo_execute_routes_and_reports_candidates(demo_execution, capsys, scenario):
+    module, state = demo_execution
+    assert state["run"](scenario) == 0
+    rows = [
+        json.loads(line)
+        for line in next(state["root"].glob("*/events.jsonl"))
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert rows[-1]["details"]["exit_code"] == 0
+    assert rows[-1]["details"]["aws_waf_slack"] == "not_evaluated"
+    candidates = [r for r in rows if r["stage"] == "first_block_candidate"]
+    assert len(candidates) == (2 if scenario == "all" else 1)
+    assert all(r["observed_at"] for r in candidates)
+    assert [r["sequence"] for r in rows] == list(range(1, len(rows) + 1))
+    assert [r["elapsed_ms"] for r in rows] == sorted(r["elapsed_ms"] for r in rows)
+    output = capsys.readouterr().out
+    assert "미확정" in output or "대조 필요" in output
+    if scenario != "ssh":
+        argv, kwargs = state["argv"][0]
+        assert argv[argv.index("--candidates") + 1] == "15"
+        assert argv[argv.index("--concurrency") + 1] == "1"
+        assert argv[argv.index("--max-runtime") + 1] == "60"
+        assert argv[-1] == "--execute" and kwargs["start_new_session"] is True
+        assert len(state["terminated"]) == 1
+    if scenario == "all":
+        assert state["order"].index("ssh") < state["order"].index("recovery")
+        assert state["order"].index("recovery") < state["order"].index("web")
+
+
+@pytest.mark.parametrize("scenario", ["ssh", "web"])
+def test_demo_not_observed_is_nonzero_and_finite(demo_execution, scenario, capsys):
+    _, state = demo_execution
+    state["statuses"] = [200]
+    state["ssh_states"] = ["connected", "connected"]
+    assert state["run"](scenario) == 3
+    assert "not_observed" in capsys.readouterr().out
+    assert state["probe_calls"] <= 6
+
+
+@pytest.mark.parametrize("attack_code", [7, 42, 124, 130, 143, -15])
+def test_demo_web_failure_keeps_code_and_cleans_owned(demo_execution, attack_code):
+    _, state = demo_execution
+    state.update(attack_code=attack_code, attack_end=0)
+    assert state["run"]("web") == (143 if attack_code == -15 else attack_code)
+    assert len(state["argv"]) == 1 and len(state["terminated"]) == 1
+
+
+def test_demo_web_timeout_cleans_child_without_second_attack(demo_execution):
+    _, state = demo_execution
+    state.update(attack_end=100, statuses=[200])
+    assert state["run"]("web") == 124
+    assert len(state["argv"]) == 1 and len(state["terminated"]) == 1
+    assert state["now"] < 5.1
+
+
+@pytest.mark.parametrize("interruption", ["keyboard", "term", "tool", "storage"])
+def test_demo_mid_observation_failure_cleans_and_propagates(
+    demo_execution, monkeypatch, interruption
+):
+    module, state = demo_execution
+    original = module.http_probe
+
+    def probe(*args, **kwargs):
+        if state["probe_calls"] == 0:
+            return original(*args, **kwargs)
+        if interruption == "keyboard":
+            raise KeyboardInterrupt
+        if interruption == "term":
+            raise module.RunnerSignal(143)
+        if interruption == "storage":
+            raise OSError("mock storage failure")
+        raise module.RunnerError("mock tool failure", 70)
+
+    monkeypatch.setattr(module, "http_probe", probe)
+    assert (
+        state["run"]("web")
+        == {"keyboard": 130, "term": 143, "tool": 70, "storage": 74}[interruption]
+    )
+    assert len(state["terminated"]) == 1
+
+
+@pytest.mark.parametrize("gate", ["confirmation", "tcp", "http", "expired"])
+def test_demo_sequential_recovery_gate_stops_next_attack(demo_execution, monkeypatch, gate):
+    module, state = demo_execution
+    if gate == "confirmation":
+
+        def reject(*_):
+            raise module.RunnerError("복구 미확인", 20)
+
+        monkeypatch.setattr(module, "confirm_recovery", reject)
+    elif gate == "tcp":
+        monkeypatch.setattr(
+            module.ssh,
+            "probe_once",
+            lambda *_: {"state": "timeout", "ended_at": module.ssh.utc_now()},
+        )
+    elif gate == "http":
+        state["statuses"] = [403]
+    else:
+
+        def expire(*_):
+            from datetime import timedelta
+
+            object.__setattr__(
+                state["approval"], "expires_at", datetime.now(UTC) - timedelta(seconds=1)
+            )
+
+        monkeypatch.setattr(module, "confirm_recovery", expire)
+    assert state["run"]() == (2 if gate == "expired" else 20)
+    assert state["argv"] == []
+
+
+@pytest.mark.parametrize("response", [None, "wrong", "RESTORED mock-run"])
+def test_demo_recovery_requires_fresh_interactive_confirmation(demo_runner, monkeypatch, response):
+    import builtins
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: response is not None)
+    monkeypatch.setattr(builtins, "input", lambda *_: response)
+    reporter = demo_runner.Reporter()
+    if response == "RESTORED mock-run":
+        demo_runner.confirm_recovery("mock-run", reporter)
+    else:
+        with pytest.raises(demo_runner.RunnerError) as exc:
+            demo_runner.confirm_recovery("mock-run", reporter)
+        assert exc.value.code == 20
+
+
+def test_demo_readiness_and_target_mismatch_fail_before_evidence(demo_execution):
+    _, state = demo_execution
+    assert state["run"](env=state["environment"] | {"CLOUDSHIELD_SOURCE_ALLOWED": "no"}) == 2
+    assert state["run"](env=state["environment"] | {"CLOUDSHIELD_TARGET_IP": "3.26.171.60"}) == 2
+    assert list(state["root"].iterdir()) == []
+
+
+def test_demo_evidence_is_exclusive_bounded_and_storage_failure_propagates(
+    demo_runner, tmp_path, monkeypatch
+):
+    directory = demo_runner.create_run_directory(tmp_path, run_id="mock-run")
+    with pytest.raises(FileExistsError):
+        demo_runner.create_run_directory(tmp_path, run_id="mock-run")
+    reporter = demo_runner.Reporter(directory)
+    reporter.emit("web", "probe", "HTTP 200")
+    reporter.close()
+    original = (directory / "events.jsonl").read_bytes()
+    with pytest.raises(FileExistsError):
+        demo_runner.Reporter(directory)
+    assert (directory / "events.jsonl").read_bytes() == original
+    report = demo_runner.Reporter()
+    monkeypatch.setattr(demo_runner, "MAX_EVENTS", 1)
+    report.emit("web", "probe", "HTTP 200")
+    with pytest.raises(demo_runner.RunnerError) as exc:
+        report.emit("web", "probe", "HTTP 403")
+    assert exc.value.code == 74
+
+
+def test_demo_storage_write_error_never_calls_attack(demo_execution, monkeypatch):
+    module, state = demo_execution
+
+    def fail(*_args, **_kwargs):
+        raise OSError("mock disk full")
+
+    monkeypatch.setattr(module.Reporter, "emit", fail)
+    assert state["run"]() == 74
+    assert state["argv"] == [] and state["order"] == []
+
+
+def test_demo_cleanup_continues_after_failure_and_never_targets_unowned(demo_runner, monkeypatch):
+    children = demo_runner.Children()
+    first, second, unrelated = object(), object(), object()
+    children.owned = [first, second]
+    seen = []
+
+    def terminate(process):
+        seen.append(process)
+        if process is second:
+            raise OSError("mock cleanup error")
+
+    monkeypatch.setattr(demo_runner.ssh, "terminate_owned_process", terminate)
+    with pytest.raises(demo_runner.RunnerError):
+        children.cleanup()
+    assert seen == [second, first] and unrelated not in seen
+
+
+@pytest.mark.parametrize("code", [0, 7, 28, -15])
+def test_demo_http_probe_safe_argv_and_failures(demo_runner, monkeypatch, code):
+    calls = []
+
+    class Probe:
+        returncode = code
+
+        def __init__(self, argv, **kwargs):
+            calls.append((argv, kwargs))
+
+        def communicate(self, timeout):
+            assert timeout == 2
+            return "200", None
+
+    monkeypatch.setattr(demo_runner.ssh, "require_tool", lambda *_: "mock-curl")
+    monkeypatch.setattr(demo_runner.subprocess, "Popen", Probe)
+    children = demo_runner.Children()
+    if code:
+        with pytest.raises(demo_runner.RunnerError) as exc:
+            demo_runner.http_probe("http://" + WEB_ALB_HOST, children)
+        assert exc.value.code == {7: 7, 28: 124, -15: 143}[code]
+    else:
+        assert demo_runner.http_probe("http://" + WEB_ALB_HOST, children)["http_status"] == 200
+    argv, options = calls[0]
+    assert argv[1] == "-q" and "--head" in argv and "--ipv4" in argv
+    assert "--location" not in argv and options.get("shell") is not True
+    assert argv[-2:] == ["--", "http://" + WEB_ALB_HOST + "/"]
+    assert "--max-time" in argv and len(children.owned) == 1
+
+
+def test_demo_wrapper_strict_mode_syntax(bash):
+    path = Path(__file__).resolve().parents[2] / "network/demo_attack_runner.sh"
+    assert "set -euo pipefail" in path.read_text(encoding="utf-8")
+    assert (
+        subprocess.run([bash, "-n", path.as_posix()], capture_output=True, check=False).returncode
+        == 0
+    )
+
+
+def test_demo_ssh_observer_preserves_fixed_probe_limit(ec2_measurement, monkeypatch, tmp_path):
+    module = ec2_measurement
+    clock = [0.0]
+    seen = []
+    log = tmp_path / "hydra.log"
+    log.write_text("0 valid passwords found", encoding="utf-8")
+
+    class Hydra:
+        def poll(self):
+            return 0
+
+    class Capture:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        module.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + max(seconds, 0.001))
+    )
+    monkeypatch.setattr(module, "probe_once", lambda *_: {"state": "timeout"})
+    probes, timed_out = module.observe_attack_window(
+        "8.8.4.4", Hydra(), Capture(), log, observer=lambda kind, value: seen.append((kind, value))
+    )
+    assert len(probes) == 60 and timed_out is False
+    assert len([event for kind, event in seen if kind == "probe"]) == 60
+    remaining = [event["remaining_seconds"] for kind, event in seen if kind == "countdown"]
+    assert remaining == sorted(remaining, reverse=True)
+    assert remaining[0] == 60 and remaining[-1] > 0
+
+
+def test_demo_ssh_observer_storage_error_cleans_both_children(
+    ec2_measurement, monkeypatch, tmp_path
+):
+    module = ec2_measurement
+    processes, terminated = [], []
+
+    class Child:
+        def __init__(self, *_args, **_kwargs):
+            processes.append(self)
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(module, "require_tool", lambda name: name)
+    monkeypatch.setattr(module, "check_hydra", lambda *_: "mock")
+    monkeypatch.setattr(module, "wait_capture_ready", lambda *_: None)
+    monkeypatch.setattr(module, "probe_once", lambda *_: {"state": "connected"})
+    monkeypatch.setattr(module.subprocess, "Popen", Child)
+    monkeypatch.setattr(module, "terminate_owned_process", lambda child: terminated.append(child))
+
+    def observe(stage, _event):
+        if stage == "attack_started":
+            raise OSError("mock disk full")
+
+    config = module.Config("8.8.4.4", "cloudshield_test", "eth0", tmp_path)
+    with pytest.raises(OSError):
+        module.run_measurement(config, observer=observe)
+    assert len(processes) == 2 and terminated == list(reversed(processes))
+
+
+def test_demo_execute_without_approval_never_starts_tools(demo_runner):
+    assert demo_runner.main(["--execute"], {}) == 2
+
+
+def test_demo_late_storage_error_cleans_attack(demo_execution, monkeypatch):
+    module, state = demo_execution
+    original = module.Reporter.emit
+
+    def emit(self, scenario, stage, *args, **kwargs):
+        if stage == "countdown":
+            raise OSError("mock disk full after attack start")
+        return original(self, scenario, stage, *args, **kwargs)
+
+    monkeypatch.setattr(module.Reporter, "emit", emit)
+    assert state["run"]("web") == 74
+    assert len(state["argv"]) == 1 and len(state["terminated"]) == 1
+
+
+def test_demo_http_probe_deadline_terminates_owned_process(demo_runner, monkeypatch):
+    terminated = []
+
+    class Probe:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def communicate(self, timeout):
+            raise subprocess.TimeoutExpired("mock-curl", timeout)
+
+    monkeypatch.setattr(demo_runner.ssh, "require_tool", lambda *_: "mock-curl")
+    monkeypatch.setattr(demo_runner.subprocess, "Popen", Probe)
+    monkeypatch.setattr(demo_runner.ssh, "terminate_owned_process", terminated.append)
+    children = demo_runner.Children()
+    with pytest.raises(demo_runner.RunnerError) as exc:
+        demo_runner.http_probe("http://" + WEB_ALB_HOST, children, timeout_seconds=0.5)
+    assert exc.value.code == 124 and terminated == children.owned
+
+
+@pytest.mark.parametrize("payload", ["valid", "oversized", "malformed", "wrong_mode"])
+def test_demo_private_approval_bounded_read_and_permissions(
+    demo_runner, monkeypatch, tmp_path, payload
+):
+    import stat
+    from types import SimpleNamespace
+
+    path = tmp_path / "approval.json"
+    raw = json.dumps(demo_approval_data())
+    if payload == "oversized":
+        raw = " " * (demo_runner.MAX_APPROVAL_BYTES + 1)
+    elif payload == "malformed":
+        raw = "{broken"
+    path.write_text(raw, encoding="utf-8")
+    monkeypatch.setattr(demo_runner, "private_root", lambda *_: tmp_path)
+    # Windows에서도 파일 파싱과 FD 소유권 판정 경로를 검증하되 커널 API만 모의 처리한다.
+    monkeypatch.setattr(demo_runner.os, "O_NOFOLLOW", getattr(os, "O_NOFOLLOW", 0), raising=False)
+    monkeypatch.setattr(demo_runner.os, "O_NONBLOCK", getattr(os, "O_NONBLOCK", 0), raising=False)
+    monkeypatch.setattr(demo_runner.os, "geteuid", lambda: 1000, raising=False)
+    mode = 0o644 if payload == "wrong_mode" else 0o600
+    monkeypatch.setattr(
+        demo_runner.os, "fstat", lambda _: SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=1000)
+    )
+    if payload == "valid":
+        assert demo_runner.load_approval(path, "all").ec2_ip == "8.8.4.4"
+    else:
+        with pytest.raises(demo_runner.RunnerError):
+            demo_runner.load_approval(path, "all")
+
+
+def test_demo_late_event_keeps_sequence_and_normalizes_utc(demo_runner, tmp_path):
+    reporter = demo_runner.Reporter(tmp_path)
+    reporter.emit("web", "probe", "HTTP 403", stamp="2026-10-19T03:00:02.123Z")
+    reporter.emit("web", "attack_request_recorded", "late record", stamp="2026-10-19T03:00:01Z")
+    reporter.close()
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["sequence"] for row in rows] == [1, 2]
+    assert rows[0]["observed_at"] == "2026-10-19T03:00:02.123+00:00"
+    assert rows[1]["observed_at"] == "2026-10-19T03:00:01.000+00:00"
+    assert rows[1]["elapsed_ms"] >= rows[0]["elapsed_ms"]
+
+
+def test_demo_403_after_observation_deadline_is_not_candidate(demo_execution, monkeypatch):
+    module, state = demo_execution
+    state["attack_end"] = 0
+    original = module.http_probe
+
+    def late_probe(*args, **kwargs):
+        event = original(*args, **kwargs)
+        if state["probe_calls"] > 1:
+            state["now"] += 6
+            event["http_status"] = 403
+        return event
+
+    monkeypatch.setattr(module, "http_probe", late_probe)
+    assert state["run"]("web") == 3
+    rows = [
+        json.loads(line)
+        for line in next(state["root"].glob("*/events.jsonl"))
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert any(row["stage"] == "late_probe" for row in rows)
+    assert not any(row["stage"] == "first_block_candidate" for row in rows)
