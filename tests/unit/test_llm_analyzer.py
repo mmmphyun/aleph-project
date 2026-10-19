@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -101,6 +102,69 @@ def test_prompt_embeds_the_contract_schema_and_valid_ssh_web_examples(
     assert "한국어" in prompt
     assert "summary_ko" in prompt and "recommendations" in prompt
     assert "JSON" in prompt
+
+
+@pytest.mark.parametrize("attack_type", ["SSH", "Web"])
+def test_prompt_examples_enrich_only_analysis_fields_from_raw_log_evidence(
+    sample_incident_report: IncidentReport, attack_type: str
+) -> None:
+    """예시는 원문 근거를 보강하는 동시에 실제 응답 파서의 보호 필드 경계를 지킨다."""
+    prompt = build_bedrock_analysis_prompt(sample_incident_report, [])
+    example_sets = [
+        value
+        for value in _json_values(prompt)
+        if isinstance(value, list)
+        and value
+        and all(isinstance(item, dict) and set(item) == {"input", "output"} for item in value)
+    ]
+    assert len(example_sets) == 1
+    assert len(example_sets[0]) == 2
+    matching = [
+        item
+        for item in example_sets[0]
+        if attack_type in item["input"]["base_report"]["attack_type"]
+    ]
+    assert len(matching) == 1
+    example = matching[0]
+    base = IncidentReport.model_validate(example["input"]["base_report"])
+    output = IncidentReport.model_validate(example["output"])
+
+    assert output.summary_ko != base.summary_ko
+    assert output.recommendations != base.recommendations
+    protected_fields = set(IncidentReport.model_fields) - {"summary_ko", "recommendations"}
+    assert output.model_dump(include=protected_fields) == base.model_dump(include=protected_fields)
+    parsed = parse_bedrock_response_to_incident(
+        json.dumps(example["output"], ensure_ascii=False), base
+    )
+    assert parsed is not base
+    assert parsed == output
+
+    raw_logs = example["input"]["raw_logs"]
+    assert len(raw_logs) == 5
+    assert all(isinstance(line, str) and base.source_ip in line for line in raw_logs)
+    assert base.source_ip in output.summary_ko
+    if attack_type == "SSH":
+        assert base.target_accounts
+        for account in base.target_accounts:
+            assert any(f"Failed password for {account} from " in line for line in raw_logs)
+            assert account in output.summary_ko
+        assert re.search(rf"(?<!\d){len(raw_logs)}\s*(?:회|건)", output.summary_ko)
+    else:
+        paths = [
+            match.group(1)
+            for line in raw_logs
+            if (match := re.search(r'"GET (\S+) HTTP/\d(?:\.\d)?"', line))
+        ]
+        statuses = [
+            match.group(1)
+            for line in raw_logs
+            if (match := re.search(r'HTTP/\d(?:\.\d)?" (\d{3})\b', line))
+        ]
+        assert len(paths) == len(raw_logs)
+        assert len(set(paths)) == len(raw_logs)
+        assert any(path in output.summary_ko for path in paths)
+        assert len(statuses) == len(raw_logs)
+        assert any(status in output.summary_ko for status in statuses)
 
 
 def test_prompt_preserves_untrusted_logs_as_json_data_without_mutation(

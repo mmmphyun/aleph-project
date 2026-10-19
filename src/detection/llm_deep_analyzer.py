@@ -71,11 +71,55 @@ def _bounded_logs(raw_logs: list[str]) -> tuple[list[str], dict[str, int]]:
 
 
 def _few_shots() -> list[dict[str, Any]]:
-    """공통 매퍼에서 예시를 파생해 독자적인 공격 유형·조치 enum을 만들지 않는다."""
+    """매퍼의 판단을 보존하면서 원문 근거로 두 보강 필드가 달라지는 예시를 제공한다.
+
+    Why: 입력 보고서 복사만 학습하지 않도록 관측 사실과 추가 확인 사항을 구분한다.
+    Constraints: 합성 SSH/Web 표본 각 5개만 사용하고, 분류·차단 액션은 매퍼에서 재사용한다.
+    Side-effects: 실제 탐지나 조치 성공을 주장하지 않으며 예시 출력도 공통 계약으로 검증한다.
+    """
     examples = []
-    for rule, accounts, log in (
-        ("SSH_BRUTE_FORCE", ("cloudshield_test",), "동일 계정 인증 실패 5건이 관측됨"),
-        ("WEB_DIRECTORY_SCANNING", (), "짧은 구간에 서로 다른 경로 5개와 실패 경로 3개 관측"),
+    for rule, accounts, logs, summary, recommendations in (
+        (
+            "SSH_BRUTE_FORCE",
+            ("cloudshield_test",),
+            [
+                f"Oct 19 08:00:0{index} i-0123456789abcdef0 sshd[1201]: "
+                f"Failed password for cloudshield_test from 198.51.100.50 port {50000 + index} ssh2"
+                for index in range(1, 6)
+            ],
+            "출발지 IP 198.51.100.50에서 cloudshield_test 계정으로 5회의 SSH 인증 실패가 "
+            "관측되었습니다. 성공 인증이나 실제 EC2 격리 결과는 이 표본으로 확인되지 않습니다.",
+            (
+                "cloudshield_test 계정의 해당 5회 실패 구간과 인접한 성공 인증·세션 로그를 대조",
+                "해당 출발지의 TCP 차단과 EC2 격리 집행 증거를 확인하고 정상 관리 접속 영향 점검",
+            ),
+        ),
+        (
+            "WEB_DIRECTORY_SCANNING",
+            (),
+            [
+                f'198.51.100.50 - - [19/Oct/2026:08:01:0{index} +0000] "GET {path} HTTP/1.1" '
+                f'{status} 150 "-" "curl/8.0" 0.002 "-"'
+                for index, (path, status) in enumerate(
+                    (
+                        ("/admin", 401),
+                        ("/backup", 404),
+                        ("/config", 403),
+                        ("/debug", 200),
+                        ("/metrics", 200),
+                    ),
+                    start=1,
+                )
+            ],
+            "출발지 IP 198.51.100.50의 5개 경로 요청 중 /admin·/backup·/config에서 "
+            "401·404·403이 관측되었습니다. /debug·/metrics의 200만으로 민감 자원 노출을, "
+            "403만으로 WAF 집행을 확정할 수 없습니다.",
+            (
+                "5개 URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원본과 대조해 403 발생 계층 확인",
+                "/debug·/metrics의 응답 본문과 접근 정책을 점검해 "
+                "실제 정보 노출 및 정상 사용자 영향 확인",
+            ),
+        ),
     ):
         report = map_threat_to_incident(
             is_threat=True,
@@ -85,10 +129,14 @@ def _few_shots() -> list[dict[str, Any]]:
             incident_id=f"EXAMPLE-{rule}",
             target_identifier="i-0123456789abcdef0",
         )
+        enriched = IncidentReport.model_validate(
+            report.model_dump() | {"summary_ko": summary, "recommendations": recommendations},
+            strict=True,
+        )
         examples.append(
             {
-                "input": {"base_report": report.model_dump(mode="json"), "raw_logs": [log]},
-                "output": report.model_dump(mode="json"),
+                "input": {"base_report": report.model_dump(mode="json"), "raw_logs": logs},
+                "output": enriched.model_dump(mode="json"),
             }
         )
     return examples
