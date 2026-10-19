@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -299,6 +300,8 @@ def observe_attack_window(
     hydra_process: subprocess.Popen[Any],
     capture: subprocess.Popen[Any],
     hydra_log: Path,
+    *,
+    observer: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """캡처 생존을 감시하며 탐침 스케줄과 독립적인 Hydra deadline을 집행한다."""
     hydra_started = time.monotonic()
@@ -321,7 +324,11 @@ def observe_attack_window(
             time.sleep(min(0.05, max(0, remaining)))
 
         require_capture_alive(capture, hydra_process)
+        if observer is not None:
+            observer("countdown", {"remaining_seconds": max(0, hydra_deadline - time.monotonic())})
         probes.append(probe_once(target) | {"index": index + 1})
+        if observer is not None:
+            observer("probe", probes[-1])
         require_capture_alive(capture, hydra_process)
         raw = hydra_log.read_text(encoding="utf-8", errors="replace")
         if classify_hydra(hydra_process.poll(), raw, timed_out=False) == ("unexpected_success"):
@@ -410,7 +417,11 @@ def analyze_pcap(tshark: str, pcap: Path, output: Path) -> int:
     return max(0, len(output.read_text(encoding="utf-8").splitlines()) - 1)
 
 
-def run_measurement(config: Config) -> dict[str, Any]:
+def run_measurement(
+    config: Config,
+    *,
+    observer: Callable[[str, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     bash = require_tool("bash")
     hydra = require_tool("hydra")
     tcpdump = require_tool("tcpdump")
@@ -422,6 +433,8 @@ def run_measurement(config: Config) -> dict[str, Any]:
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
     run_dir = config.evidence_root / run_id
     run_dir.mkdir(mode=0o700)
+    if observer is not None:
+        observer("evidence", {"directory": str(run_dir)})
     pcap = run_dir / "capture.pcap"
     capture_stderr = run_dir / "capture.stderr"
     hydra_log = run_dir / "hydra.private.log"
@@ -452,6 +465,8 @@ def run_measurement(config: Config) -> dict[str, Any]:
             capture_started = time.monotonic()
             wait_capture_ready(capture, capture_stderr)
             baseline = probe_once(config.target)
+            if observer is not None:
+                observer("baseline", baseline)
             if baseline["state"] != "connected":
                 raise MeasurementError(
                     "공격 전 TCP 기준선이 실패해 Hydra를 시작하지 않았습니다.", 20
@@ -471,8 +486,10 @@ def run_measurement(config: Config) -> dict[str, Any]:
                         stderr=subprocess.STDOUT,
                         start_new_session=True,
                     )
+                    if observer is not None:
+                        observer("attack_started", {"started_at": hydra_started_at})
                     probes, hydra_timed_out = observe_attack_window(
-                        config.target, hydra_process, capture, hydra_log
+                        config.target, hydra_process, capture, hydra_log, observer=observer
                     )
                     hydra_code = hydra_process.wait()
                     hydra_exit_observed_at = utc_now()
