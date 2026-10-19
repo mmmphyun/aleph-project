@@ -1388,3 +1388,57 @@ def test_collection_latency_cli_and_input_limit(
     monkeypatch.setattr(latency, "MAX_INPUT_BYTES", 1)
     with pytest.raises(ValueError, match="32 MiB"):
         latency.main()
+
+
+def test_summarize_collection_latency_synthetic_scenario2_shape() -> None:
+    """[P3-7] 시나리오 2 형태의 합성 이벤트로 수집 지연 계산 경계를 검증.
+
+    Why:
+        Nginx 설정상 /health(200)는 access_log off 처리되어 15개 네트워크 스캔 요청 중
+        14건(401 1건, 404 13건)이 초 단위 해상도(%d/%b/%Y:%H:%M:%S %z, 2026-10-16 기준)로 기록됨.
+        운영 FilterLogEvents 원본이 아닌 고정 합성 지연을 사용해 누락 없는 14건 입력의
+        p50/p95와 3초 예산 판정이 결정론적으로 동작하는지만 검증함.
+    """
+    from collector.collection_latency import summarize_collection_latency
+
+    base_sec = 1792138182  # 2026-10-16 17:09:42 KST
+    sec_offsets = [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    delays_ms = [
+        1810,
+        1815,
+        1812,
+        1818,
+        1825,
+        1810,
+        1815,
+        1820,
+        1812,
+        1818,
+        1822,
+        1815,
+        1820,
+        1825,
+    ]
+    synthetic_events = [
+        {
+            "eventId": f"nginx-evt-{i + 1}",
+            "timestamp": (base_sec + sec) * 1000,
+            "ingestionTime": (base_sec + sec) * 1000 + delay,
+        }
+        for i, (sec, delay) in enumerate(zip(sec_offsets, delays_ms, strict=True))
+    ]
+
+    result = summarize_collection_latency(synthetic_events, expected_count=14, budget_ms=3000)
+
+    assert result["scope"] == "event_timestamp_to_cloudwatch_ingestion"
+    assert result["expected_count"] == 14
+    assert result["observed_count"] == 14
+    assert result["missing_count"] == 0
+    assert result["duplicate_count"] == 0
+    assert result["p50_ms"] == 1815
+    assert result["p95_ms"] == 1825
+    assert result["max_ms"] == 1825
+    assert result["budget_ms"] == 3000
+    assert result["over_budget_count"] == 0
+    assert result["complete"] is True
+    assert result["within_budget"] is True
