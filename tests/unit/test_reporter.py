@@ -1654,9 +1654,9 @@ def test_build_slack_payload_scenario2_web_directory_scanning_waf_block() -> Non
     """[P3-7] 시나리오 2 Web L7 디렉터리 스캐닝 및 WAF 차단 연계 Slack 카드 렌더링 검증.
 
     Why:
-        보안 탐지 매퍼(map_threat_to_incident)가 산출한 실제 계약 객체(Web Directory Scanning,
-        T1595.003, BLOCK_WAF) 인입 시 L7 WAF IPSet 차단 완료 상태가 표시되고,
-        L4 SG 격리는 미대상으로 올바르게 분리 렌더링되는지 4대 필수 키와 함께 검증함.
+        보안 탐지 매퍼(map_threat_to_incident)가 산출한 계약 객체(Web Directory Scanning,
+        T1595.003, BLOCK_WAF)에 합성 테스트 식별자를 인입할 때 L7 WAF IPSet 차단 완료
+        상태가 표시되고, L4 SG 격리는 미대상으로 분리 렌더링되는지 4대 필수 키와 함께 검증함.
     """
     from detection.incident_mapper import map_threat_to_incident
 
@@ -1665,7 +1665,7 @@ def test_build_slack_payload_scenario2_web_directory_scanning_waf_block() -> Non
         rule_name="WEB_DIRECTORY_SCANNING",
         source_ip="3.26.171.60",
         target_identifier="i-027b9d94be16b0d77",
-        incident_id="INC-1729066190-WAF",
+        incident_id="INC-TEST-WAF-7160",
     )
     remediation_result = {
         "waf_blocked": True,
@@ -1676,7 +1676,7 @@ def test_build_slack_payload_scenario2_web_directory_scanning_waf_block() -> Non
     payload = build_slack_payload(report, remediation_result=remediation_result)
 
     # 1. 4대 필수 구조화 키 단언 (매퍼의 attack_type 'Web Directory Scanning' 정합성 확인)
-    assert payload["incident_id"] == "INC-1729066190-WAF"
+    assert payload["incident_id"] == "INC-TEST-WAF-7160"
     assert payload["rule_name"] == "Web Directory Scanning"
     assert payload["source_ip"] == "3.26.171.60"
     assert payload["remediation_action"] == "BLOCK_WAF"

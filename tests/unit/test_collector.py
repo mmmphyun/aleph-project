@@ -1390,13 +1390,14 @@ def test_collection_latency_cli_and_input_limit(
         latency.main()
 
 
-def test_summarize_collection_latency_scenario2_nginx_events() -> None:
-    """[P3-7] 시나리오 2 Nginx 14건 웹 스캔 이벤트 수집 지연 계측 요약 검증.
+def test_summarize_collection_latency_synthetic_scenario2_shape() -> None:
+    """[P3-7] 시나리오 2 형태의 합성 이벤트로 수집 지연 계산 경계를 검증.
 
     Why:
         Nginx 설정상 /health(200)는 access_log off 처리되어 15개 네트워크 스캔 요청 중
         14건(401 1건, 404 13건)이 초 단위 해상도(%d/%b/%Y:%H:%M:%S %z, 2026-10-16 기준)로 기록됨.
-        실인프라 수집 표본(p50: 1815ms, p95: 1825ms) 입력 시 누락 없이 3초 예산 내 통과를 검증함.
+        운영 FilterLogEvents 원본이 아닌 고정 합성 지연을 사용해 누락 없는 14건 입력의
+        p50/p95와 3초 예산 판정이 결정론적으로 동작하는지만 검증함.
     """
     from collector.collection_latency import summarize_collection_latency
 
@@ -1418,7 +1419,7 @@ def test_summarize_collection_latency_scenario2_nginx_events() -> None:
         1820,
         1825,
     ]
-    events = [
+    synthetic_events = [
         {
             "eventId": f"nginx-evt-{i + 1}",
             "timestamp": (base_sec + sec) * 1000,
@@ -1427,7 +1428,7 @@ def test_summarize_collection_latency_scenario2_nginx_events() -> None:
         for i, (sec, delay) in enumerate(zip(sec_offsets, delays_ms, strict=True))
     ]
 
-    result = summarize_collection_latency(events, expected_count=14, budget_ms=3000)
+    result = summarize_collection_latency(synthetic_events, expected_count=14, budget_ms=3000)
 
     assert result["scope"] == "event_timestamp_to_cloudwatch_ingestion"
     assert result["expected_count"] == 14
