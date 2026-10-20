@@ -26,6 +26,31 @@ output "lambda_role_arn" {
   value       = module.lambda.role_arn
 }
 
+output "lambda_llm_function_name" {
+  description = "배포된 사후 비동기 LLM 분석 워커 Lambda 함수명"
+  value       = module.lambda.llm_function_name
+}
+
+output "lambda_llm_function_arn" {
+  description = "배포된 사후 비동기 LLM 분석 워커 Lambda 함수 ARN"
+  value       = module.lambda.llm_function_arn
+}
+
+output "lambda_llm_role_arn" {
+  description = "LLM 분석 워커 Lambda 실행 IAM Role ARN"
+  value       = module.lambda.llm_role_arn
+}
+
+output "eventbridge_rule_name" {
+  description = "사후 비동기 분석 트리거용 EventBridge 규칙 명칭"
+  value       = module.lambda.eventbridge_rule_name
+}
+
+output "eventbridge_rule_arn" {
+  description = "사후 비동기 분석 트리거용 EventBridge 규칙 ARN"
+  value       = module.lambda.eventbridge_rule_arn
+}
+
 output "vpc_id" {
   description = "프로비저닝된 CloudShield VPC ID"
   value       = module.vpc.vpc_id
