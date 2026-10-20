@@ -253,6 +253,17 @@ data "aws_iam_policy_document" "llm_analyzer_least_privilege" {
       "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:inference-profile/*"
     ]
   }
+
+  # 3. AWS X-Ray 분산 추적 세그먼트 기록 권한 (Active Tracing 필수)
+  statement {
+    sid    = "XRayTracingWrite"
+    effect = "Allow"
+    actions = [
+      "xray:PutTraceSegments",
+      "xray:PutTelemetryRecords"
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "llm_analyzer_least_privilege" {

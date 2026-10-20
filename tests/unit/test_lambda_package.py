@@ -58,6 +58,7 @@ def test_lambda_bundle_contains_required_packages(
 
     assert (output_dir / "contracts" / "events.py").exists()
     assert (output_dir / "remediation" / "orchestrator.py").exists()
+    assert (output_dir / "remediation" / "llm_worker.py").exists()
 
     # 2. ZIP 아카이브 내부 파일 목록 검증
     assert zip_path.exists()
@@ -70,6 +71,7 @@ def test_lambda_bundle_contains_required_packages(
         ), "typing_inspection 패키지가 ZIP 내에 존재해야 함"
         assert any("contracts/events.py" in name for name in namelist)
         assert any("remediation/orchestrator.py" in name for name in namelist)
+        assert any("remediation/llm_worker.py" in name for name in namelist)
 
 
 def test_lambda_bundle_linux_native_binary_compatibility(
@@ -136,6 +138,17 @@ import typing_extensions
 
 print("[격리검증-성공] typing_inspection 및 필수 종속성 단독 로딩 완료")
 
+# 1-1. 번들 내 remediation/llm_worker.py 파일로부터 핸들러 로딩 및 callable 검증 (OS 무관)
+import importlib.util
+import os
+worker_path = os.path.join({repr(task_abs_path)}, "remediation", "llm_worker.py")
+spec = importlib.util.spec_from_file_location("llm_worker_standalone", worker_path)
+worker_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker_mod)
+assert hasattr(worker_mod, "llm_analysis_handler")
+assert callable(worker_mod.llm_analysis_handler)
+print("[격리검증-성공] remediation.llm_worker 핸들러 단독 로딩 완료")
+
 # 2. 플랫폼 환경별 네이티브 모듈 로딩 분기 검증
 import platform
 if platform.system() == "Linux":
@@ -154,8 +167,11 @@ if platform.system() == "Linux":
     import contracts.events as ev
     import contracts.incident as inc
     import remediation.orchestrator as orch
+    import remediation.llm_worker as worker
 
     assert hasattr(orch, "threat_orchestrator_handler")
+    assert hasattr(worker, "llm_analysis_handler")
+    assert callable(worker.llm_analysis_handler)
     assert hasattr(ev, "CloudWatchLogsPayload")
     assert hasattr(inc, "IncidentReport")
     print("[격리검증-성공] Linux 환경 전체 핸들러 및 pydantic 계약 모델 로딩 완료")

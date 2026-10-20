@@ -2,6 +2,7 @@
 # 소유자: 클라우드 A
 
 from remediation.auth_window import AuthFailureWindow
+from remediation.llm_worker import llm_analysis_handler
 from remediation.orchestrator import threat_orchestrator_handler
 from remediation.remediation import (
     RemediationResult,
@@ -17,6 +18,7 @@ __all__ = [
     "WebAttackWindow",
     "apply_remediation",
     "block_ip_wafv2",
+    "llm_analysis_handler",
     "quarantine_ec2_instance",
     "threat_orchestrator_handler",
 ]

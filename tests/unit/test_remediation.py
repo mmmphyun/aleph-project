@@ -1916,6 +1916,63 @@ def test_terraform_lambda_eventbridge_and_bedrock_least_privilege_iam() -> None:
     assert "wafv2:UpdateIPSet" not in llm_doc_content
     assert "dynamodb:UpdateItem" not in llm_doc_content
 
+    # 4. 분석 Lambda IAM 정책의 X-Ray Active Tracing 권한 검증
+    assert 'sid    = "XRayTracingWrite"' in llm_doc_content
+    assert '"xray:PutTraceSegments"' in llm_doc_content
+    assert '"xray:PutTelemetryRecords"' in llm_doc_content
+
+
+def test_llm_worker_handler_eventbridge_invocation() -> None:
+    """EventBridge ThreatRemediated 이벤트 수신 시 llm_analysis_handler 동작 검증.
+
+    Why:
+        10초 실시간 긴급 차단 완료 후 EventBridge로 발행된 비동기 이벤트를
+        llm_worker가 정상 수신하여 예외 없이 처리 상태(accepted)를 반환하는지 보장함.
+    """
+    import pytest
+
+    from remediation.llm_worker import llm_analysis_handler
+
+    # 1. 정상 EventBridge ThreatRemediated 이벤트 수신
+    event = {
+        "version": "0",
+        "id": "fe942b08-32a2-4a0b-9ffb-34a1eb1d81a1",
+        "detail-type": "ThreatRemediated",
+        "source": "cloudshield.security",
+        "account": "123456789012",
+        "time": "2026-10-20T07:30:00Z",
+        "region": "ap-northeast-2",
+        "resources": ["arn:aws:ec2:ap-northeast-2:123456789012:instance/i-0123456789abcdef0"],
+        "detail": {
+            "incident_id": "INC-20261020-001",
+            "source_ip": "198.51.100.10",
+            "rule_name": "SSH-BruteForce",
+            "remediation_action": "QUARANTINE_INSTANCE",
+            "timestamp": 1729409400,
+        },
+    }
+
+    result = llm_analysis_handler(event, None)
+    assert result["status"] == "accepted"
+    assert result["event_id"] == "fe942b08-32a2-4a0b-9ffb-34a1eb1d81a1"
+    assert result["source"] == "cloudshield.security"
+    assert result["detail_type"] == "ThreatRemediated"
+    assert result["has_detail"] is True
+
+    # 2. 비대상 이벤트 수신 시에도 예외 없이 로깅 및 결과 반환 (안전 처리)
+    other_event = {
+        "source": "aws.ec2",
+        "detail-type": "EC2 Instance State-change Notification",
+        "id": "other-id",
+    }
+    other_result = llm_analysis_handler(other_event, None)
+    assert other_result["status"] == "accepted"
+    assert other_result["source"] == "aws.ec2"
+
+    # 3. 비정상 입력(None 또는 non-dict) 시 Fail-Closed 예외 발생 검증
+    with pytest.raises(ValueError, match="딕셔너리"):
+        llm_analysis_handler("invalid_payload", None)  # type: ignore[arg-type]
+
 
 def test_web_attack_window_expired_history_does_not_block_new_split_batch_attack(
     mocked_ec2_target: MockEc2Target,
