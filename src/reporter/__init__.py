@@ -5,6 +5,7 @@
 from reporter.slack_notifier import (
     MAX_FIELD_LENGTH,
     MAX_HEADER_LENGTH,
+    build_llm_slack_payload,
     build_slack_payload,
     build_waf_slack_payload,
     escape_slack_text,
@@ -15,6 +16,7 @@ from reporter.slack_notifier import (
 __all__ = [
     "MAX_FIELD_LENGTH",
     "MAX_HEADER_LENGTH",
+    "build_llm_slack_payload",
     "build_slack_payload",
     "build_waf_slack_payload",
     "escape_slack_text",
