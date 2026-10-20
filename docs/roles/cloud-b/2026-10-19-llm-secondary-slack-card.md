@@ -38,5 +38,18 @@ TEMP·TMP·PYTEST_DEBUG_TEMPROOT를 쓰기 가능한 작업 폴더로 지정해 
 - Lambda 패키징 4개 오류: PyPI DNS 조회/접속 실패로 Linux용 pydantic 휠을 다운로드하지 못한다.
 - 새 카드 테스트 3개는 모두 통과한다. 코드 수정은 필요하지 않아 검증 기록만 보완했다.
 
-전체 게이트는 환경 문제로 여전히 미통과다. 재현 로그는 저장소 바깥 작업 폴더의
+위 실행 당시 전체 게이트는 샌드박스 환경 문제로 미통과였다. 재현 로그는 저장소 바깥 작업 폴더의
 `verification-current.log`, `verification-baseline.log`에 보관했다.
+
+## 2026-10-20 전체 게이트 통과 확인
+
+샌드박스 밖에서 원래 명령 `powershell .\scripts\check.ps1`을 실행해 종료 코드 0을 확인했다.
+R&R·테스트 경로·Ruff lint/format·전체 pytest가 모두 통과했다.
+결과는 **1078 passed, 4 skipped, 1 warning**(170.69초)이다.
+건너뜀은 기존 Terraform 도구/provider 및 선택적 검증 환경 조건에 따른 것이며,
+테스트 삭제나 실패 무시 옵션은 사용하지 않았다. 경고는 소켓 차단 스모크 테스트에서 발생했다.
+
+이전 Bash·PyPI 오류는 실행 샌드박스 제약으로 재확인했다. 제품 코드는 수정하지 않았다.
+`codex/` 브랜치에서 역할 자동 인식이 실패하는 로컬 설정은 Git에서 제외되는
+`.agent-role`에 `cloud-b`를 지정해 보완했다. 공통 검증 스크립트는 변경하지 않았다.
+최종 로그: 저장소 바깥 `verification-20261020.log`.
