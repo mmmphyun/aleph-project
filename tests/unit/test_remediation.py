@@ -3893,7 +3893,15 @@ def test_threat_orchestrator_handler_eventbridge_failure_does_not_rollback_remed
 
 
 def test_llm_worker_handler_pipeline_integration(sample_incident_report: IncidentReport) -> None:
-    """llm_worker가 Bedrock 분석 및 2차 Slack 전송으로 이어지는 통합 파이프라인 검증."""
+    """llm_worker가 Bedrock 분석 및 2차 Slack 전송으로 이어지는 통합 파이프라인 검증.
+
+    Why:
+        분석 함수 자체를 patch하지 않고 mock bedrock_client를 주입하여
+        프롬프트 빌더 -> Bedrock converse 호출 -> 파서 검증 -> 2차 Slack 전송 파이프라인의
+        실제 데이터 변환 및 결과 보강(llm_analyzed=True)을 끝까지 검증함.
+    """
+    from unittest.mock import MagicMock
+
     from remediation.llm_worker import llm_analysis_handler
 
     event = {
@@ -3902,29 +3910,44 @@ def test_llm_worker_handler_pipeline_integration(sample_incident_report: Inciden
         "detail-type": "ThreatRemediated",
         "source": "cloudshield.security",
         "time": "2026-10-21T01:00:00Z",
-        "detail": sample_incident_report.model_dump(),
+        "detail": sample_incident_report.model_dump()
+        | {
+            "raw_logs": [
+                "Oct 21 00:00:01 target-ec2 sshd[100]: Failed password for root from 198.51.100.50"
+            ]
+        },
     }
 
-    mock_bedrock_report = sample_incident_report.model_validate(
-        sample_incident_report.model_dump()
-        | {
-            "summary_ko": "Bedrock 심층 분석 요약 완료",
-            "recommendations": ("권고 1", "권고 2"),
-        }
+    # Bedrock Converse API 정상 JSON 응답 모의
+    llm_payload_json = json.dumps(
+        {
+            "summary_ko": "출발지 IP 198.51.100.50의 Bedrock 심층 침해사고 분석 완료.",
+            "recommendations": [
+                "침해 의심 IP의 1차 WAF/SG 차단 상태 지속 모니터링",
+                "타깃 서버의 SSH 공개키 인증 전면 강제 및 비밀번호 로그인 비활성화",
+            ],
+        },
+        ensure_ascii=False,
     )
 
-    with (
-        patch(
-            "remediation.llm_worker.analyze_incident_with_bedrock",
-            return_value=mock_bedrock_report,
-        ) as mock_analyze,
-        patch(
-            "remediation.llm_worker.send_deep_analysis_slack_alert",
-            return_value=True,
-        ) as mock_send_slack,
-    ):
+    mock_bedrock = MagicMock()
+    mock_bedrock.converse.return_value = {
+        "stopReason": "end_turn",
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": f"```json\n{llm_payload_json}\n```"}],
+            }
+        },
+    }
+
+    with patch(
+        "remediation.llm_worker.send_deep_analysis_slack_alert",
+        return_value=True,
+    ) as mock_send_slack:
         result = llm_analysis_handler(
             event=event,
+            bedrock_client=mock_bedrock,
             slack_webhook_url="https://hooks.slack.com/services/T00/B00/TEST_LLM_SLACK",
         )
 
@@ -3933,7 +3956,55 @@ def test_llm_worker_handler_pipeline_integration(sample_incident_report: Inciden
         assert result["llm_analyzed"] is True
         assert result["slack_notified"] is True
 
-        mock_analyze.assert_called_once()
+        mock_bedrock.converse.assert_called_once()
         mock_send_slack.assert_called_once()
         sent_report = mock_send_slack.call_args.kwargs["report"]
-        assert sent_report.summary_ko == "Bedrock 심층 분석 요약 완료"
+        assert "Bedrock 심층 침해사고 분석 완료" in sent_report.summary_ko
+        assert len(sent_report.recommendations) == 2
+
+
+def test_llm_worker_handler_bedrock_failure_fallback(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """Bedrock 통신 실패 또는 비정상 응답 시 원본 보고서 유지 및 llm_analyzed=False 검증."""
+    from unittest.mock import MagicMock
+
+    from botocore.exceptions import ClientError
+
+    from remediation.llm_worker import llm_analysis_handler
+
+    event = {
+        "version": "0",
+        "id": "fe942b08-32a2-4a0b-9ffb-34a1eb1d81a2",
+        "detail-type": "ThreatRemediated",
+        "source": "cloudshield.security",
+        "time": "2026-10-21T01:00:00Z",
+        "detail": sample_incident_report.model_dump(),
+    }
+
+    mock_bedrock = MagicMock()
+    mock_bedrock.converse.side_effect = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
+        "Converse",
+    )
+
+    with patch(
+        "remediation.llm_worker.send_deep_analysis_slack_alert",
+        return_value=True,
+    ) as mock_send_slack:
+        result = llm_analysis_handler(
+            event=event,
+            bedrock_client=mock_bedrock,
+            slack_webhook_url="https://hooks.slack.com/services/T00/B00/TEST_LLM_SLACK",
+        )
+
+        assert result["status"] == "accepted"
+        assert result["incident_id"] == sample_incident_report.incident_id
+        assert result["llm_analyzed"] is False
+        assert result["slack_notified"] is True
+
+        mock_bedrock.converse.assert_called_once()
+        mock_send_slack.assert_called_once()
+        sent_report = mock_send_slack.call_args.kwargs["report"]
+        # Fallback으로 원본 보고서가 유지되어야 함
+        assert sent_report.summary_ko == sample_incident_report.summary_ko
