@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import patch
 
@@ -3734,3 +3735,205 @@ def test_verify_waf_traffic_restored_deadline_enforcement() -> None:
         )
         is True
     )
+
+
+# ==============================================================================
+# 4. EventBridge 비동기 연동 및 LLM 분석 워커 결합 단위 테스트
+# ==============================================================================
+
+
+def test_emit_threat_resolved_event_success(sample_incident_report: IncidentReport) -> None:
+    """EventBridge PutEvents 정상 호출 및 스키마 규격 검증."""
+    from unittest.mock import MagicMock
+
+    from remediation.orchestrator import emit_threat_resolved_event
+
+    mock_client = MagicMock()
+    mock_client.put_events.return_value = {
+        "FailedEntryCount": 0,
+        "Entries": [{"EventId": "ev-123"}],
+    }
+
+    success = emit_threat_resolved_event(sample_incident_report, events_client=mock_client)
+    assert success is True
+    mock_client.put_events.assert_called_once()
+    call_entries = mock_client.put_events.call_args.kwargs["Entries"]
+    assert len(call_entries) == 1
+    assert call_entries[0]["Source"] == "cloudshield.security"
+    assert call_entries[0]["DetailType"] == "ThreatRemediated"
+    detail_data = json.loads(call_entries[0]["Detail"])
+    assert detail_data["incident_id"] == sample_incident_report.incident_id
+
+
+def test_emit_threat_resolved_event_failed_entry(sample_incident_report: IncidentReport) -> None:
+    """FailedEntryCount > 0 발생 시 False 반환 및 결함 격리 검증."""
+    from unittest.mock import MagicMock
+
+    from remediation.orchestrator import emit_threat_resolved_event
+
+    mock_client = MagicMock()
+    mock_client.put_events.return_value = {
+        "FailedEntryCount": 1,
+        "Entries": [{"ErrorCode": "InternalFailure", "ErrorMessage": "Test failure"}],
+    }
+
+    success = emit_threat_resolved_event(sample_incident_report, events_client=mock_client)
+    assert success is False
+
+
+def test_emit_threat_resolved_event_client_error(sample_incident_report: IncidentReport) -> None:
+    """EventBridge 통신 예외 발생 시 False 반환 및 상위 프로세스 격리 검증."""
+    from unittest.mock import MagicMock
+
+    from botocore.exceptions import ClientError
+
+    from remediation.orchestrator import emit_threat_resolved_event
+
+    mock_client = MagicMock()
+    mock_client.put_events.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "Denied"}},
+        "PutEvents",
+    )
+
+    success = emit_threat_resolved_event(sample_incident_report, events_client=mock_client)
+    assert success is False
+
+
+def test_threat_orchestrator_handler_emits_eventbridge_on_successful_remediation(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """위협 차단 성공 시 EventBridge PutEvents가 호출되는지 결합 검증."""
+    from unittest.mock import MagicMock
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+    mock_events = MagicMock()
+    mock_events.put_events.return_value = {"FailedEntryCount": 0, "Entries": [{"EventId": "ev-ok"}]}
+
+    attacker_ip = "198.51.100.199"
+    messages = [
+        (
+            f"Sep 04 15:01:0{i} target-ec2 sshd[2110{i}]: Failed password for "
+            f"admin from {attacker_ip} port 4120{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            events_client=mock_events,
+        )
+
+        assert res["processed_events"] == 5
+        assert len(res["remediation_results"]) == 1
+        assert res["remediation_results"][0]["quarantine_applied"] is True
+        mock_events.put_events.assert_called_once()
+        entry = mock_events.put_events.call_args.kwargs["Entries"][0]
+        assert entry["Source"] == "cloudshield.security"
+        assert entry["DetailType"] == "ThreatRemediated"
+
+
+def test_threat_orchestrator_handler_eventbridge_failure_does_not_rollback_remediation(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """EventBridge 통신 실패 시에도 1차 차단과 Slack 알림이 롤백되지 않고 유지됨을 검증."""
+    from unittest.mock import MagicMock
+
+    from botocore.exceptions import ClientError
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+    mock_events = MagicMock()
+    mock_events.put_events.side_effect = ClientError(
+        {"Error": {"Code": "InternalServerException", "Message": "Server error"}},
+        "PutEvents",
+    )
+
+    attacker_ip = "198.51.100.201"
+    messages = [
+        (
+            f"Sep 04 15:01:0{i} target-ec2 sshd[2110{i}]: Failed password for "
+            f"admin from {attacker_ip} port 4120{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            events_client=mock_events,
+            slack_webhook_url="https://hooks.slack.com/services/T00/B00/FAIL_EB",
+        )
+
+        assert res["processed_events"] == 5
+        assert res["remediation_results"][0]["quarantine_applied"] is True
+        assert res["remediation_results"][0]["waf_blocked"] is True
+        assert res["slack_notified"] is True
+
+
+def test_llm_worker_handler_pipeline_integration(sample_incident_report: IncidentReport) -> None:
+    """llm_worker가 Bedrock 분석 및 2차 Slack 전송으로 이어지는 통합 파이프라인 검증."""
+    from remediation.llm_worker import llm_analysis_handler
+
+    event = {
+        "version": "0",
+        "id": "fe942b08-32a2-4a0b-9ffb-34a1eb1d81a1",
+        "detail-type": "ThreatRemediated",
+        "source": "cloudshield.security",
+        "time": "2026-10-21T01:00:00Z",
+        "detail": sample_incident_report.model_dump(),
+    }
+
+    mock_bedrock_report = sample_incident_report.model_validate(
+        sample_incident_report.model_dump()
+        | {
+            "summary_ko": "Bedrock 심층 분석 요약 완료",
+            "recommendations": ("권고 1", "권고 2"),
+        }
+    )
+
+    with (
+        patch(
+            "remediation.llm_worker.analyze_incident_with_bedrock",
+            return_value=mock_bedrock_report,
+        ) as mock_analyze,
+        patch(
+            "remediation.llm_worker.send_deep_analysis_slack_alert",
+            return_value=True,
+        ) as mock_send_slack,
+    ):
+        result = llm_analysis_handler(
+            event=event,
+            slack_webhook_url="https://hooks.slack.com/services/T00/B00/TEST_LLM_SLACK",
+        )
+
+        assert result["status"] == "accepted"
+        assert result["incident_id"] == sample_incident_report.incident_id
+        assert result["llm_analyzed"] is True
+        assert result["slack_notified"] is True
+
+        mock_analyze.assert_called_once()
+        mock_send_slack.assert_called_once()
+        sent_report = mock_send_slack.call_args.kwargs["report"]
+        assert sent_report.summary_ko == "Bedrock 심층 분석 요약 완료"

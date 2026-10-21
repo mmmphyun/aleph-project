@@ -21,12 +21,16 @@ import os
 import time
 from typing import Any
 
+import boto3
+from botocore.config import Config
+
 from collector.cw_processor import LOG_GROUP_STREAM_MAPPING
 from contracts.events import (
     CloudWatchLogsPayload,
     NginxAccessLogEvent,
     SyslogAuthEvent,
 )
+from contracts.incident import IncidentReport
 from detection.incident_mapper import map_threat_to_incident
 from detection.rules import evaluate_web_rules
 from remediation.auth_window import AuthFailureWindow
@@ -66,6 +70,69 @@ def is_remediation_successful(action_required: str, result: RemediationResult) -
     return False
 
 
+def emit_threat_resolved_event(report: IncidentReport, events_client: Any = None) -> bool:
+    """위협 차단 완료 후 EventBridge로 비동기 사후 분석 이벤트를 발행.
+
+    Why:
+        10초 SLA를 갖는 실시간 긴급 차단(L4 SG / L7 WAF)과 수십 초가 소요되는
+        사후 LLM 심층 분석을 아키텍처 레벨에서 비동기 분리(Asynchronous Decoupling)하기 위함.
+        차단 완료 후 'ThreatRemediated' 이벤트를 발행하여 비동기 LLM 워커를 격리 구동함.
+
+    Constraints:
+        - Source: "cloudshield.security"
+        - DetailType: "ThreatRemediated"
+        - Detail: report.model_dump_json() (IncidentReport 표준 JSON 직렬화 규격)
+        - EventBridge SDK 호출 실패(ClientError, BotoCoreError, FailedEntryCount > 0 등) 시에도
+          이미 집행된 L4/L7 인프라 차단 트랜잭션을 절대 롤백하지 않고 False를 안전 반환함.
+
+    Side-effects / Edge-cases:
+        - events_client 미주입 시 짧은 타임아웃(연결 2초, 읽기 3초)의 기본 클라이언트를 생성함.
+        - 통신 실패 시 에러 로깅 후 False를 반환하여 메인 오케스트레이터의 정상 종료를 보장함.
+    """
+    if not isinstance(report, IncidentReport):
+        logger.error("유효하지 않은 IncidentReport 객체 인입: %s", type(report))
+        return False
+
+    client = events_client
+    if client is None:
+        client = boto3.client(
+            "events",
+            config=Config(
+                connect_timeout=2,
+                read_timeout=3,
+                retries={"mode": "standard", "total_max_attempts": 1},
+            ),
+        )
+
+    try:
+        entry = {
+            "Source": "cloudshield.security",
+            "DetailType": "ThreatRemediated",
+            "Detail": report.model_dump_json(),
+        }
+        res = client.put_events(Entries=[entry])
+        failed_count = res.get("FailedEntryCount", 0)
+        if failed_count > 0:
+            entries = res.get("Entries", [])
+            err_msg = entries[0].get("ErrorMessage", "Unknown error") if entries else "Unknown"
+            logger.error(
+                "EventBridge PutEvents 발행 실패 (FailedEntryCount=%d, error=%s)",
+                failed_count,
+                err_msg,
+            )
+            return False
+
+        logger.info(
+            "EventBridge ThreatRemediated 이벤트 발행 성공: incident_id=%s, source_ip=%s",
+            report.incident_id,
+            report.source_ip,
+        )
+        return True
+    except Exception as exc:
+        logger.error("EventBridge PutEvents 호출 중 예외 발생 격리 (차단 유지): %s", exc)
+        return False
+
+
 def threat_orchestrator_handler(
     event: dict[str, Any],
     context: Any = None,
@@ -74,6 +141,7 @@ def threat_orchestrator_handler(
     waf_client: Any = None,
     slack_webhook_url: str | None = None,
     web_window: WebAttackWindow | None = None,
+    events_client: Any = None,
 ) -> dict[str, Any]:
     """CloudWatch Logs 이벤트를 수신하여 위협 집계, 다중 계층 차단, Slack 전파를 수행하는 진입점.
 
@@ -288,6 +356,13 @@ def threat_orchestrator_handler(
                 logger.warning("SLACK_WEBHOOK_URL이 설정되지 않아 알림 발송을 생략합니다.")
             slack_notification_results.append(slack_success)
 
+            # 8. EventBridge 비동기 분석 이벤트 발행 (차단 성공 시에만 발행, 통신 실패 격리)
+            if is_remediation_successful(report.action_required, remediation_result):
+                try:
+                    emit_threat_resolved_event(report=report, events_client=events_client)
+                except Exception as exc:
+                    logger.error("Web L7 EventBridge 이벤트 발행 중 예외 발생 격리: %s", exc)
+
         if slack_notification_results:
             response["slack_notified"] = all(slack_notification_results)
         else:
@@ -401,6 +476,13 @@ def threat_orchestrator_handler(
         else:
             logger.warning("SLACK_WEBHOOK_URL이 설정되지 않아 알림 발송을 생략합니다.")
         slack_notification_results.append(slack_success)
+
+        # 8. EventBridge 비동기 분석 이벤트 발행 (차단 성공 시에만 발행, 통신 실패 격리)
+        if is_remediation_successful(report.action_required, remediation_result):
+            try:
+                emit_threat_resolved_event(report=report, events_client=events_client)
+            except Exception as exc:
+                logger.error("SSH EventBridge 이벤트 발행 중 예외 발생 격리: %s", exc)
 
     if slack_notification_results:
         response["slack_notified"] = all(slack_notification_results)
