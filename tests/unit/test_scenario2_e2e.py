@@ -321,3 +321,139 @@ def test_e2e_scenario2_idempotent_web_remediation_after_blocking(
         assert len(res["remediation_results"]) == 1
         assert res["remediation_results"][0]["waf_blocked"] is True
         mock_slack.assert_called_once()
+
+
+def test_e2e_scenario2_async_eventbridge_to_llm_worker_pipeline(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """[시나리오 2-E] Web 차단 -> EventBridge 발행 -> 2차 비동기 LLM 워커 E2E 파이프라인 검증.
+
+    Why:
+        Web L7 Path Traversal 차단 직후 1차 오케스트레이터가 EventBridge로
+        'ThreatRemediated' 이벤트를 발행하고, 사후 비동기 워커(llm_worker)가 해당 이벤트를
+        수신하여 Bedrock 심층 분석 및 2차 Slack 알림까지 완전한 비동기 디커플링으로 관통함을 검증함.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    from remediation.llm_worker import llm_analysis_handler
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    web_window = WebAttackWindow()
+
+    attacker_ip = "198.51.100.229"
+    instance_id = mocked_ec2_target.instance_id
+    webhook_url = "https://hooks.slack.com/services/T000/B000/E2E_WEB_ASYNC_PIPELINE"
+
+    # 1. Path Traversal 공격 로그 생성
+    messages = [
+        (
+            f"{attacker_ip} - - [28/Sep/2026:11:52:00 +0000] "
+            '"GET /../../etc/passwd HTTP/1.1" 404 150 "-" "curl/8.0" 0.005 "-"'
+        )
+    ]
+    event = _create_cw_nginx_payload(messages, instance_id=instance_id)
+
+    # 2. EventBridge 클라이언트 모의
+    mock_events = MagicMock()
+    mock_events.put_events.return_value = {
+        "FailedEntryCount": 0,
+        "Entries": [{"EventId": "evt-s2-async-001"}],
+    }
+
+    # 3. 1차 오케스트레이터 실행 (L7 WAF 차단 + 1차 Slack + EventBridge 발행)
+    with patch(
+        "remediation.orchestrator.send_slack_alert", return_value=True
+    ) as mock_primary_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            web_window=web_window,
+            slack_webhook_url=webhook_url,
+            events_client=mock_events,
+        )
+
+        assert res["processed_events"] == 1
+        assert "PATH_TRAVERSAL" in res["threats_detected"]
+        assert res["remediation_results"][0]["waf_blocked"] is True
+        assert res["slack_notified"] is True
+        mock_primary_slack.assert_called_once()
+
+        # WAF IP 차단 및 EventBridge 발행 확인
+        desc_waf = waf_client.get_ip_set(
+            Name=mocked_waf_ipset.ipset_name,
+            Scope=mocked_waf_ipset.scope,
+            Id=mocked_waf_ipset.ipset_id,
+        )
+        assert f"{attacker_ip}/32" in desc_waf["IPSet"]["Addresses"]
+
+        mock_events.put_events.assert_called_once()
+        entry = mock_events.put_events.call_args.kwargs["Entries"][0]
+        assert entry["Source"] == "cloudshield.security"
+        assert entry["DetailType"] == "ThreatRemediated"
+
+    # 4. 발행된 이벤트를 2차 LLM 분석 워커에 전달 (EventBridge -> Lambda 트리거 시뮬레이션)
+    detail_data = json.loads(entry["Detail"])
+    # [검증]: 실제 발행 payload에 raw_logs가 포함되어 전달되었는지 확인
+    assert "raw_logs" in detail_data
+    assert len(detail_data["raw_logs"]) == 1
+
+    # 발행 payload 그대로 워커 event 구성 (임의 주입 배제)
+    worker_event = {
+        "version": "0",
+        "id": "evt-s2-async-001",
+        "detail-type": entry["DetailType"],
+        "source": entry["Source"],
+        "account": "123456789012",
+        "time": "2026-10-22T06:30:00Z",
+        "region": "ap-southeast-2",
+        "resources": [],
+        "detail": detail_data,
+    }
+
+    mock_bedrock = MagicMock()
+    summary_text = f"출발지 {attacker_ip}의 웹 경로 조작(Path Traversal) 공격 심층 분석 보고서."
+    llm_payload_json = json.dumps(
+        {
+            "summary_ko": summary_text,
+            "recommendations": [
+                "AWS WAFv2 Core Rule Set(CRS) 활성화 및 URI 검증 규칙 강화",
+                "Nginx 설정에서 정적 파일 및 민감 시스템 경로 접근 차단 디렉티브 보강",
+            ],
+        },
+        ensure_ascii=False,
+    )
+    mock_bedrock.converse.return_value = {
+        "stopReason": "end_turn",
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": f"```json\n{llm_payload_json}\n```"}],
+            }
+        },
+    }
+
+    with patch(
+        "remediation.llm_worker.send_deep_analysis_slack_alert",
+        return_value=True,
+    ) as mock_secondary_slack:
+        worker_res = llm_analysis_handler(
+            event=worker_event,
+            bedrock_client=mock_bedrock,
+            slack_webhook_url=webhook_url,
+        )
+
+        assert worker_res["status"] == "accepted"
+        assert worker_res["incident_id"] == detail_data["incident_id"]
+        assert worker_res["llm_analyzed"] is True
+        assert worker_res["slack_notified"] is True
+
+        mock_bedrock.converse.assert_called_once()
+        mock_secondary_slack.assert_called_once()
+        sent_report = mock_secondary_slack.call_args.kwargs["report"]
+        assert "웹 경로 조작(Path Traversal) 공격 심층 분석 보고서" in sent_report.summary_ko
+        assert len(sent_report.recommendations) == 2

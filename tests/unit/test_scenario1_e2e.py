@@ -499,3 +499,136 @@ def test_e2e_scenario1_slack_failure_fault_isolation(
         # DynamoDB 격리 완료 플래그 마킹 유지 확인
         threat_check = auth_window.check_threat(attacker_ip, target_user)
         assert threat_check.is_threat is False
+
+
+def test_e2e_scenario1_async_eventbridge_to_llm_worker_pipeline(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """[시나리오 1-F] 1차 차단 -> EventBridge 발행 -> 2차 비동기 LLM 워커 E2E 파이프라인 검증.
+
+    Why:
+        SSH Brute Force 차단 성공 직후 1차 오케스트레이터가 EventBridge로
+        'ThreatRemediated' 이벤트를 발행하고, 사후 비동기 워커(llm_worker)가 해당 이벤트를
+        수신하여 Bedrock 심층 분석 및 2차 Slack 알림까지 완전한 비동기 디커플링으로 관통함을 검증함.
+    """
+    from unittest.mock import MagicMock
+
+    from remediation.llm_worker import llm_analysis_handler
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    attacker_ip = "198.51.100.99"
+    target_user = "root"
+    instance_id = mocked_ec2_target.instance_id
+    webhook_url = "https://hooks.slack.com/services/T000/B000/E2E_ASYNC_PIPELINE"
+
+    # 1. 5회 연속 실패 로그 생성 (Brute Force 임계치 도달)
+    messages = [
+        (
+            f"Sep 04 15:40:0{i} target-server sshd[600{i}]: Failed password for "
+            f"{target_user} from {attacker_ip} port 950{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _create_cw_auth_payload(messages, instance_id=instance_id)
+
+    # 2. EventBridge 클라이언트 모의
+    mock_events = MagicMock()
+    mock_events.put_events.return_value = {
+        "FailedEntryCount": 0,
+        "Entries": [{"EventId": "evt-s1-async-001"}],
+    }
+
+    # 3. 1차 오케스트레이터 실행 (차단 + 1차 Slack + EventBridge 발행)
+    with patch(
+        "remediation.orchestrator.send_slack_alert", return_value=True
+    ) as mock_primary_slack:
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            slack_webhook_url=webhook_url,
+            events_client=mock_events,
+        )
+
+        assert res["processed_events"] == 5
+        assert res["threats_detected"] == ["SSH_BRUTE_FORCE"]
+        assert res["remediation_results"][0]["quarantine_applied"] is True
+        assert res["remediation_results"][0]["waf_blocked"] is True
+        assert res["slack_notified"] is True
+        mock_primary_slack.assert_called_once()
+
+        # EventBridge 발행 확인
+        mock_events.put_events.assert_called_once()
+        entry = mock_events.put_events.call_args.kwargs["Entries"][0]
+        assert entry["Source"] == "cloudshield.security"
+        assert entry["DetailType"] == "ThreatRemediated"
+
+    # 4. 발행된 이벤트를 2차 LLM 분석 워커에 전달 (EventBridge -> Lambda 트리거 시뮬레이션)
+    detail_data = json.loads(entry["Detail"])
+    # [검증]: 실제 발행 payload에 raw_logs가 포함되어 전달되었는지 확인
+    assert "raw_logs" in detail_data
+    assert len(detail_data["raw_logs"]) == 5
+
+    # 발행 payload 그대로 워커 event 구성 (임의 주입 배제)
+    worker_event = {
+        "version": "0",
+        "id": "evt-s1-async-001",
+        "detail-type": entry["DetailType"],
+        "source": entry["Source"],
+        "account": "123456789012",
+        "time": "2026-10-22T06:30:00Z",
+        "region": "ap-southeast-2",
+        "resources": [],
+        "detail": detail_data,
+    }
+
+    mock_bedrock = MagicMock()
+    llm_payload_json = json.dumps(
+        {
+            "summary_ko": f"출발지 {attacker_ip}의 SSH 무차별 대입 공격에 대한 심층 분석 보고서.",
+            "recommendations": [
+                "L4 SG 격리 및 L7 WAF 차단 상태 유지",
+                "타깃 인스턴스의 SSH 포트 외부 노출 차단 및 SSM Session Manager 전환",
+            ],
+        },
+        ensure_ascii=False,
+    )
+    mock_bedrock.converse.return_value = {
+        "stopReason": "end_turn",
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": f"```json\n{llm_payload_json}\n```"}],
+            }
+        },
+    }
+
+    with patch(
+        "remediation.llm_worker.send_deep_analysis_slack_alert",
+        return_value=True,
+    ) as mock_secondary_slack:
+        worker_res = llm_analysis_handler(
+            event=worker_event,
+            bedrock_client=mock_bedrock,
+            slack_webhook_url=webhook_url,
+        )
+
+        assert worker_res["status"] == "accepted"
+        assert worker_res["incident_id"] == detail_data["incident_id"]
+        assert worker_res["llm_analyzed"] is True
+        assert worker_res["slack_notified"] is True
+
+        mock_bedrock.converse.assert_called_once()
+        mock_secondary_slack.assert_called_once()
+        sent_report = mock_secondary_slack.call_args.kwargs["report"]
+        assert "SSH 무차별 대입 공격에 대한 심층 분석 보고서" in sent_report.summary_ko
+        assert len(sent_report.recommendations) == 2
