@@ -9,12 +9,17 @@ import logging
 import re
 from collections.abc import Iterator
 from typing import Any
+from unittest.mock import Mock
 
+import boto3
 import pytest
+from botocore.exceptions import ClientError, NoCredentialsError, ReadTimeoutError
+from botocore.stub import Stubber
 
 from contracts.incident import IncidentReport
 from detection.llm_deep_analyzer import (
     MAX_BASE_REPORT_BYTES,
+    MAX_BEDROCK_CONTENT_BLOCKS,
     MAX_LLM_RESPONSE_BYTES,
     MAX_LOG_BYTES,
     MAX_LOG_LINE_CHARS,
@@ -23,6 +28,7 @@ from detection.llm_deep_analyzer import (
     MAX_RECOMMENDATION_CHARS,
     MAX_RECOMMENDATIONS,
     MAX_SUMMARY_CHARS,
+    analyze_incident_with_bedrock,
     build_bedrock_analysis_prompt,
     parse_bedrock_response_to_incident,
 )
@@ -478,3 +484,399 @@ def test_parser_does_not_log_untrusted_payload_or_base_report_contents(
         assert all(sample_incident_report.summary_ko not in message for message in warnings)
         messages.extend(warnings)
     assert len(set(messages)) == 1
+
+
+def _converse_response(text: str | None = None, **changes: Any) -> dict[str, Any]:
+    return {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": _analysis_json() if text is None else text}],
+            }
+        },
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        "metrics": {"latencyMs": 1},
+        **changes,
+    }
+
+
+def _converse_client(response: Any) -> Mock:
+    client = Mock(spec=["converse", "close"])
+    client.converse.return_value = response
+    return client
+
+
+def test_bedrock_adapter_uses_the_official_converse_schema_and_preserves_decisions(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """Stubber가 SDK 입출력 계약을 검사하고 보호 필드는 외부 응답으로 변경되지 않는다."""
+    original = sample_incident_report.model_dump(mode="json")
+    logs = ["sshd: Failed password for root from 198.51.100.50 port 50000 ssh2"]
+    response = _converse_response(
+        _analysis_json(
+            incident_id="MODEL-OVERRIDE",
+            source_ip="127.0.0.1",
+            action_required="NONE",
+            risk_level="LOW",
+            target_accounts=["attacker"],
+        )
+    )
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name="ap-northeast-2",
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+        aws_session_token="testing",
+    )
+    try:
+        with Stubber(client) as stubber:
+            stubber.add_response(
+                "converse",
+                response,
+                {
+                    "modelId": "apac.amazon.nova-micro-v1:0",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "text": build_bedrock_analysis_prompt(
+                                        sample_incident_report, logs
+                                    )
+                                }
+                            ],
+                        }
+                    ],
+                    "inferenceConfig": {"maxTokens": 2048, "temperature": 0},
+                },
+            )
+            result = analyze_incident_with_bedrock(
+                sample_incident_report, logs, bedrock_client=client
+            )
+            stubber.assert_no_pending_responses()
+    finally:
+        client.close()
+
+    protected = set(IncidentReport.model_fields) - {"summary_ko", "recommendations"}
+    assert result is not sample_incident_report
+    assert result.model_dump(include=protected) == sample_incident_report.model_dump(
+        include=protected
+    )
+    assert result.summary_ko == json.loads(_analysis_json())["summary_ko"]
+    assert result.recommendations == tuple(json.loads(_analysis_json())["recommendations"])
+    assert sample_incident_report.model_dump(mode="json") == original
+    assert logs == ["sshd: Failed password for root from 198.51.100.50 port 50000 ssh2"]
+
+
+def test_bedrock_adapter_creates_a_bounded_client_per_call_and_closes_it(
+    sample_incident_report: IncidentReport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clients = [_converse_client(_converse_response()), _converse_client(_converse_response())]
+    factory = Mock(side_effect=clients)
+    monkeypatch.setattr(boto3, "client", factory)
+
+    for _ in range(2):
+        assert analyze_incident_with_bedrock(sample_incident_report, []) is not (
+            sample_incident_report
+        )
+
+    assert factory.call_count == 2
+    for call in factory.call_args_list:
+        assert call.args == ("bedrock-runtime",)
+        config = call.kwargs["config"]
+        assert config.connect_timeout == 2
+        assert config.read_timeout == 20
+        assert config.retries == {"mode": "standard", "total_max_attempts": 1}
+    for client in clients:
+        client.converse.assert_called_once()
+        client.close.assert_called_once_with()
+
+
+def test_bedrock_adapter_keeps_injected_client_open_and_accepts_a_model_override(
+    sample_incident_report: IncidentReport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = Mock(side_effect=AssertionError("주입된 경로는 SDK 클라이언트를 생성하지 않는다"))
+    monkeypatch.setattr(boto3, "client", factory)
+    client = _converse_client(_converse_response())
+
+    result = analyze_incident_with_bedrock(
+        sample_incident_report, [], bedrock_client=client, model_id="test.inference-profile"
+    )
+
+    assert result is not sample_incident_report
+    assert client.converse.call_args.kwargs["modelId"] == "test.inference-profile"
+    factory.assert_not_called()
+    client.close.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        [],
+        {},
+        _converse_response(stopReason="max_tokens"),
+        _converse_response(stopReason="tool_use"),
+        _converse_response(stopReason="guardrail_intervened"),
+        _converse_response(stopReason=None),
+        _converse_response(output=[]),
+        _converse_response(output={"message": None}),
+        _converse_response(output={"message": {"role": "user", "content": [{"text": "{}"}]}}),
+        _converse_response(output={"message": {"role": "assistant", "content": []}}),
+        _converse_response(output={"message": {"role": "assistant", "content": [{"text": 7}]}}),
+        _converse_response(output={"message": {"role": "assistant", "content": [{"text": " "}]}}),
+        _converse_response(output={"message": {"role": "assistant", "content": ({"text": "{}"},)}}),
+        _converse_response(
+            output={
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": _analysis_json(), "toolUse": {}}],
+                }
+            }
+        ),
+        _converse_response(
+            output={
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": _analysis_json()}, {"toolUse": {}}],
+                }
+            }
+        ),
+        _converse_response(
+            output={
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": "x"}] * (MAX_BEDROCK_CONTENT_BLOCKS + 1),
+                }
+            }
+        ),
+        _converse_response("모델이 JSON 대신 설명만 반환했습니다."),
+        _converse_response('{"summary_ko":"미완성",'),
+        _converse_response("\ud800"),
+    ],
+)
+def test_bedrock_adapter_rejects_incomplete_or_ambiguous_output_without_changing_the_report(
+    sample_incident_report: IncidentReport, response: Any
+) -> None:
+    client = _converse_client(response)
+    before = sample_incident_report.model_dump(mode="json")
+
+    assert (
+        analyze_incident_with_bedrock(sample_incident_report, [], bedrock_client=client)
+        is sample_incident_report
+    )
+
+    assert sample_incident_report.model_dump(mode="json") == before
+    client.converse.assert_called_once()
+    client.close.assert_not_called()
+
+
+def test_bedrock_adapter_joins_text_blocks_in_order_and_enforces_the_total_utf8_limit(
+    sample_incident_report: IncidentReport,
+) -> None:
+    text = _analysis_json()
+    padded = text + " " * (MAX_LLM_RESPONSE_BYTES - len(text.encode("utf-8")))
+
+    for suffix, accepted in [("", True), ("가", False)]:
+        response = _converse_response(
+            output={
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": padded[:12]}, {"text": padded[12:] + suffix}],
+                }
+            }
+        )
+        client = _converse_client(response)
+        result = analyze_incident_with_bedrock(sample_incident_report, [], bedrock_client=client)
+        assert (result is not sample_incident_report) is accepted
+        if accepted:
+            assert result.summary_ko == json.loads(text)["summary_ko"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError("PRIVATE-SDK-DETAIL"),
+        NoCredentialsError(),
+        ReadTimeoutError(endpoint_url="https://PRIVATE-SDK-DETAIL.invalid"),
+        ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "PRIVATE-SDK-DETAIL"}},
+            "Converse",
+        ),
+        ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "PRIVATE-SDK-DETAIL"}},
+            "Converse",
+        ),
+        ClientError(
+            {"Error": {"Code": "ModelTimeoutException", "Message": "PRIVATE-SDK-DETAIL"}},
+            "Converse",
+        ),
+    ],
+)
+def test_bedrock_adapter_falls_back_once_for_sdk_failures_without_exposing_evidence(
+    sample_incident_report: IncidentReport,
+    error: Exception,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _converse_client(None)
+    client.converse.side_effect = error
+    with caplog.at_level(logging.WARNING):
+        result = analyze_incident_with_bedrock(
+            sample_incident_report, ["PRIVATE-RAW-LOG"], bedrock_client=client
+        )
+
+    assert result is sample_incident_report
+    client.converse.assert_called_once()
+    client.close.assert_not_called()
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is None
+    assert not any(
+        value in warnings[0].getMessage()
+        for value in (
+            "PRIVATE-SDK-DETAIL",
+            "PRIVATE-RAW-LOG",
+            sample_incident_report.incident_id,
+            sample_incident_report.source_ip,
+            sample_incident_report.summary_ko,
+        )
+    )
+
+
+@pytest.mark.parametrize("error", [NoCredentialsError(), TimeoutError("PRIVATE-SDK-DETAIL")])
+def test_bedrock_adapter_handles_sdk_client_creation_failures(
+    sample_incident_report: IncidentReport,
+    error: Exception,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    factory = Mock(side_effect=error)
+    monkeypatch.setattr(boto3, "client", factory)
+    with caplog.at_level(logging.WARNING):
+        assert analyze_incident_with_bedrock(sample_incident_report, []) is sample_incident_report
+
+    factory.assert_called_once()
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is None
+    assert "PRIVATE-SDK-DETAIL" not in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "invalid_response", "sdk_error", "unexpected_error"]
+)
+def test_bedrock_adapter_always_closes_its_owned_client(
+    sample_incident_report: IncidentReport, outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _converse_client(_converse_response() if outcome == "success" else None)
+    if outcome == "sdk_error":
+        client.converse.side_effect = NoCredentialsError()
+    elif outcome == "unexpected_error":
+        client.converse.side_effect = RuntimeError("플랫폼 장애")
+    monkeypatch.setattr(boto3, "client", Mock(return_value=client))
+
+    if outcome == "unexpected_error":
+        with pytest.raises(RuntimeError, match="플랫폼 장애"):
+            analyze_incident_with_bedrock(sample_incident_report, [])
+    else:
+        result = analyze_incident_with_bedrock(sample_incident_report, [])
+        assert (result is not sample_incident_report) is (outcome == "success")
+
+    client.close.assert_called_once_with()
+
+
+def test_bedrock_adapter_does_not_discard_valid_analysis_when_sdk_cleanup_fails(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _converse_client(_converse_response())
+    client.close.side_effect = ReadTimeoutError(endpoint_url="https://PRIVATE-CLEANUP.invalid")
+    monkeypatch.setattr(boto3, "client", Mock(return_value=client))
+
+    with caplog.at_level(logging.WARNING):
+        result = analyze_incident_with_bedrock(sample_incident_report, [])
+
+    assert result is not sample_incident_report
+    assert "PRIVATE-CLEANUP" not in caplog.text
+    assert any(record.levelno >= logging.WARNING for record in caplog.records)
+    client.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("changes", "exception"),
+    [
+        ({"report": None}, TypeError),
+        ({"raw_logs": ()}, TypeError),
+        ({"raw_logs": [123]}, TypeError),
+        ({"raw_logs": ["\ud800"]}, UnicodeError),
+        ({"model_id": None}, TypeError),
+        ({"model_id": 123}, TypeError),
+        ({"model_id": ""}, ValueError),
+        ({"model_id": " \t"}, ValueError),
+    ],
+)
+def test_bedrock_adapter_propagates_bad_inputs_before_creating_or_calling_a_client(
+    sample_incident_report: IncidentReport,
+    changes: dict[str, Any],
+    exception: type[Exception],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = Mock(side_effect=AssertionError("잘못된 입력은 SDK 호출 전에 거부한다"))
+    monkeypatch.setattr(boto3, "client", factory)
+    with pytest.raises(exception):
+        analyze_incident_with_bedrock(
+            **{"report": sample_incident_report, "raw_logs": [], **changes}
+        )
+    factory.assert_not_called()
+
+
+def test_bedrock_adapter_propagates_oversized_base_reports_before_any_request(
+    sample_incident_report: IncidentReport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = IncidentReport.model_validate(
+        sample_incident_report.model_dump() | {"summary_ko": "a" * MAX_BASE_REPORT_BYTES}
+    )
+    factory = Mock(side_effect=AssertionError("과도한 보고서는 SDK 호출 전에 거부한다"))
+    monkeypatch.setattr(boto3, "client", factory)
+    with pytest.raises(ValueError):
+        analyze_incident_with_bedrock(report, [])
+    factory.assert_not_called()
+
+
+def test_bedrock_adapter_does_not_swallow_unexpected_client_creation_errors(
+    sample_incident_report: IncidentReport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(boto3, "client", Mock(side_effect=RuntimeError("플랫폼 생성 장애")))
+    with pytest.raises(RuntimeError, match="플랫폼 생성 장애"):
+        analyze_incident_with_bedrock(sample_incident_report, [])
+
+
+def test_bedrock_adapter_does_not_reuse_previous_incident_or_response_state(
+    sample_incident_report: IncidentReport,
+) -> None:
+    later_report = IncidentReport.model_validate(
+        sample_incident_report.model_dump()
+        | {"incident_id": "INC-SECOND", "source_ip": "192.0.2.30"}
+    )
+    client = _converse_client(None)
+    client.converse.side_effect = [_converse_response(), _converse_response("잘못된 응답")]
+    first_result = analyze_incident_with_bedrock(
+        sample_incident_report, ["FIRST-INCIDENT-LOG"], bedrock_client=client
+    )
+    second_result = analyze_incident_with_bedrock(
+        later_report, ["SECOND-INCIDENT-LOG"], bedrock_client=client
+    )
+
+    assert first_result is not sample_incident_report
+    assert second_result is later_report
+    prompts = [
+        call.kwargs["messages"][0]["content"][0]["text"] for call in client.converse.call_args_list
+    ]
+    assert _prompt_log_lines(prompts[0]) == ["FIRST-INCIDENT-LOG"]
+    assert _prompt_log_lines(prompts[1]) == ["SECOND-INCIDENT-LOG"]
+    assert "FIRST-INCIDENT-LOG" not in prompts[1]
+    assert sample_incident_report.summary_ko != first_result.summary_ko
+    assert client.converse.call_count == 2
+    client.close.assert_not_called()

@@ -1,8 +1,8 @@
-"""실시간 대응과 분리된 사후 분석 프롬프트 및 보강 응답 검증기.
+"""실시간 대응과 분리된 사후 분석 프롬프트·Bedrock 어댑터·응답 검증기.
 
 Why: LLM의 비결정적 설명을 활용하면서 기존 매퍼의 차단 판단과 사고 식별자를 보존한다.
-Constraints: 외부 호출·공유 상태·저장을 만들지 않으며 입력과 출력에 유한 상한을 적용한다.
-Side-effects: 응답 검증 실패는 내용 없는 경고와 원본 보고서 반환으로 격리한다.
+Constraints: 호출 간 공유 상태·저장을 만들지 않으며 입력·출력과 SDK 시도를 제한한다.
+Side-effects: 어댑터만 Bedrock을 호출하며 예상 호출 장애·응답 오류는 고정 경고와 원본으로 격리한다.
 """
 
 from __future__ import annotations
@@ -12,6 +12,9 @@ import logging
 import re
 from typing import Any
 
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import ValidationError
 
 from contracts.incident import IncidentReport
@@ -29,6 +32,11 @@ MAX_PREAMBLE_CHARS = 1024
 MAX_SUMMARY_CHARS = 2000
 MAX_RECOMMENDATIONS = 10
 MAX_RECOMMENDATION_CHARS = 500
+DEFAULT_BEDROCK_MODEL_ID = "apac.amazon.nova-micro-v1:0"
+BEDROCK_CONNECT_TIMEOUT_SECONDS = 2
+BEDROCK_READ_TIMEOUT_SECONDS = 20
+BEDROCK_MAX_OUTPUT_TOKENS = 2048
+MAX_BEDROCK_CONTENT_BLOCKS = 32
 
 # 중첩 JSON을 정규식으로 해석하지 않는다. 이 패턴은 고정 fence 헤더만 O(n)에 식별하며,
 # 중괄호·문자열 이스케이프 및 문서 종료 검증은 표준 JSON 파서 한 번에 위임한다.
@@ -269,3 +277,85 @@ def parse_bedrock_response_to_incident(
     except (ValueError, TypeError, KeyError, RecursionError, ValidationError):
         logger.warning("LLM 사후 분석 응답 검증 실패로 원본 보고서를 유지합니다.")
         return base_report
+
+
+def _converse_response_text(response: Any) -> str:
+    """완료된 assistant 텍스트만 결합해 도구 실행·중단 응답의 부분 수용을 막는다.
+
+    Constraints: 최대 32개의 text 전용 블록, UTF-8 합계 32KiB. 서버 메타데이터는 보강에 쓰지 않는다.
+    Side-effects: SDK 응답 모양·종료 사유·용량 오류는 내용 없는 ValueError로 호출부에 알린다.
+    """
+    if not isinstance(response, dict) or response.get("stopReason") != "end_turn":
+        raise ValueError("분석이 정상 종료되지 않았습니다.")
+    output = response.get("output")
+    message = output.get("message") if isinstance(output, dict) else None
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        raise ValueError("분석 응답 메시지가 아닙니다.")
+    content = message.get("content")
+    if not isinstance(content, list) or not 1 <= len(content) <= MAX_BEDROCK_CONTENT_BLOCKS:
+        raise ValueError("분석 응답 블록 수가 유효하지 않습니다.")
+    parts: list[str] = []
+    response_bytes = 0
+    for block in content:
+        if not isinstance(block, dict) or block.keys() != {"text"}:
+            raise ValueError("분석 응답은 텍스트만 허용합니다.")
+        text = _validate_text(block["text"], MAX_LLM_RESPONSE_BYTES)
+        response_bytes += len(text.encode("utf-8"))
+        if response_bytes > MAX_LLM_RESPONSE_BYTES:
+            raise ValueError("분석 응답은 32KiB를 초과할 수 없습니다.")
+        parts.append(text)
+    return "".join(parts)
+
+
+def analyze_incident_with_bedrock(
+    report: IncidentReport,
+    raw_logs: list[str],
+    bedrock_client: Any = None,
+    model_id: str = DEFAULT_BEDROCK_MODEL_ID,
+) -> IncidentReport:
+    """결정론적 보고서를 기준으로 Bedrock 사후 설명을 요청하고 실패 시 원본을 보존한다.
+
+    Why: 선택적 LLM 분석 장애가 기존 차단 판단과 사고 보고서 전달을 중단시키면 안 된다.
+    Constraints: 기존 프롬프트·파서를 재사용하고 Converse 1회·출력 2048토큰으로 제한한다.
+        기본 SDK 연결/읽기는 2/20초, 총 시도 1회다. 이는 함수 전체의 절대 마감이 아니며
+        주입 클라이언트의 타임아웃·재시도 설정은 호출부 책임이다. 입력 오류는 호출 전 전파한다.
+    Side-effects: 기본 클라이언트를 지연 생성하고 직접 만든 클라이언트만 닫는다.
+        SDK·타임아웃·응답 오류는 내용 없는 경고와 동일 report 반환으로 격리한다.
+        예상 밖 프로그래밍 오류는 전파하며 플랫폼 저장소·차단 엔진 예외 정책은 변경하지 않는다.
+    """
+    if not isinstance(model_id, str):
+        raise TypeError("모델 식별자는 문자열이어야 합니다.")
+    if not model_id.strip():
+        raise ValueError("모델 식별자는 비어 있을 수 없습니다.")
+    prompt = build_bedrock_analysis_prompt(report, raw_logs)
+    owns_client = bedrock_client is None
+    try:
+        if owns_client:
+            bedrock_client = boto3.client(
+                "bedrock-runtime",
+                config=Config(
+                    connect_timeout=BEDROCK_CONNECT_TIMEOUT_SECONDS,
+                    read_timeout=BEDROCK_READ_TIMEOUT_SECONDS,
+                    retries={"mode": "standard", "total_max_attempts": 1},
+                ),
+            )
+        response = bedrock_client.converse(
+            modelId=model_id,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": BEDROCK_MAX_OUTPUT_TOKENS, "temperature": 0},
+        )
+    except (BotoCoreError, ClientError, TimeoutError):
+        logger.warning("LLM 사후 분석 호출 실패로 원본 보고서를 유지합니다.")
+        return report
+    finally:
+        if owns_client and bedrock_client is not None:
+            try:
+                bedrock_client.close()
+            except (BotoCoreError, ClientError, TimeoutError):
+                logger.warning("LLM 사후 분석 클라이언트 정리에 실패했습니다.")
+    try:
+        text = _converse_response_text(response)
+    except ValueError:
+        logger.warning("LLM 사후 분석 응답 형식 오류로 원본 보고서를 유지합니다.")
+        return report
+    return parse_bedrock_response_to_incident(text, report)
