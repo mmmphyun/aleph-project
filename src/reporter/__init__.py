@@ -9,6 +9,7 @@ from reporter.slack_notifier import (
     build_slack_payload,
     build_waf_slack_payload,
     escape_slack_text,
+    send_llm_slack_alert,
     send_slack_alert,
     truncate_text,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "build_slack_payload",
     "build_waf_slack_payload",
     "escape_slack_text",
+    "send_llm_slack_alert",
     "send_slack_alert",
     "truncate_text",
 ]
