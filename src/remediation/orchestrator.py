@@ -70,7 +70,11 @@ def is_remediation_successful(action_required: str, result: RemediationResult) -
     return False
 
 
-def emit_threat_resolved_event(report: IncidentReport, events_client: Any = None) -> bool:
+def emit_threat_resolved_event(
+    report: IncidentReport,
+    events_client: Any = None,
+    raw_logs: list[str] | None = None,
+) -> bool:
     """위협 차단 완료 후 EventBridge로 비동기 사후 분석 이벤트를 발행.
 
     Why:
@@ -81,7 +85,7 @@ def emit_threat_resolved_event(report: IncidentReport, events_client: Any = None
     Constraints:
         - Source: "cloudshield.security"
         - DetailType: "ThreatRemediated"
-        - Detail: report.model_dump_json() (IncidentReport 표준 JSON 직렬화 규격)
+        - Detail: report.model_dump() 기반 딕셔너리에 raw_logs를 포함한 JSON 직렬화 규격.
         - EventBridge SDK 호출 실패(ClientError, BotoCoreError, FailedEntryCount > 0 등) 시에도
           이미 집행된 L4/L7 인프라 차단 트랜잭션을 절대 롤백하지 않고 False를 안전 반환함.
 
@@ -105,10 +109,16 @@ def emit_threat_resolved_event(report: IncidentReport, events_client: Any = None
         )
 
     try:
+        import json
+
+        detail_dict: dict[str, Any] = report.model_dump()
+        if raw_logs is not None:
+            detail_dict["raw_logs"] = list(raw_logs)
+
         entry = {
             "Source": "cloudshield.security",
             "DetailType": "ThreatRemediated",
-            "Detail": report.model_dump_json(),
+            "Detail": json.dumps(detail_dict, ensure_ascii=False),
         }
         res = client.put_events(Entries=[entry])
         failed_count = res.get("FailedEntryCount", 0)
@@ -359,7 +369,15 @@ def threat_orchestrator_handler(
             # 8. EventBridge 비동기 분석 이벤트 발행 (차단 성공 시에만 발행, 통신 실패 격리)
             if is_remediation_successful(report.action_required, remediation_result):
                 try:
-                    emit_threat_resolved_event(report=report, events_client=events_client)
+                    # 사후 LLM 심층 분석을 위해 현재 배치에서 수집된 관련 로그 추출
+                    relevant_raw_logs = [
+                        ev.message for ev in payload.logEvents if source_ip in ev.message
+                    ]
+                    emit_threat_resolved_event(
+                        report=report,
+                        events_client=events_client,
+                        raw_logs=relevant_raw_logs,
+                    )
                 except Exception as exc:
                     logger.error("Web L7 EventBridge 이벤트 발행 중 예외 발생 격리: %s", exc)
 
@@ -480,7 +498,15 @@ def threat_orchestrator_handler(
         # 8. EventBridge 비동기 분석 이벤트 발행 (차단 성공 시에만 발행, 통신 실패 격리)
         if is_remediation_successful(report.action_required, remediation_result):
             try:
-                emit_threat_resolved_event(report=report, events_client=events_client)
+                # 사후 LLM 심층 분석을 위해 현재 배치에서 수집된 관련 로그 추출
+                relevant_raw_logs = [
+                    ev.message for ev in payload.logEvents if source_ip in ev.message
+                ]
+                emit_threat_resolved_event(
+                    report=report,
+                    events_client=events_client,
+                    raw_logs=relevant_raw_logs,
+                )
             except Exception as exc:
                 logger.error("SSH EventBridge 이벤트 발행 중 예외 발생 격리: %s", exc)
 

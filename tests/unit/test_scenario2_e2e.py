@@ -398,6 +398,11 @@ def test_e2e_scenario2_async_eventbridge_to_llm_worker_pipeline(
 
     # 4. 발행된 이벤트를 2차 LLM 분석 워커에 전달 (EventBridge -> Lambda 트리거 시뮬레이션)
     detail_data = json.loads(entry["Detail"])
+    # [검증]: 실제 발행 payload에 raw_logs가 포함되어 전달되었는지 확인
+    assert "raw_logs" in detail_data
+    assert len(detail_data["raw_logs"]) == 1
+
+    # 발행 payload 그대로 워커 event 구성 (임의 주입 배제)
     worker_event = {
         "version": "0",
         "id": "evt-s2-async-001",
@@ -407,7 +412,7 @@ def test_e2e_scenario2_async_eventbridge_to_llm_worker_pipeline(
         "time": "2026-10-22T06:30:00Z",
         "region": "ap-southeast-2",
         "resources": [],
-        "detail": detail_data | {"raw_logs": messages},
+        "detail": detail_data,
     }
 
     mock_bedrock = MagicMock()
