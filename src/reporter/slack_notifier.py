@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -771,4 +772,163 @@ def send_slack_alert(
             time.sleep(sleep_duration)
 
     logger.error("Slack Webhook 최대 재시도 횟수(%d회) 초과로 최종 전송 실패 격리", max_retries + 1)
+    return False
+
+
+def send_llm_slack_alert(
+    report: IncidentReport,
+    webhook_url: str | None = None,
+    timeout: float = 3.0,
+    max_retries: int = 1,
+    retry_delay: float = 0.5,
+) -> bool:
+    """사후 LLM 심층 분석 보고서를 Slack Block Kit 카드로 렌더링하여 Webhook 발송.
+
+    Why:
+        사후 LLM 심층 분석 결과(공격 요약, 근본 원인, MITRE ATT&CK 기술, 후속 권고 사항 등)를
+        SecOps 관리자 채널에 2차 대화형 카드로 즉시 전파함.
+        Slack API 장애(네트워크 단절, 5xx, 타임아웃) 발생 시에도 호출 런타임 및
+        비동기 분석 파이프라인이 무음 비정상 종료(Silent Crash)되지 않도록
+        완전한 예외 격리(Fault Isolation) 보장.
+
+    Constraints:
+        - report: 유효성이 검증된 IncidentReport 객체.
+        - webhook_url: Slack Incoming Webhook HTTPS 엔드포인트 URL 문자열.
+          미지정 시 환경변수(SLACK_WEBHOOK_URL)에서 자동 조회.
+        - timeout: 네트워크 요청 제한 시간 (초, 기본값 3.0초). CloudShield 10초 관통 SLA 보장.
+        - max_retries: 일시 장애(5xx, 일시 연결 끊김) 시 재시도 상한 (기본값 1회).
+        - retry_delay: 재시도 대기 간격 (초, 기본값 0.5초).
+        - 반환값: 발송 성공 여부 (HTTP 200 수신 시 True, 실패 시 False).
+
+    Side-effects / Edge-cases:
+        - URL 미설정 또는 빈 문자열 인입 시 경고 로그 후 False 반환.
+        - 잘못된 URL 형식(IPv6 대괄호 비정상 포함 등 ValueError) 및 비HTTPS 스킴 예외 격리.
+        - HTTP 4xx(400 Bad Request, 403, 404, 429)는 클라이언트 오류로 판단하여
+          재시도 없이 즉시 False 반환.
+        - 타임아웃 발생 시 즉시 False 반환하여 3.0초 시간 예산 엄수.
+        - HTTP 5xx(서버 오류) 및 일시 네트워크 단절 시 시간 예산 내에서 최대 max_retries회 재시도.
+        - 모든 예외는 로그 기록 후 False로 격리되어 호출자에게 결함이 전파되지 않음.
+    """
+    target_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+    if not target_url:
+        logger.warning(
+            "Slack Webhook URL이 설정되지 않아 2차 심층 분석 알림 전송 건너뜀 (id=%s)",
+            report.incident_id,
+        )
+        return False
+
+    try:
+        parsed = urllib.parse.urlparse(target_url)
+        if not (parsed.scheme == "https" and parsed.netloc):
+            logger.warning("유효하지 않은 Slack Webhook HTTPS URL입니다: %s", target_url)
+            return False
+    except Exception as exc:
+        logger.warning(
+            "유효하지 않은 Slack Webhook URL 또는 요청 형식입니다: %s (%s)", target_url, exc
+        )
+        return False
+
+    try:
+        payload = build_llm_slack_payload(report)
+        encoded_data = json.dumps(payload).encode("utf-8")
+    except Exception as exc:
+        logger.error("2차 LLM Slack Block Kit 페이로드 직렬화 실패: %s", exc)
+        return False
+
+    start_time = time.monotonic()
+
+    for attempt in range(max_retries + 1):
+        elapsed = time.monotonic() - start_time
+        remaining_budget = timeout - elapsed
+        if remaining_budget <= 0:
+            logger.error(
+                "2차 LLM Slack Webhook 전체 시간 예산(%.2f초) 소진으로 전송 중단 (시도: %d)",
+                timeout,
+                attempt + 1,
+            )
+            return False
+
+        # 첫 시도 시 오버헤드에 의한 미세 오차 방지 (3.0초 정확도 호환)
+        req_timeout = timeout if (attempt == 0 and elapsed < 0.05) else remaining_budget
+
+        try:
+            req = urllib.request.Request(
+                url=target_url,
+                data=encoded_data,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+
+            with urllib.request.urlopen(req, timeout=req_timeout) as response:
+                status_code = getattr(response, "status", None) or response.getcode()
+                if status_code == 200:
+                    logger.info(
+                        "2차 LLM 심층 분석 Slack 알림 전송 성공: %s (시도: %d)",
+                        report.incident_id,
+                        attempt + 1,
+                    )
+                    return True
+                logger.warning(
+                    "2차 LLM Slack Webhook 비정상 응답 코드: %s (시도: %d)",
+                    status_code,
+                    attempt + 1,
+                )
+                if status_code < 500:
+                    return False
+        except urllib.error.HTTPError as exc:
+            logger.error(
+                "2차 LLM Slack Webhook HTTP 오류 (%s): %s (시도: %d)",
+                exc.code,
+                exc.reason,
+                attempt + 1,
+            )
+            if exc.code < 500:
+                return False
+        except TimeoutError:
+            logger.error(
+                "2차 LLM Slack Webhook 요청 시간 초과 (timeout=%.2f초, 시도: %d)",
+                req_timeout,
+                attempt + 1,
+            )
+            return False
+        except urllib.error.URLError as exc:
+            is_timeout_reason = isinstance(exc.reason, TimeoutError) or (
+                isinstance(exc.reason, str) and "timed out" in exc.reason.lower()
+            )
+            if is_timeout_reason:
+                logger.error(
+                    "2차 LLM Slack Webhook 연결 시간 초과: %s (시도: %d)",
+                    exc.reason,
+                    attempt + 1,
+                )
+                return False
+            logger.error(
+                "2차 LLM Slack Webhook 네트워크 연결 실패: %s (시도: %d)",
+                exc.reason,
+                attempt + 1,
+            )
+        except Exception as exc:
+            logger.error(
+                "2차 LLM Slack Webhook 전송 중 예기치 않은 오류 발생: %s (시도: %d)",
+                exc,
+                attempt + 1,
+            )
+            return False
+
+        if attempt < max_retries:
+            remaining_before_sleep = timeout - (time.monotonic() - start_time)
+            if remaining_before_sleep <= 0:
+                logger.warning("2차 LLM Slack Webhook 시간 예산 소진으로 재시도 대기 생략 및 중단")
+                return False
+            sleep_duration = min(retry_delay, remaining_before_sleep)
+            logger.info(
+                "2차 LLM Slack Webhook 일시 오류로 재시도 대기 (delay=%.2f초)...",
+                sleep_duration,
+            )
+            time.sleep(sleep_duration)
+
+    logger.error(
+        "2차 LLM Slack Webhook 최대 재시도 횟수(%d회) 초과로 최종 전송 실패 격리",
+        max_retries + 1,
+    )
     return False

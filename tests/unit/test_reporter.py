@@ -27,6 +27,7 @@ from reporter.slack_notifier import (
     build_slack_payload,
     build_waf_slack_payload,
     escape_slack_text,
+    send_llm_slack_alert,
     send_slack_alert,
     truncate_text,
 )
@@ -1750,3 +1751,361 @@ def test_build_slack_payload_scenario2_web_directory_scanning_waf_block() -> Non
     assert "• L4 EC2 네트워크 격리: ℹ️ 격리 미대상" in rem_text
     assert "• L7 WAFv2 IP 차단: ✅ IPSet 차단 완료 (/32)" in rem_text
     assert "• Identity IAM 세션 무효화: ℹ️ 미대상 (SSH 시나리오 제외)" in rem_text
+
+
+# ==============================================================================
+# send_llm_slack_alert 2차 심층 분석 알림 전송 및 예외 격리 단위 테스트
+# ==============================================================================
+
+
+def test_send_llm_slack_alert_missing_webhook_url(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Webhook URL 인자와 환경변수가 모두 없을 때 전송을 안전하게 건너뛰고 False를 반환하는지 검증.
+
+    Why:
+        2차 심층 분석 알림은 배포 환경에 따라 Webhook이 구성되지 않았을 수 있으므로,
+        URL 부재 시 무음 비정상 종료(Silent Crash) 없이 조기 반환(Early Return)하여 결함을 격리함.
+    """
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    result = send_llm_slack_alert(sample_incident_report, webhook_url=None)
+    assert result is False
+
+    result_empty = send_llm_slack_alert(sample_incident_report, webhook_url="")
+    assert result_empty is False
+
+
+def test_send_llm_slack_alert_invalid_url_isolation(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """비HTTPS 스킴 및 비정상 URL에 대해 예외를 발생시키지 않고 안전하게 False를 반환하는지 검증.
+
+    Why:
+        Slack Incoming Webhook은 반드시 보안 전송 계층(HTTPS) 엔드포인트를 사용해야 하며,
+        잘못된 URL 입력 시 네트워크 호출 전에 사전 차단하여 불필요한 지연을 방지함.
+    """
+    # 1. 비HTTPS 스킴
+    assert (
+        send_llm_slack_alert(
+            sample_incident_report, webhook_url="http://hooks.slack.com/services/xxx"
+        )
+        is False
+    )
+    assert (
+        send_llm_slack_alert(
+            sample_incident_report, webhook_url="ftp://hooks.slack.com/services/xxx"
+        )
+        is False
+    )
+    assert send_llm_slack_alert(sample_incident_report, webhook_url="not-a-url") is False
+
+    # 2. 비정상 IPv6 대괄호 등 URL 파싱 예외 유발 문자열
+    assert (
+        send_llm_slack_alert(sample_incident_report, webhook_url="https://[invalid-ipv6:80/path")
+        is False
+    )
+
+
+def test_send_llm_slack_alert_success(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """유효한 HTTPS Webhook URL과 정상 200 응답 시 2차 LLM 카드가 정상 직렬화되어 발송되는지 검증.
+
+    Why:
+        2차 분석 카드가 IncidentReport 메타데이터와 결합되어 정확한 JSON 페이로드 및
+        POST 헤더로 전송되는지 인터페이스 정합성을 보장함.
+    """
+    mock_response = MagicMock()
+    mock_response.getcode.return_value = 200
+    mock_response.status = 200
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = None
+
+    captured_requests: list[urllib.request.Request] = []
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        captured_requests.append(req)
+        return mock_response
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/T00/B00/X00"
+    success = send_llm_slack_alert(sample_incident_report, webhook_url=webhook_url, timeout=3.0)
+
+    assert success is True
+    assert len(captured_requests) == 1
+    req = captured_requests[0]
+    assert req.full_url == webhook_url
+    assert req.headers["Content-type"] == "application/json; charset=utf-8"
+
+    payload = json.loads(req.data.decode("utf-8"))
+    assert payload["is_llm_card"] is True
+    assert payload["incident_id"] == sample_incident_report.incident_id
+    assert payload["source_ip"] == sample_incident_report.source_ip
+
+
+def test_send_llm_slack_alert_env_var_fallback(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """webhook_url 인자가 None일 때 SLACK_WEBHOOK_URL 환경변수를 대체 사용하는지 검증.
+
+    Why:
+        Lambda 비동기 워커 환경에서 인자 주입 없이 환경변수만으로 2차 알림 전송이 가능하도록 지원함.
+    """
+    env_webhook = "https://hooks.slack.com/services/ENV/VAR/KEY"
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", env_webhook)
+
+    mock_response = MagicMock()
+    mock_response.getcode.return_value = 200
+    mock_response.status = 200
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = None
+
+    captured_urls: list[str] = []
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        captured_urls.append(req.full_url)
+        return mock_response
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    success = send_llm_slack_alert(sample_incident_report, webhook_url=None)
+    assert success is True
+    assert captured_urls == [env_webhook]
+
+
+def test_send_llm_slack_alert_client_4xx_no_retry(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 4xx(400 Bad Request, 403, 404) 응답 시 재시도 없이 즉시 실패 격리하는지 검증.
+
+    Why:
+        4xx 에러는 클라이언트 페이로드 형식 오류나 인증 결함이므로 재시도해도 성공할 수 없음.
+        불필요한 재시도를 즉시 차단하여 시간 예산을 보존함.
+    """
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal call_count
+        call_count += 1
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=400,
+            msg="Bad Request (invalid_payload)",
+            hdrs={},
+            fp=io.BytesIO(b"invalid_payload"),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/400/ERR"
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, max_retries=2, retry_delay=0.01
+    )
+
+    assert success is False
+    assert call_count == 1
+
+
+def test_send_llm_slack_alert_5xx_retry_and_recovery(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1차 시도 HTTP 500 서버 장애 후 2차 시도 HTTP 200 성공 복구 검증.
+
+    Why:
+        Slack 인프라의 일시적 5xx 장애 발생 시 max_retries 한도 내에서 안전하게 재시도하여
+        2차 알림 전파 성공률을 극대화함.
+    """
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise urllib.error.HTTPError(
+                url=req.full_url,
+                code=500,
+                msg="Internal Server Error",
+                hdrs={},
+                fp=io.BytesIO(b"server_error"),
+            )
+        mock_ok = MagicMock()
+        mock_ok.getcode.return_value = 200
+        mock_ok.status = 200
+        mock_ok.__enter__.return_value = mock_ok
+        mock_ok.__exit__.return_value = None
+        return mock_ok
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/500/RETRY"
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, max_retries=1, retry_delay=0.05
+    )
+
+    assert success is True
+    assert call_count == 2
+
+
+def test_send_llm_slack_alert_5xx_retry_exhausted_isolation(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 5xx 장애가 지속될 경우 최대 재시도 초과 후 False로 안전 격리되는지 검증."""
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal call_count
+        call_count += 1
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=503,
+            msg="Service Unavailable",
+            hdrs={},
+            fp=io.BytesIO(b"service_unavailable"),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/503/EXHAUST"
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, max_retries=1, retry_delay=0.01
+    )
+
+    assert success is False
+    assert call_count == 2
+
+
+def test_send_llm_slack_alert_direct_timeout_immediate_exit(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TimeoutError 발생 시 재시도 없이 즉시 실패로 빠져나오는지 검증.
+
+    Why:
+        타임아웃은 네트워크 지연으로 이미 3초 SLA 예산의 상당 부분을 소진했음을 의미하므로
+        추가 재시도 없이 즉시 전송을 중단해야 함.
+    """
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal call_count
+        call_count += 1
+        raise TimeoutError("Connection timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/TIMEOUT"
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, max_retries=2, retry_delay=0.01
+    )
+
+    assert success is False
+    assert call_count == 1
+
+
+def test_send_llm_slack_alert_url_error_timeout_immediate_exit(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """urllib.error.URLError로 래핑된 타임아웃 발생 시 즉시 중단 검증."""
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal call_count
+        call_count += 1
+        raise urllib.error.URLError(TimeoutError("operation timed out"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/URL_TIMEOUT"
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, max_retries=2, retry_delay=0.01
+    )
+
+    assert success is False
+    assert call_count == 1
+
+
+def test_send_llm_slack_alert_network_failure_and_retry(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """일반 네트워크 단절(URLError) 시 재시도 후 최종 격리되는지 검증."""
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal call_count
+        call_count += 1
+        raise urllib.error.URLError("Connection refused by peer")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/NETWORK_FAIL"
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, max_retries=1, retry_delay=0.01
+    )
+
+    assert success is False
+    assert call_count == 2
+
+
+def test_send_llm_slack_alert_unexpected_exception_isolation(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """예기치 않은 시스템 예외 발생 시 상위로 전파되지 않고 False로 격리되는지 검증.
+
+    Why:
+        알림 모듈 결함이 전체 사고 대응 파이프라인이나 분석 워커를 비정상 종료시키지 않도록
+        완전한 오류 격리(Fault Isolation)를 강제함.
+    """
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        raise RuntimeError("Unexpected internal crash in urllib")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/UNEXPECTED"
+    success = send_llm_slack_alert(sample_incident_report, webhook_url=webhook_url)
+
+    assert success is False
+
+
+def test_send_llm_slack_alert_time_budget_exhausted(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1차 시도에서 이미 타임아웃 예산이 모두 소진되었을 때 재시도를 건너뛰고 False 반환 검증."""
+    current_time = 100.0
+
+    def mock_monotonic() -> float:
+        return current_time
+
+    call_count = 0
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal call_count, current_time
+        call_count += 1
+        current_time += 3.5  # 1차 시도 중 3.5초 소진
+        raise urllib.error.URLError("Temporary network glitch")
+
+    monkeypatch.setattr(time, "monotonic", mock_monotonic)
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/BUDGET"
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, timeout=3.0, max_retries=2
+    )
+
+    assert success is False
+    assert call_count == 1
