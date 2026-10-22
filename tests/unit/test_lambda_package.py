@@ -159,6 +159,7 @@ if platform.system() == "Linux":
         "boto3.dynamodb",
         "boto3.dynamodb.conditions",
         "botocore",
+        "botocore.config",
         "botocore.exceptions",
     ]:
         sys.modules[mod] = unittest.mock.MagicMock()
