@@ -2195,7 +2195,7 @@ def test_send_llm_slack_alert_slow_socket_wallclock_timeout_enforced(
 
     def mock_slow_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
         # 실제 벽시계 기준 블로킹 시뮬레이션
-        time.sleep(0.3)
+        time.sleep(0.08)
         mock_resp = MagicMock()
         mock_resp.getcode.return_value = 200
         mock_resp.status = 200
@@ -2250,6 +2250,8 @@ def test_send_llm_slack_alert_bounded_concurrent_workers_on_timeout(
         전송 스레드가 누적되면 메모리 및 소켓 자원 고갈을 유발하므로
         MAX_CONCURRENT_SLACK_REQUESTS 세마포어로 상한선을 엄격히 통제함.
     """
+    fresh_semaphore = threading.Semaphore(2)
+    monkeypatch.setattr("reporter.slack_notifier._SLACK_REQUEST_SEMAPHORE", fresh_semaphore)
     gate_event = threading.Event()
 
     def mock_hanging_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
@@ -2264,6 +2266,9 @@ def test_send_llm_slack_alert_bounded_concurrent_workers_on_timeout(
     monkeypatch.setattr(urllib.request, "urlopen", mock_hanging_urlopen)
 
     webhook_url = "https://hooks.slack.com/services/TEST/HANGING"
+    initial_slack_threads = set(
+        t for t in threading.enumerate() if "_execute_single_slack_post" in str(t)
+    )
 
     try:
         # 짧은 타임아웃(0.01초)으로 3회 연속 호출
@@ -2277,11 +2282,13 @@ def test_send_llm_slack_alert_bounded_concurrent_workers_on_timeout(
         # 모두 타임아웃 또는 자원 한도 초과로 False 반환
         assert all(r is False for r in results)
 
-        # 현재 실행 중인 활성 slack worker 데몬 스레드 수 확인 (최대 2개 이하 유지)
+        # 이번 호출에서 새로 생성된 활성 slack worker 데몬 스레드 수 확인 (최대 2개 이하 유지)
         slack_threads = [
             t
             for t in threading.enumerate()
-            if t.is_alive() and "_execute_single_slack_post" in str(t)
+            if t not in initial_slack_threads
+            and t.is_alive()
+            and "_execute_single_slack_post" in str(t)
         ]
         assert len(slack_threads) <= 2, (
             f"동시 실행 스레드 수가 상한(2)을 초과함: {len(slack_threads)}"
@@ -2313,3 +2320,112 @@ def test_send_llm_slack_alert_thread_start_failure_isolation(
     )
 
     assert success is False, "스레드 시작 실패 시 False로 격리되어야 함"
+
+
+def test_send_llm_slack_alert_semaphore_acquire_budget_exhausted_releases_slot(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """세마포어 대기 도중 시간 예산이 소진된 경우 전송을 시작하지 않고 슬롯을 즉시 반환함을 검증.
+
+    Why:
+        이전 전송으로 슬롯이 점유되어 대기하다가 전체 deadline을 모두 소진한 후 슬롯을 얻은 경우,
+        새로운 전송 스레드를 띄우지 않고 획득한 슬롯을 즉시 반환해야 자원 누수 및 지연을 방지함.
+    """
+    fresh_semaphore = threading.Semaphore(2)
+    monkeypatch.setattr("reporter.slack_notifier._SLACK_REQUEST_SEMAPHORE", fresh_semaphore)
+    _SLACK_REQUEST_SEMAPHORE = fresh_semaphore
+
+    # 두 슬롯을 모두 점유
+    assert _SLACK_REQUEST_SEMAPHORE.acquire(blocking=False)
+    assert _SLACK_REQUEST_SEMAPHORE.acquire(blocking=False)
+
+    urlopen_called = False
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal urlopen_called
+        urlopen_called = True
+        return MagicMock()
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    # 0.08초 뒤에 슬롯 1개 해제하는 백그라운드 타이머 (timeout=0.05초보다 늦게 해제)
+    def delayed_release() -> None:
+        time.sleep(0.08)
+        _SLACK_REQUEST_SEMAPHORE.release()
+
+    release_thread = threading.Thread(target=delayed_release, daemon=True)
+    release_thread.start()
+
+    try:
+        success = send_llm_slack_alert(
+            sample_incident_report,
+            webhook_url="https://hooks.slack.com/services/TEST/BUDGET_EXHAUST",
+            timeout=0.05,
+            max_retries=0,
+        )
+        assert success is False
+        assert urlopen_called is False, (
+            "예산 소진 후 슬롯을 획득했을 때 urlopen이 실행되지 않아야 함"
+        )
+    finally:
+        release_thread.join(timeout=1.0)
+        _SLACK_REQUEST_SEMAPHORE.release()
+
+
+def test_send_llm_slack_alert_semaphore_wait_deducted_from_overall_deadline(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """슬롯 대기 시간이 전체 deadline(0.20초)에서 차감되어 총 소요 시간 초과 방지 검증.
+
+    Why:
+        슬롯 대기에 소요된 시간이 잔여 예산에서 차감되지 않으면 전체 호출 시간이 0.32초 이상으로
+        증가하는 결함이 발생하므로, 슬롯 획득 후 남은 예산만 워커에 부여되어야 함.
+    """
+    fresh_semaphore = threading.Semaphore(2)
+    monkeypatch.setattr("reporter.slack_notifier._SLACK_REQUEST_SEMAPHORE", fresh_semaphore)
+    _SLACK_REQUEST_SEMAPHORE = fresh_semaphore
+
+    # 두 슬롯 점유
+    assert _SLACK_REQUEST_SEMAPHORE.acquire(blocking=False)
+    assert _SLACK_REQUEST_SEMAPHORE.acquire(blocking=False)
+
+    captured_timeouts: list[float] = []
+
+    def mock_slow_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        captured_timeouts.append(timeout)
+        time.sleep(0.5)
+        return MagicMock()
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_slow_urlopen)
+
+    # 0.10초 뒤에 슬롯 1개 해제
+    def delayed_release() -> None:
+        time.sleep(0.10)
+        _SLACK_REQUEST_SEMAPHORE.release()
+
+    release_thread = threading.Thread(target=delayed_release, daemon=True)
+    release_thread.start()
+
+    start_time = time.monotonic()
+    try:
+        success = send_llm_slack_alert(
+            sample_incident_report,
+            webhook_url="https://hooks.slack.com/services/TEST/DEADLINE_RACE",
+            timeout=0.20,
+            max_retries=0,
+        )
+        elapsed = time.monotonic() - start_time
+
+        assert success is False
+        # 총 실행 시간은 0.20초 전체 deadline 부근이어야 하며, 0.30초 이상 지연되지 않아야 함
+        assert elapsed < 0.28, f"총 소요 시간이 deadline을 크게 초과함: {elapsed:.3f}초"
+        assert len(captured_timeouts) == 1
+        # 워커 소켓 타임아웃은 원래의 0.20초가 아니라 대기 시간이 차감된 약 0.10초 이하
+        assert captured_timeouts[0] < 0.15, (
+            f"워커 타임아웃이 차감되지 않음: {captured_timeouts[0]:.3f}초"
+        )
+    finally:
+        release_thread.join(timeout=1.0)
+        _SLACK_REQUEST_SEMAPHORE.release()

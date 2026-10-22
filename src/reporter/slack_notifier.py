@@ -917,8 +917,10 @@ def send_llm_slack_alert(
 
         req_timeout = remaining_budget
 
-        # 1. 동시 실행 자원 상한선 세마포어 획득 (스레드 무한 누적 방지)
-        acquired = _SLACK_REQUEST_SEMAPHORE.acquire(blocking=True, timeout=max(0.001, req_timeout))
+        # 1. 동시 실행 자원 상한선 세마포어 획득 대기 (현재 남은 예산 한도 내)
+        acquired = _SLACK_REQUEST_SEMAPHORE.acquire(
+            blocking=True, timeout=max(0.001, remaining_budget)
+        )
         if not acquired:
             logger.error(
                 "2차 LLM Slack Webhook 동시 자원 한도(%d) 초과 및 대기 시간 만료 (시도: %d)",
@@ -926,6 +928,20 @@ def send_llm_slack_alert(
                 attempt + 1,
             )
             return False
+
+        # 2. 세마포어 획득 직후 전체 deadline 기준 남은 예산 재계산
+        elapsed_after_acquire = time.monotonic() - start_time
+        remaining_budget = timeout - elapsed_after_acquire
+        if remaining_budget <= 0:
+            _SLACK_REQUEST_SEMAPHORE.release()
+            logger.error(
+                "2차 LLM Slack Webhook 세마포어 대기 중 시간 예산(%.2f초) 소진 취소 (시도: %d)",
+                timeout,
+                attempt + 1,
+            )
+            return False
+
+        req_timeout = remaining_budget
 
         response_container: list[tuple[int | None, Exception | None]] = []
         req_done = threading.Event()
