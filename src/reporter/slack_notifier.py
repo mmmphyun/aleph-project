@@ -793,14 +793,21 @@ def _mask_webhook_url(url: str) -> str:
     return "***[MASKED_URL]***"
 
 
+# 2차 심층 분석 Webhook 동시 실행 자원 상한선 (스레드 무한 누적 방지)
+MAX_CONCURRENT_SLACK_REQUESTS = 2
+_SLACK_REQUEST_SEMAPHORE = threading.Semaphore(MAX_CONCURRENT_SLACK_REQUESTS)
+
+
 def _execute_single_slack_post(
     target_url: str,
     encoded_data: bytes,
     timeout_limit: float,
     response_container: list[tuple[int | None, Exception | None]],
     done_event: threading.Event,
+    cancel_event: threading.Event,
+    semaphore: threading.Semaphore,
 ) -> None:
-    """워커 스레드에서 HTTP POST를 실행하고 결과를 컨테이너에 기록."""
+    """워커 스레드에서 HTTP POST를 실행하고 완료 시 세마포어를 해제."""
     try:
         req = urllib.request.Request(
             url=target_url,
@@ -809,12 +816,18 @@ def _execute_single_slack_post(
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=timeout_limit) as response:
+            if cancel_event.is_set():
+                if hasattr(response, "close"):
+                    response.close()
+                return
             status_code = getattr(response, "status", None) or response.getcode()
             response_container.append((status_code, None))
     except Exception as exc:
-        response_container.append((None, exc))
+        if not cancel_event.is_set():
+            response_container.append((None, exc))
     finally:
         done_event.set()
+        semaphore.release()
 
 
 def send_llm_slack_alert(
@@ -829,9 +842,10 @@ def send_llm_slack_alert(
     Why:
         사후 LLM 심층 분석 결과(공격 요약, 근본 원인, MITRE ATT&CK 기술, 후속 권고 사항 등)를
         SecOps 관리자 채널에 2차 대화형 카드로 즉시 전파함.
-        Slack API 장애(네트워크 단절, 5xx, 타임아웃) 발생 시에도 호출 런타임 및
-        비동기 분석 파이프라인이 무음 비정상 종료(Silent Crash)되지 않도록
-        완전한 예외 격리(Fault Isolation) 및 엄격한 전체 Deadline 집행을 보장함.
+        Slack API 장애(네트워크 단절, 5xx, 타임아웃) 및 시스템 자원 고갈 시에도
+        호출 런타임 및 비동기 파이프라인이 무음 비정상 종료(Silent Crash)되지 않도록
+        완전한 예외 격리(Fault Isolation), 엄격한 전체 Deadline 집행,
+        Bounded 자원 관리를 보장함.
 
     Constraints:
         - report: 유효성이 검증된 IncidentReport 객체.
@@ -845,11 +859,15 @@ def send_llm_slack_alert(
 
     Side-effects / Edge-cases:
         - URL 미설정 또는 빈 문자열 인입 시 경고 로그 후 False 반환.
-        - 잘못된 URL 형식(비HTTPS 스킴, 파싱 에러) 발생 시 비밀 토큰을 절대
-          로그에 노출하지 않고 안전하게 마스킹 격리 후 False 반환.
+        - 비HTTPS 스킴, 파싱 에러, 경로 공백 등 잘못된 URL 형식 발생 시
+          모든 예외 로그에서 비밀 토큰을 절대 출력하지 않고 오류 타입명만 기록 격리 후 False 반환.
         - HTTP 4xx(400 Bad Request, 403, 404, 429)는 클라이언트 오류로 판단하여
           재시도 없이 즉시 False 반환.
-        - 타임아웃 및 전체 deadline 초과(누적 지연 포함) 발생 시 즉시 False 반환.
+        - 타임아웃 및 전체 deadline 초과(누적 지연 포함) 발생 시
+          cancel_event 트리거 후 즉시 False 반환.
+        - 백그라운드 지연 스레드가 누적되더라도 MAX_CONCURRENT_SLACK_REQUESTS(2) 상한선으로
+          동시 실행 자원을 엄격히 통제하여 스레드 무한 누적 방지.
+        - 스레드 시작 실패(RuntimeError 등) 발생 시에도 호출자에게 전파하지 않고 False 안전 격리.
         - HTTP 5xx(서버 오류) 및 일시 네트워크 단절 시 남은 예산 내에서 최대 max_retries회 재시도.
         - 모든 예외는 로그 기록 후 False로 격리되어 호출자에게 결함이 전파되지 않음.
     """
@@ -897,25 +915,54 @@ def send_llm_slack_alert(
             )
             return False
 
-        # 잔여 예산을 엄격한 상한선으로 적용 (남은 예산 초과 부여 방지)
         req_timeout = remaining_budget
+
+        # 1. 동시 실행 자원 상한선 세마포어 획득 (스레드 무한 누적 방지)
+        acquired = _SLACK_REQUEST_SEMAPHORE.acquire(blocking=True, timeout=max(0.001, req_timeout))
+        if not acquired:
+            logger.error(
+                "2차 LLM Slack Webhook 동시 자원 한도(%d) 초과 및 대기 시간 만료 (시도: %d)",
+                MAX_CONCURRENT_SLACK_REQUESTS,
+                attempt + 1,
+            )
+            return False
 
         response_container: list[tuple[int | None, Exception | None]] = []
         req_done = threading.Event()
+        cancel_event = threading.Event()
 
+        # 2. 스레드 생성 및 시작 (시작 실패 RuntimeError 완벽 격리)
         req_start = time.monotonic()
-        thread = threading.Thread(
-            target=_execute_single_slack_post,
-            args=(target_url, encoded_data, req_timeout, response_container, req_done),
-            daemon=True,
-        )
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=_execute_single_slack_post,
+                args=(
+                    target_url,
+                    encoded_data,
+                    req_timeout,
+                    response_container,
+                    req_done,
+                    cancel_event,
+                    _SLACK_REQUEST_SEMAPHORE,
+                ),
+                daemon=True,
+            )
+            thread.start()
+        except Exception as exc:
+            _SLACK_REQUEST_SEMAPHORE.release()
+            logger.error(
+                "2차 LLM Slack Webhook 실행 작업 시작 실패 격리 (유형: %s, 시도: %d)",
+                type(exc).__name__,
+                attempt + 1,
+            )
+            return False
 
         completed = req_done.wait(timeout=max(0.001, req_timeout))
         req_elapsed = time.monotonic() - req_start
 
         # 실제 벽시계 기준 타임아웃 또는 가상 monotonic 타임 누적 초과 판별
         if not completed or req_elapsed > req_timeout:
+            cancel_event.set()
             logger.error(
                 "2차 LLM Slack Webhook 요청 시간 초과 (timeout=%.2f초, 경과=%.2f초, 시도: %d)",
                 req_timeout,
@@ -932,6 +979,7 @@ def send_llm_slack_alert(
         # 전체 호출 경과 시간 최종 검증 (느린 헤더/누적 지연 초과 격리)
         total_elapsed = time.monotonic() - start_time
         if total_elapsed > timeout:
+            cancel_event.set()
             logger.error(
                 "2차 LLM Slack Webhook 전체 deadline(%.2f초) 초과 실패 (소요=%.2f초, 시도: %d)",
                 timeout,
@@ -951,9 +999,9 @@ def send_llm_slack_alert(
         if exc is not None:
             if isinstance(exc, urllib.error.HTTPError):
                 logger.error(
-                    "2차 LLM Slack Webhook HTTP 오류 (%s): %s (시도: %d)",
+                    "2차 LLM Slack Webhook HTTP 오류 (코드: %s, 유형: %s, 시도: %d)",
                     exc.code,
-                    exc.reason,
+                    type(exc).__name__,
                     attempt + 1,
                 )
                 if exc.code < 500:
@@ -971,20 +1019,21 @@ def send_llm_slack_alert(
                 )
                 if is_timeout_reason:
                     logger.error(
-                        "2차 LLM Slack Webhook 연결 시간 초과: %s (시도: %d)",
-                        exc.reason,
+                        "2차 LLM Slack Webhook 연결 시간 초과 (유형: %s, 시도: %d)",
+                        type(getattr(exc, "reason", exc)).__name__,
                         attempt + 1,
                     )
                     return False
                 logger.error(
-                    "2차 LLM Slack Webhook 네트워크 연결 실패: %s (시도: %d)",
-                    exc.reason,
+                    "2차 LLM Slack Webhook 네트워크 연결 실패 (유형: %s, 시도: %d)",
+                    type(getattr(exc, "reason", exc)).__name__,
                     attempt + 1,
                 )
             else:
+                # InvalidURL 등 일반 예외 시 URL/토큰이 포함될 수 있는 exc 원문 노출 차단
                 logger.error(
-                    "2차 LLM Slack Webhook 전송 중 예기치 않은 오류 발생: %s (시도: %d)",
-                    exc,
+                    "2차 LLM Slack Webhook 전송 중 오류 발생 (유형: %s, 시도: %d)",
+                    type(exc).__name__,
                     attempt + 1,
                 )
                 return False

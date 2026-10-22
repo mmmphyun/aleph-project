@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import time
 import urllib.error
 from typing import Any
@@ -2214,3 +2215,101 @@ def test_send_llm_slack_alert_slow_socket_wallclock_timeout_enforced(
 
     assert success is False
     assert duration < 0.25, f"메인 스레드가 즉시 반환되지 않고 {duration:.2f}초 동안 지연됨"
+
+
+def test_send_llm_slack_alert_secret_masking_in_request_exception(
+    sample_incident_report: IncidentReport,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """정상 HTTPS 스킴이지만 경로 공백으로 InvalidURL 유발 시 Webhook Secret 로그 미노출 검증.
+
+    Why:
+        사전 URL 검사를 통과한 후 urllib.request / http.client 내부의 경로 검증에서
+        InvalidURL 등 예외가 발생할 때, 예외 문자열(exc)에 포함된 Secret 토큰이
+        로그로 누출되는 취약점을 원천 차단함.
+    """
+    secret_token = "SUPER_SECRET_TOKEN_WITH_TRAILING_SPACE"
+    invalid_path_url = f"https://hooks.slack.com/services/FAKE_TEAM/FAKE_CHANNEL/{secret_token} bad"
+
+    with caplog.at_level("ERROR"):
+        caplog.clear()
+        result = send_llm_slack_alert(sample_incident_report, webhook_url=invalid_path_url)
+
+    assert result is False
+    assert secret_token not in caplog.text, "요청 처리 중 예외 로그에 Secret 토큰이 노출됨"
+
+
+def test_send_llm_slack_alert_bounded_concurrent_workers_on_timeout(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """연속 타임아웃 발생 시에도 동시 실행 작업 수가 상한(2개)을 초과하여 무한 증가하지 않음을 검증.
+
+    Why:
+        원격 엔드포인트의 장기 정체 시 호출자 deadline 만료 후 백그라운드에 남아있는
+        전송 스레드가 누적되면 메모리 및 소켓 자원 고갈을 유발하므로
+        MAX_CONCURRENT_SLACK_REQUESTS 세마포어로 상한선을 엄격히 통제함.
+    """
+    gate_event = threading.Event()
+
+    def mock_hanging_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        gate_event.wait(timeout=2.0)
+        mock_resp = MagicMock()
+        mock_resp.getcode.return_value = 200
+        mock_resp.status = 200
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+        return mock_resp
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_hanging_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/HANGING"
+
+    try:
+        # 짧은 타임아웃(0.01초)으로 3회 연속 호출
+        results = [
+            send_llm_slack_alert(
+                sample_incident_report, webhook_url=webhook_url, timeout=0.01, max_retries=0
+            )
+            for _ in range(3)
+        ]
+
+        # 모두 타임아웃 또는 자원 한도 초과로 False 반환
+        assert all(r is False for r in results)
+
+        # 현재 실행 중인 활성 slack worker 데몬 스레드 수 확인 (최대 2개 이하 유지)
+        slack_threads = [
+            t
+            for t in threading.enumerate()
+            if t.is_alive() and "_execute_single_slack_post" in str(t)
+        ]
+        assert len(slack_threads) <= 2, (
+            f"동시 실행 스레드 수가 상한(2)을 초과함: {len(slack_threads)}"
+        )
+    finally:
+        # 테스트 완료 후 블로킹 스레드 해제
+        gate_event.set()
+
+
+def test_send_llm_slack_alert_thread_start_failure_isolation(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """스레드 시작 시 RuntimeError 발생 시 상위 전파 없이 안전하게 False로 격리됨을 검증.
+
+    Why:
+        시스템 스레드 수 한도 도달 등 리소스 고갈 상황에서 전송 함수가 크래시되지 않고
+        실패 격리 계약(False 반환)을 온전히 준수함.
+    """
+
+    def mock_start_fail(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", mock_start_fail)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/THREAD_FAIL"
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, timeout=3.0, max_retries=0
+    )
+
+    assert success is False, "스레드 시작 실패 시 False로 격리되어야 함"
