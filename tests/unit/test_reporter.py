@@ -2109,3 +2109,108 @@ def test_send_llm_slack_alert_time_budget_exhausted(
 
     assert success is False
     assert call_count == 1
+
+
+def test_send_llm_slack_alert_secret_masking_in_logs(
+    sample_incident_report: IncidentReport,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """비HTTPS 스킴 및 URL 파싱 오류 경로에서 Webhook Secret이 로그에 노출되지 않음을 검증.
+
+    Why:
+        Slack Incoming Webhook URL 경로에는 인증 토큰(Secret)이 포함되어 있으므로,
+        URL 유효성 검증 실패 시 원본 문자열이나 예외 상세를 로그에 남기면 CloudWatch 등에
+        비밀값이 유출되는 심각한 보안 결함이 발생함.
+    """
+    secret_token_1 = "SECRET_WEBHOOK_KEY_ABCD1234EFGH"
+    insecure_url = f"http://hooks.slack.com/services/T00/B00/{secret_token_1}"
+
+    # 1. 비HTTPS URL 호출
+    with caplog.at_level("WARNING"):
+        caplog.clear()
+        result_1 = send_llm_slack_alert(sample_incident_report, webhook_url=insecure_url)
+
+    assert result_1 is False
+    assert secret_token_1 not in caplog.text, "비HTTPS URL의 비밀 토큰이 로그에 노출됨"
+    assert "http://hooks.slack.com/***[MASKED]***" in caplog.text
+
+    # 2. 파싱 예외 유발 비정상 URL 호출
+    secret_token_2 = "SUPER_SECRET_TOKEN_IN_MALFORMED_URL"
+    malformed_url = f"https://[invalid-ipv6:80/services/{secret_token_2}"
+
+    with caplog.at_level("WARNING"):
+        caplog.clear()
+        result_2 = send_llm_slack_alert(sample_incident_report, webhook_url=malformed_url)
+
+    assert result_2 is False
+    assert secret_token_2 not in caplog.text, "파싱 오류 URL의 비밀 토큰이 로그에 노출됨"
+
+
+def test_send_llm_slack_alert_cumulative_header_delay_enforces_overall_deadline(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """느린 헤더 수신으로 누적 4초가 소요된 후 HTTP 200이 반환되어도 3초 deadline에 의해 차단 검증.
+
+    Why:
+        개별 I/O 블로킹 타임아웃을 통과하더라도 여러 헤더 수신 누적으로 총 소요 시간이
+        3.0초 전체 deadline을 초과한 경우, 성공으로 인정하지 않고 SLA 위반으로 실패 격리해야 함.
+    """
+    current_time = 100.0
+
+    def mock_monotonic() -> float:
+        return current_time
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        nonlocal current_time
+        # 헤더 수신 단계마다 1초씩 누적되어 총 4초 지연 시뮬레이션
+        current_time += 4.0
+        mock_resp = MagicMock()
+        mock_resp.getcode.return_value = 200
+        mock_resp.status = 200
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+        return mock_resp
+
+    monkeypatch.setattr(time, "monotonic", mock_monotonic)
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/SLOW_HEADER/200"
+    success = send_llm_slack_alert(sample_incident_report, webhook_url=webhook_url, timeout=3.0)
+
+    assert success is False, "총 소요 시간(4초)이 deadline(3초)을 초과했으므로 실패 처리되어야 함"
+
+
+def test_send_llm_slack_alert_slow_socket_wallclock_timeout_enforced(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실제 블로킹 소켓 I/O 지연 시 데몬 스레드 경계에서 설정된 deadline으로 즉시 차단 검증.
+
+    Why:
+        원격 엔드포인트의 소켓 정체 시 메인 스레드가 블로킹 대기하지 않고
+        timeout 초 내에 안전하게 탈출(Early Exit)하여 호출 런타임의 10초 관통 SLA를 보장함.
+    """
+
+    def mock_slow_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        # 실제 벽시계 기준 블로킹 시뮬레이션
+        time.sleep(0.3)
+        mock_resp = MagicMock()
+        mock_resp.getcode.return_value = 200
+        mock_resp.status = 200
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+        return mock_resp
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_slow_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/SLOW_SOCKET"
+    start = time.monotonic()
+    # 0.05초의 짧은 타임아웃 부여
+    success = send_llm_slack_alert(
+        sample_incident_report, webhook_url=webhook_url, timeout=0.05, max_retries=0
+    )
+    duration = time.monotonic() - start
+
+    assert success is False
+    assert duration < 0.25, f"메인 스레드가 즉시 반환되지 않고 {duration:.2f}초 동안 지연됨"
