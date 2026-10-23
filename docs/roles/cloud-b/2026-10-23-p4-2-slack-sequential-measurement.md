@@ -1,6 +1,6 @@
 # P4-2 SSH 3차 실측 결과
 
-실측일: 2026-10-23 KST. 관련 이슈: 공개 승인 후 연결.
+실측일: 2026-10-23 KST. 관련 이슈: #213.
 
 Notion Task: https://app.notion.com/p/A-d5f04d37c22582ad9e7f81acd36191d0?p=3fe04d37c22580108d83ee0428386c2f
 
