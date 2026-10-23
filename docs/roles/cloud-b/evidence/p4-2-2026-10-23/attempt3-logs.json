@@ -1,0 +1,162 @@
+{
+  "auth": [
+    {
+      "timestamp": 1792737183637,
+      "ingestionTime": 1792737185262,
+      "message": "2026-10-23T06:33:03.637820+0000 ip-10-42-0-99 sshd[30543]: Failed password for cloudshield_test from 13.55.120.6 port 43418 ssh2",
+      "eventId": "39979375140220139763622647082194255187766289086058594308",
+      "logStreamName": "i-0605f8529598ed820"
+    },
+    {
+      "timestamp": 1792737186880,
+      "ingestionTime": 1792737188235,
+      "message": "2026-10-23T06:33:06.880402+0000 ip-10-42-0-99 sshd[30543]: Failed password for cloudshield_test from 13.55.120.6 port 43418 ssh2",
+      "eventId": "39979375212541456442457457933788541538538186423810064388",
+      "logStreamName": "i-0605f8529598ed820"
+    },
+    {
+      "timestamp": 1792737189004,
+      "ingestionTime": 1792737190252,
+      "message": "2026-10-23T06:33:09.004082+0000 ip-10-42-0-99 sshd[30543]: Failed password for cloudshield_test from 13.55.120.6 port 43418 ssh2",
+      "eventId": "39979375259908239244136501488848822965111771912431009796",
+      "logStreamName": "i-0605f8529598ed820"
+    },
+    {
+      "timestamp": 1792737192443,
+      "ingestionTime": 1792737195258,
+      "message": "2026-10-23T06:33:12.443236+0000 ip-10-42-0-99 sshd[30543]: Failed password for cloudshield_test from 13.55.120.6 port 43418 ssh2",
+      "eventId": "39979375336600501981883314478642398769061418386136432640",
+      "logStreamName": "i-0605f8529598ed820"
+    },
+    {
+      "timestamp": 1792737194566,
+      "ingestionTime": 1792737195258,
+      "message": "2026-10-23T06:33:14.566722+0000 ip-10-42-0-99 sshd[30543]: Failed password for cloudshield_test from 13.55.120.6 port 43418 ssh2",
+      "eventId": "39979375383944984038363827408122728661893889863332855815",
+      "logStreamName": "i-0605f8529598ed820"
+    }
+  ],
+  "orchestrator": [
+    {
+      "timestamp": 1792737185648,
+      "ingestionTime": 1792737188179,
+      "message": "INIT_START Runtime Version: python:3.12.mainlinev2.v43\tRuntime Version ARN: arn:aws:lambda:ap-southeast-2::runtime:36aeb19f3326e129d9f096dea0a3c6a9ca8dce2610e62d2b2060747602d863ae\n",
+      "eventId": "39979375185066938357867730223349307866779298772544126976",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737186575,
+      "ingestionTime": 1792737188179,
+      "message": "START RequestId: ddcf3af1-6132-44e4-8c7a-e501782b8720 Version: $LATEST\n",
+      "eventId": "39979375205739729156905617875552918705524329888587972609",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737186900,
+      "ingestionTime": 1792737188179,
+      "message": "END RequestId: ddcf3af1-6132-44e4-8c7a-e501782b8720\n",
+      "eventId": "39979375212987471346428070396552027144135047378031607810",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737186900,
+      "ingestionTime": 1792737188179,
+      "message": "REPORT RequestId: ddcf3af1-6132-44e4-8c7a-e501782b8720\tDuration: 324.21 ms\tBilled Duration: 1248 ms\tMemory Size: 256 MB\tMax Memory Used: 109 MB\tInit Duration: 923.14 ms\t\nXRAY TraceId: 1-6adaffa1-6a668eee518344af304c0e42\tSegmentId: 552709eacb957275\tSampled: true\t\n",
+      "eventId": "39979375212987471346428070396552027144135047378031607811",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737188441,
+      "ingestionTime": 1792737197454,
+      "message": "START RequestId: 79346229-88db-40c7-978f-4e2785d2f3be Version: $LATEST\n",
+      "eventId": "39979375247352919697363760668871235013655084110519599104",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737188739,
+      "ingestionTime": 1792737197454,
+      "message": "END RequestId: 79346229-88db-40c7-978f-4e2785d2f3be\n",
+      "eventId": "39979375253998541766525886365048879058904295839301763073",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737188739,
+      "ingestionTime": 1792737197454,
+      "message": "REPORT RequestId: 79346229-88db-40c7-978f-4e2785d2f3be\tDuration: 297.10 ms\tBilled Duration: 298 ms\tMemory Size: 256 MB\tMax Memory Used: 109 MB\t\nXRAY TraceId: 1-6adaffa4-6f1d16746a08e7191d4af81d\tSegmentId: 5c133e1425c40626\tSampled: true\t\n",
+      "eventId": "39979375253998541766525886365048879058904295839301763074",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737190402,
+      "ingestionTime": 1792737197454,
+      "message": "START RequestId: b95a1cbf-075e-4a29-ba0a-4f8bf51234af Version: $LATEST\n",
+      "eventId": "39979375291084681031682312649422778546318521023747194883",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737190682,
+      "ingestionTime": 1792737197454,
+      "message": "END RequestId: b95a1cbf-075e-4a29-ba0a-4f8bf51234af\n",
+      "eventId": "39979375297328889687270887129052779662660062245421711364",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737190682,
+      "ingestionTime": 1792737197454,
+      "message": "REPORT RequestId: b95a1cbf-075e-4a29-ba0a-4f8bf51234af\tDuration: 278.54 ms\tBilled Duration: 279 ms\tMemory Size: 256 MB\tMax Memory Used: 109 MB\t\nXRAY TraceId: 1-6adaffa6-3b6b168e7145da5a1bfbd77f\tSegmentId: ad9aaa809344ffbe\tSampled: true\t\n",
+      "eventId": "39979375297328889687270887129052779662660062245421711365",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737195384,
+      "ingestionTime": 1792737197454,
+      "message": "START RequestId: 82936d2a-940a-4d93-9048-0728ffe2a5d0 Version: $LATEST\n",
+      "eventId": "39979375402186993610761877140553726980652658046541627398",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737199279,
+      "ingestionTime": 1792737208292,
+      "message": "END RequestId: 82936d2a-940a-4d93-9048-0728ffe2a5d0\n",
+      "eventId": "39979375489048396159038654289937346631286323274513711104",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    },
+    {
+      "timestamp": 1792737199279,
+      "ingestionTime": 1792737208292,
+      "message": "REPORT RequestId: 82936d2a-940a-4d93-9048-0728ffe2a5d0\tDuration: 3894.59 ms\tBilled Duration: 3895 ms\tMemory Size: 256 MB\tMax Memory Used: 130 MB\t\nXRAY TraceId: 1-6adaffab-5a412f945191e59d4226f1cb\tSegmentId: 6850cf96647bc5d8\tSampled: true\t\n",
+      "eventId": "39979375489048396159038654289937346631286323274513711105",
+      "logStreamName": "2026/10/23/[$LATEST]ac916ebd8b4641ac838d0a1b901ad374"
+    }
+  ],
+  "analyzer": [
+    {
+      "timestamp": 1792737199564,
+      "ingestionTime": 1792737208471,
+      "message": "INIT_START Runtime Version: python:3.12.mainlinev2.v43\tRuntime Version ARN: arn:aws:lambda:ap-southeast-2::runtime:36aeb19f3326e129d9f096dea0a3c6a9ca8dce2610e62d2b2060747602d863ae\n",
+      "eventId": "39979375495404108540619881885491917382650163280261742592",
+      "logStreamName": "2026/10/23/[$LATEST]34614781952c4eaa9c8056af505dcb4c"
+    },
+    {
+      "timestamp": 1792737200472,
+      "ingestionTime": 1792737208471,
+      "message": "START RequestId: 389fa871-0ea7-4755-a1d4-3b2bc0124e43 Version: $LATEST\n",
+      "eventId": "39979375515653185180885687698006349574214875527691960321",
+      "logStreamName": "2026/10/23/[$LATEST]34614781952c4eaa9c8056af505dcb4c"
+    },
+    {
+      "timestamp": 1792737202653,
+      "ingestionTime": 1792737208471,
+      "message": "END RequestId: 389fa871-0ea7-4755-a1d4-3b2bc0124e43\n",
+      "eventId": "39979375564291110458880976769695751126860951972235247618",
+      "logStreamName": "2026/10/23/[$LATEST]34614781952c4eaa9c8056af505dcb4c"
+    },
+    {
+      "timestamp": 1792737202653,
+      "ingestionTime": 1792737208471,
+      "message": "REPORT RequestId: 389fa871-0ea7-4755-a1d4-3b2bc0124e43\tDuration: 2179.64 ms\tBilled Duration: 3084 ms\tMemory Size: 256 MB\tMax Memory Used: 110 MB\tInit Duration: 904.33 ms\t\nXRAY TraceId: 1-6adaffab-5a412f945191e59d4226f1cb\tSegmentId: 657e2447de2455a6\tSampled: true\t\n",
+      "eventId": "39979375564291110458880976769695751126860951972235247619",
+      "logStreamName": "2026/10/23/[$LATEST]34614781952c4eaa9c8056af505dcb4c"
+    }
+  ]
+}

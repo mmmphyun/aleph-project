@@ -1,0 +1,68 @@
+{
+  "attempt1-auth": {
+    "source_sha256": "199d6746b1cc67748550f86b0e47aa8396005962bad4d9c722339fc5919ce13b",
+    "source_event_count": 76,
+    "selected_event_count": 5,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt1-orchestrator": {
+    "source_sha256": "672344068adc0595a918509fbe4f4351d92b22bec3176b78871b19794ad496d6",
+    "source_event_count": 18,
+    "selected_event_count": 18,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt1-analyzer": {
+    "source_sha256": "46e47780114de4ed8b9698e8145001c98f65c94ee81b2b4886544971308916d0",
+    "source_event_count": 0,
+    "selected_event_count": 0,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt1-slack": {
+    "source_sha256": "30df4763efeb2dee897a67592e8bc0cb8f1685219d961ca4981f2e74a434ea6b",
+    "transform": "connector response preserved"
+  },
+  "attempt2-auth": {
+    "source_sha256": "628e7b72ef7770bddeff600a4c494fca47293176dfc6acdb1d922a4ee74f0e4e",
+    "source_event_count": 66,
+    "selected_event_count": 5,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt2-orchestrator": {
+    "source_sha256": "71526426ad0792b6a59c5a7fc292e7ae9a8f7d46adabd1c1ab6708f748750807",
+    "source_event_count": 15,
+    "selected_event_count": 15,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt2-analyzer": {
+    "source_sha256": "46e47780114de4ed8b9698e8145001c98f65c94ee81b2b4886544971308916d0",
+    "source_event_count": 0,
+    "selected_event_count": 0,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt2-slack": {
+    "source_sha256": "aa63c25db4488bb6f7e5e410075e27bee7fe6b5eccff420f66280fe433f1b727",
+    "transform": "connector response preserved"
+  },
+  "attempt3-auth": {
+    "source_sha256": "0045792a9efb23d593866bb0763672e4594151d5c5b89199d72337a99c96d95c",
+    "source_event_count": 70,
+    "selected_event_count": 5,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt3-orchestrator": {
+    "source_sha256": "914955c30979728a20df32eaaa5266764179a8d35572f92cdcb02145d6553d5b",
+    "source_event_count": 13,
+    "selected_event_count": 13,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt3-analyzer": {
+    "source_sha256": "14dee772fcd2ad3b88f940e18dfecf11f69354356c273163154029767c9d732d",
+    "source_event_count": 4,
+    "selected_event_count": 4,
+    "transform": "SSH failure selection for auth; AWS account ID replaced in messages; remaining selected fields unchanged"
+  },
+  "attempt3-slack": {
+    "source_sha256": "3c91d0ac2610f135171d9f5aaf388c10399497db605fff23274378497f14db4a",
+    "transform": "connector response preserved"
+  }
+}
