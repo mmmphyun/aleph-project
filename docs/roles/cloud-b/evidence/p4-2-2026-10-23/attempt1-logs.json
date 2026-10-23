@@ -1,0 +1,168 @@
+{
+  "auth": [
+    {
+      "timestamp": 1792733223177,
+      "ingestionTime": 1792733226300,
+      "message": "2026-10-23T05:27:03.177732+0000 ip-10-42-0-99 sshd[30461]: Failed password for cloudshield_test from 13.55.120.6 port 45540 ssh2",
+      "eventId": "39979286819010810791030915169551833096117711793339236352",
+      "logStreamName": "i-0605f8529598ed820"
+    },
+    {
+      "timestamp": 1792733225585,
+      "ingestionTime": 1792733228312,
+      "message": "2026-10-23T05:27:05.585913+0000 ip-10-42-0-99 sshd[30461]: Failed password for cloudshield_test from 13.55.120.6 port 45540 ssh2",
+      "eventId": "39979286872711005229092655696802540174050101494255058944",
+      "logStreamName": "i-0605f8529598ed820"
+    },
+    {
+      "timestamp": 1792733228830,
+      "ingestionTime": 1792733231061,
+      "message": "2026-10-23T05:27:08.830408+0000 ip-10-42-0-99 sshd[30461]: Failed password for cloudshield_test from 13.55.120.6 port 45540 ssh2",
+      "eventId": "39979286945076923398324527794409142276336157263073247233",
+      "logStreamName": "i-0605f8529598ed820"
+    },
+    {
+      "timestamp": 1792733230953,
+      "ingestionTime": 1792733233073,
+      "message": "2026-10-23T05:27:10.953033+0000 ip-10-42-0-99 sshd[30461]: Failed password for cloudshield_test from 13.55.120.6 port 45540 ssh2",
+      "eventId": "39979286992421405454805040726321945703299054227075760129",
+      "logStreamName": "i-0605f8529598ed820"
+    },
+    {
+      "timestamp": 1792733235059,
+      "ingestionTime": 1792733237338,
+      "message": "2026-10-23T05:27:15.059439+0000 ip-10-42-0-99 sshd[30461]: Failed password for cloudshield_test from 13.55.120.6 port 45540 ssh2",
+      "eventId": "39979287083988265239971779350623513575215684773863358464",
+      "logStreamName": "i-0605f8529598ed820"
+    }
+  ],
+  "orchestrator": [
+    {
+      "timestamp": 1792733226688,
+      "ingestionTime": 1792733233870,
+      "message": "INIT_START Runtime Version: python:3.12.mainlinev2.v43\tRuntime Version ARN: arn:aws:lambda:ap-southeast-2::runtime:36aeb19f3326e129d9f096dea0a3c6a9ca8dce2610e62d2b2060747602d863ae\n",
+      "eventId": "39979286897308727183071933028635751323211875934181326848",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733227418,
+      "ingestionTime": 1792733233870,
+      "message": "START RequestId: fea13da9-11e1-43b8-8951-00090ae8714e Version: $LATEST\n",
+      "eventId": "39979286913588271177999287921956825662245179833547030529",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733227783,
+      "ingestionTime": 1792733233870,
+      "message": "END RequestId: fea13da9-11e1-43b8-8951-00090ae8714e\n",
+      "eventId": "39979286921728043175462965368617362831761831783229882370",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733227784,
+      "ingestionTime": 1792733233870,
+      "message": "REPORT RequestId: fea13da9-11e1-43b8-8951-00090ae8714e\tDuration: 364.74 ms\tBilled Duration: 1092 ms\tMemory Size: 256 MB\tMax Memory Used: 109 MB\tInit Duration: 727.03 ms\t\nXRAY TraceId: 1-6adaf02a-4c4124af3cff62f71ac8723f\tSegmentId: 8ecdb29d370b2026\tSampled: true\t\n",
+      "eventId": "39979286921750343920661495991758898550034480144735862787",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733228491,
+      "ingestionTime": 1792733233870,
+      "message": "START RequestId: 10a5c474-9b1c-4203-96a4-d63e4b8e59fe Version: $LATEST\n",
+      "eventId": "39979286937516970776022646552824651368796871729464016900",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733228783,
+      "ingestionTime": 1792733233870,
+      "message": "END RequestId: 10a5c474-9b1c-4203-96a4-d63e4b8e59fe\n",
+      "eventId": "39979286944028788373993588510153081104410193289210298373",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733228783,
+      "ingestionTime": 1792733233870,
+      "message": "REPORT RequestId: 10a5c474-9b1c-4203-96a4-d63e4b8e59fe\tDuration: 291.73 ms\tBilled Duration: 292 ms\tMemory Size: 256 MB\tMax Memory Used: 110 MB\t\nXRAY TraceId: 1-6adaf02c-22db406b79be6d017b41be6a\tSegmentId: dd868d67c8c1d996\tSampled: true\t\n",
+      "eventId": "39979286944028788373993588510153081104410193289210298374",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733231230,
+      "ingestionTime": 1792733233870,
+      "message": "START RequestId: 1f7d3324-bfce-4309-a6eb-b772f2bed366 Version: $LATEST\n",
+      "eventId": "39979286998598711874798023337490983717580733894344376327",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733231543,
+      "ingestionTime": 1792733233870,
+      "message": "END RequestId: 1f7d3324-bfce-4309-a6eb-b772f2bed366\n",
+      "eventId": "39979287005578845121938108380791663536919671045716246536",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733231543,
+      "ingestionTime": 1792733233870,
+      "message": "REPORT RequestId: 1f7d3324-bfce-4309-a6eb-b772f2bed366\tDuration: 312.21 ms\tBilled Duration: 313 ms\tMemory Size: 256 MB\tMax Memory Used: 110 MB\t\nXRAY TraceId: 1-6adaf02f-08b607c37ff4bb0412f18187\tSegmentId: d67f716d86dcbdf7\tSampled: true\t\n",
+      "eventId": "39979287005578845121938108380791663536919671045716246537",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733233200,
+      "ingestionTime": 1792733233870,
+      "message": "START RequestId: 0bdc48b1-3ac9-453c-adce-b770c1bc2d42 Version: $LATEST\n",
+      "eventId": "39979287042531179915903350926316348714698006061125795850",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733233485,
+      "ingestionTime": 1792733233870,
+      "message": "END RequestId: 0bdc48b1-3ac9-453c-adce-b770c1bc2d42\n",
+      "eventId": "39979287048886892297484578521654028422402789090330214411",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733233485,
+      "ingestionTime": 1792733233870,
+      "message": "REPORT RequestId: 0bdc48b1-3ac9-453c-adce-b770c1bc2d42\tDuration: 284.30 ms\tBilled Duration: 285 ms\tMemory Size: 256 MB\tMax Memory Used: 110 MB\t\nXRAY TraceId: 1-6adaf031-2282f33c0dea1d2662f90da7\tSegmentId: ef30917b2db0edcb\tSampled: true\t\n",
+      "eventId": "39979287048886892297484578521654028422402789090330214412",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733237478,
+      "ingestionTime": 1792733246496,
+      "message": "START RequestId: 33f7e1a6-2d73-4552-8f94-5b0b20928c5e Version: $LATEST\n",
+      "eventId": "39979287137933767875217356741069798616899631630314045440",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733240508,
+      "ingestionTime": 1792733246496,
+      "message": "[ERROR]\t2026-10-23T05:27:20.508Z\t33f7e1a6-2d73-4552-8f94-5b0b20928c5e\t타깃 ALB(arn:aws:elasticloadbalancing:ap-southeast-2:[AWS_ACCOUNT]:loadbalancer/app/CloudShield-ALB-dev/de4a0a31bdd3e235) WebACL 결합 조회 중 ClientError 발생: An error occurred (AccessDeniedException) when calling the GetWebACLForResource operation: User: arn:aws:sts::[AWS_ACCOUNT]:assumed-role/CloudShield-Threat-Orchestrator-exec-role/CloudShield-Threat-Orchestrator is not authorized to perform: wafv2:GetWebACLForResource on resource: arn:aws:wafv2:ap-southeast-2:[AWS_ACCOUNT]:regional/webacl/*/* because no identity-based policy allows the wafv2:GetWebACLForResource action\n",
+      "eventId": "39979287205505025826765144859923024983024166993434705921",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733240522,
+      "ingestionTime": 1792733246496,
+      "message": "[WARNING]\t2026-10-23T05:27:20.509Z\t33f7e1a6-2d73-4552-8f94-5b0b20928c5e\t위협 대응 필수 조치 미완료로 격리 마킹 생략 (차기 이벤트 재시도 허용): SSH_BRUTE_FORCE -> 13.55.120.6 (결과: {'waf_blocked': False, 'quarantine_applied': True, 'iam_revoked': False})\n",
+      "eventId": "39979287205817236259544573583904525038841244054518431746",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733240903,
+      "ingestionTime": 1792733246496,
+      "message": "END RequestId: 33f7e1a6-2d73-4552-8f94-5b0b20928c5e\n",
+      "eventId": "39979287214313820180184741000829633700720269788296970243",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    },
+    {
+      "timestamp": 1792733240903,
+      "ingestionTime": 1792733246496,
+      "message": "REPORT RequestId: 33f7e1a6-2d73-4552-8f94-5b0b20928c5e\tDuration: 3424.58 ms\tBilled Duration: 3425 ms\tMemory Size: 256 MB\tMax Memory Used: 131 MB\t\nXRAY TraceId: 1-6adaf035-117412ae276b0b315b0b97ef\tSegmentId: 97949ab4f5ba4988\tSampled: true\t\n",
+      "eventId": "39979287214313820180184741000829633700720269788296970244",
+      "logStreamName": "2026/10/23/[$LATEST]1fd3e5c0f5df421d869bd56d820d2a83"
+    }
+  ],
+  "analyzer": []
+}
