@@ -7,3 +7,7 @@
 - 포맷: 마크다운 (.md)
 - 파일명 권장: YYYY-MM-DD-주제.md (예: 2026-09-04-hydra-l4-analysis.md)
 - 내용: L4 TCP 플래그(SYN, ACK, RST) 및 3-Way Handshake 흐름 표 작성을 권장합니다.
+
+## 최종 쇼케이스 실측
+
+- [P4-3 실측 증거 및 시연 가이드 — Draft](2026-10-25-p4-3-final-showcase-verification.md): 2026-10-23 SSH 실패 2회·3차 차단/두 알림 증거와 미완료 왕복 검증 항목을 구분합니다.
