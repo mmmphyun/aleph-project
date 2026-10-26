@@ -346,6 +346,7 @@ def threat_orchestrator_handler(
             if not is_threat or not rule_name:
                 continue
 
+            detected_epoch = time.time()
             response["threats_detected"].append(rule_name)
 
             incident_id = f"INC-{int(time.time())}-{source_ip.replace('.', '')[-4:]}"
@@ -365,6 +366,7 @@ def threat_orchestrator_handler(
                 ec2_client=ec2_client,
                 waf_client=waf_client,
             )
+            remediated_epoch = time.time()
             response["remediation_results"].append(remediation_result)
 
             if is_remediation_successful(report.action_required, remediation_result):
@@ -423,8 +425,8 @@ def threat_orchestrator_handler(
                         events_client=events_client,
                         raw_logs=raw_logs_candidate,
                         stage_timestamps={
-                            "detected_epoch": ts_epoch,
-                            "remediated_epoch": time.time(),
+                            "detected_epoch": detected_epoch,
+                            "remediated_epoch": remediated_epoch,
                         },
                     )
                 except Exception as exc:
@@ -477,6 +479,7 @@ def threat_orchestrator_handler(
         if not threat_check.is_threat or not threat_check.rule_name:
             continue
 
+        detected_epoch = time.time()
         rule_name = threat_check.rule_name
         target_key = threat_check.target_key
         detected_accounts = threat_check.detected_accounts or (username,)
@@ -505,6 +508,7 @@ def threat_orchestrator_handler(
             ec2_client=ec2_client,
             waf_client=waf_client,
         )
+        remediated_epoch = time.time()
         response["remediation_results"].append(remediation_result)
 
         # 6. 필수 격리 조치 완료 검증 후 마킹 (중복 차단 억제 멱등성 및 실패 시 재시도 보장)
@@ -559,8 +563,8 @@ def threat_orchestrator_handler(
                     events_client=events_client,
                     raw_logs=relevant_raw_logs,
                     stage_timestamps={
-                        "detected_epoch": time.time(),
-                        "remediated_epoch": time.time(),
+                        "detected_epoch": detected_epoch,
+                        "remediated_epoch": remediated_epoch,
                     },
                 )
             except Exception as exc:

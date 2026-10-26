@@ -34,7 +34,7 @@ from contracts.incident import IncidentReport
 logger = logging.getLogger(__name__)
 
 DEFAULT_QUARANTINE_SG_NAME = "CloudShield-Quarantine-SG"
-DEFAULT_BASELINE_SG_NAME = "TargetNormalSG"
+DEFAULT_BASELINE_SG_NAME = "CloudShield-Target-SG"
 DEFAULT_WAF_IPSET_NAME = "CloudShield-Block-IPSet"
 DEFAULT_WAF_SCOPE = "REGIONAL"
 MAX_WAF_UPDATE_RETRIES = 3
@@ -371,14 +371,14 @@ def find_baseline_security_group(
     vpc_id: str | None = None,
     group_name: str = DEFAULT_BASELINE_SG_NAME,
 ) -> str | None:
-    """정상 운영 기준선 보안 그룹(TargetNormalSG)의 GroupId를 조회.
+    """정상 운영 기준선 보안 그룹(CloudShield-Target-SG)의 GroupId를 조회.
 
     Why:
         복구(Rollback) 시 인프라 환경에 따라 정상 보안 그룹의 ID가 동적으로 변경될 수 있으므로,
         표준 네이밍 규약 또는 파라미터에 따라 해당 VPC 내의 정상 SG를 탐색하여 결합도를 낮춤.
 
     Constraints:
-        - group_name: 조회 대상 기준선 보안 그룹명 (기본값: TargetNormalSG).
+        - group_name: 조회 대상 기준선 보안 그룹명 (기본값: CloudShield-Target-SG).
         - 반환값: 탐색 성공 시 'sg-xxxx' 문자열, 미발견 시 None.
 
     Side-effects / Edge-cases:
@@ -1261,6 +1261,12 @@ def apply_rollback(
     verify_url: str | None = None,
     verify_timeout: float = DEFAULT_WAF_VERIFY_TIMEOUT,
     poll_interval: float = DEFAULT_WAF_POLL_INTERVAL,
+    probe_source_ip: str | None = None,
+    observed_source_ip: str | None = None,
+    observed_source_ip_fn: Callable[[], str | None] | None = None,
+    http_probe_fn: Callable[[str, float], int] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+    clock_fn: Callable[[], float] | None = None,
 ) -> RollbackResult:
     """침해사고 보고서에 집행되었던 AWS 다중 계층 차단 조치를 원자적으로 롤백 복구.
 
@@ -1272,6 +1278,7 @@ def apply_rollback(
     Constraints:
         - report: IncidentReport 객체.
         - action_required에 따라 원래 적용되었던 계층만 대칭적으로 롤백함.
+        - verify_url 지정 단일 IP 해제 시 observed_source_ip 또는 observed_source_ip_fn 필수 전달.
         - 반환값: RollbackResult (waf_unblocked, quarantine_restored, iam_restored).
 
     Side-effects / Edge-cases:
@@ -1314,6 +1321,12 @@ def apply_rollback(
                 verify_url=verify_url,
                 verify_timeout=verify_timeout,
                 poll_interval=poll_interval,
+                probe_source_ip=probe_source_ip,
+                observed_source_ip=observed_source_ip,
+                observed_source_ip_fn=observed_source_ip_fn,
+                http_probe_fn=http_probe_fn,
+                sleep_fn=sleep_fn,
+                clock_fn=clock_fn,
             )
         except Exception as exc:
             logger.error("L7 WAF IP 차단 해제 중 예외 발생 격리: %s", exc)
