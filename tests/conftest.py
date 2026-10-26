@@ -123,7 +123,7 @@ def mocked_ec2_target(mocked_aws: None, monkeypatch: pytest.MonkeyPatch) -> Mock
 
     # Normal Security Group (SSH 22 허용)
     normal_sg = ec2_resource.create_security_group(
-        GroupName="TargetNormalSG",
+        GroupName="CloudShield-Target-SG",
         Description="Normal EC2 Security Group",
         VpcId=vpc.id,
     )

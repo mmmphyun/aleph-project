@@ -4008,3 +4008,458 @@ def test_llm_worker_handler_bedrock_failure_fallback(
         sent_report = mock_send_slack.call_args.kwargs["report"]
         # Fallback으로 원본 보고서가 유지되어야 함
         assert sent_report.summary_ko == sample_incident_report.summary_ko
+
+
+def test_restore_ec2_baseline_sg_roundtrip_and_idempotency(
+    mocked_ec2_target: MockEc2Target,
+) -> None:
+    """quarantine_ec2_instance 후 restore_ec2_baseline_sg 호출 시 왕복 복원 및 멱등성 검증.
+
+    Why:
+        L4 침해 격리 이후 정상 복구 시 Baseline SG 단독 적용으로 원상복구되는지 확인하고,
+        이미 Baseline SG 상태일 때 중복 호출 시 불필요한 수정 없이 멱등 성공함을 입증함.
+    """
+    from remediation.remediation import quarantine_ec2_instance, restore_ec2_baseline_sg
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    instance_id = mocked_ec2_target.instance_id
+
+    # 1. L4 격리 실행
+    assert quarantine_ec2_instance(instance_id=instance_id, ec2_client=ec2_client) is True
+    desc_quarantine = ec2_client.describe_instances(InstanceIds=[instance_id])
+    sgs_quarantine = [
+        sg["GroupId"] for sg in desc_quarantine["Reservations"][0]["Instances"][0]["SecurityGroups"]
+    ]
+    assert sgs_quarantine == [mocked_ec2_target.quarantine_sg_id]
+
+    # 2. Baseline SG로 복원 실행
+    success = restore_ec2_baseline_sg(
+        instance_id=instance_id,
+        ec2_client=ec2_client,
+        baseline_sg_id=mocked_ec2_target.normal_sg_id,
+    )
+    assert success is True
+
+    # 3. Read-after-Write 복원 검증
+    desc_restored = ec2_client.describe_instances(InstanceIds=[instance_id])
+    sgs_restored = [
+        sg["GroupId"] for sg in desc_restored["Reservations"][0]["Instances"][0]["SecurityGroups"]
+    ]
+    assert sgs_restored == [mocked_ec2_target.normal_sg_id]
+
+    # 4. 멱등성 검증 (동일 함수 재호출 시 무오류 True)
+    assert (
+        restore_ec2_baseline_sg(
+            instance_id=instance_id,
+            ec2_client=ec2_client,
+            baseline_sg_id=mocked_ec2_target.normal_sg_id,
+        )
+        is True
+    )
+
+
+def test_apply_remediation_and_apply_rollback_full_roundtrip(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    sample_incident_report: IncidentReport,
+) -> None:
+    """apply_remediation() 차단 후 apply_rollback() 롤백 완결 왕복(Round-trip) 검증.
+
+    Why:
+        BLOCK_AND_QUARANTINE 보고서로 집행된 L4 SG 격리와 L7 WAF IPSet 차단이
+        apply_rollback() 1회 호출로 모두 대칭적으로 해제 및 복원되는지 검증함.
+    """
+    from remediation.remediation import apply_remediation, apply_rollback
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    report = sample_incident_report.model_copy(
+        update={
+            "target_identifier": mocked_ec2_target.instance_id,
+            "source_ip": "198.51.100.99",
+            "action_required": "BLOCK_AND_QUARANTINE",
+        }
+    )
+
+    # 1. 차단 집행
+    rem_res = apply_remediation(
+        report=report,
+        ec2_client=ec2_client,
+        waf_client=waf_client,
+    )
+    assert rem_res["quarantine_applied"] is True
+    assert rem_res["waf_blocked"] is True
+
+    # 인프라 차단 상태 확인
+    desc_ec2 = ec2_client.describe_instances(InstanceIds=[mocked_ec2_target.instance_id])
+    assert [
+        sg["GroupId"] for sg in desc_ec2["Reservations"][0]["Instances"][0]["SecurityGroups"]
+    ] == [mocked_ec2_target.quarantine_sg_id]
+
+    ip_set = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{report.source_ip}/32" in ip_set["IPSet"]["Addresses"]
+
+    # 2. 롤백 집행
+    rollback_res = apply_rollback(
+        report=report,
+        ec2_client=ec2_client,
+        waf_client=waf_client,
+        baseline_sg_id=mocked_ec2_target.normal_sg_id,
+        waf_ipset_name=mocked_waf_ipset.ipset_name,
+        waf_ipset_id=mocked_waf_ipset.ipset_id,
+        waf_scope=mocked_waf_ipset.scope,
+    )
+    assert rollback_res["quarantine_restored"] is True
+    assert rollback_res["waf_unblocked"] is True
+    assert rollback_res["iam_restored"] is False
+
+    # 인프라 복원 상태 확인
+    desc_ec2_post = ec2_client.describe_instances(InstanceIds=[mocked_ec2_target.instance_id])
+    assert [
+        sg["GroupId"] for sg in desc_ec2_post["Reservations"][0]["Instances"][0]["SecurityGroups"]
+    ] == [mocked_ec2_target.normal_sg_id]
+
+    ip_set_post = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{report.source_ip}/32" not in ip_set_post["IPSet"]["Addresses"]
+
+
+def test_apply_rollback_partial_failure_isolation(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    sample_incident_report: IncidentReport,
+) -> None:
+    """apply_rollback 실행 시 특정 계층 실패가 타 계층 롤백을 중단시키지 않는 결함 격리 검증.
+
+    Why:
+        EC2 API 장애로 L4 복원이 실패하더라도 L7 WAF 차단 해제는 독립적으로 완수되어야 함.
+    """
+    from unittest.mock import MagicMock
+
+    from botocore.exceptions import ClientError
+
+    from remediation.remediation import apply_remediation, apply_rollback
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+
+    report = sample_incident_report.model_copy(
+        update={
+            "target_identifier": mocked_ec2_target.instance_id,
+            "source_ip": "198.51.100.155",
+            "action_required": "BLOCK_AND_QUARANTINE",
+        }
+    )
+
+    # 1. 차단 실행
+    rem_res = apply_remediation(report=report, ec2_client=ec2_client, waf_client=waf_client)
+    assert rem_res["quarantine_applied"] is True
+    assert rem_res["waf_blocked"] is True
+
+    # 2. EC2 modify_instance_attribute 실패 모킹
+    failing_ec2 = MagicMock()
+    failing_ec2.describe_instances.side_effect = ClientError(
+        {"Error": {"Code": "UnauthorizedOperation", "Message": "Denied"}},
+        "DescribeInstances",
+    )
+
+    rollback_res = apply_rollback(
+        report=report,
+        ec2_client=failing_ec2,
+        waf_client=waf_client,
+        baseline_sg_id=mocked_ec2_target.normal_sg_id,
+        waf_ipset_name=mocked_waf_ipset.ipset_name,
+        waf_ipset_id=mocked_waf_ipset.ipset_id,
+        waf_scope=mocked_waf_ipset.scope,
+    )
+
+    # L4 복구는 실패했으나 L7 WAF 해제는 성공적으로 격리 집행됨
+    assert rollback_res["quarantine_restored"] is False
+    assert rollback_res["waf_unblocked"] is True
+
+    # WAF IPSet에서 실제로 제거되었는지 확인
+    ip_set_post = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{report.source_ip}/32" not in ip_set_post["IPSet"]["Addresses"]
+
+
+def test_orchestrator_to_llm_worker_raw_logs_context_propagation(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """오케스트레이터가 발행한 raw_logs 컨텍스트가 llm_worker에 누락 없이 전달되는지 검증."""
+    from unittest.mock import MagicMock
+
+    from remediation.auth_window import AuthFailureWindow
+    from remediation.llm_worker import llm_analysis_handler
+    from remediation.orchestrator import threat_orchestrator_handler
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    attacker_ip = "198.51.100.77"
+    target_user = "admin"
+    messages = [
+        (
+            f"Sep 04 15:01:0{i} target-ec2 sshd[2110{i}]: Failed password for "
+            f"{target_user} from {attacker_ip} port 4120{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+    mock_events = MagicMock()
+    mock_events.put_events.return_value = {
+        "FailedEntryCount": 0,
+        "Entries": [{"EventId": "ev-raw-logs-test"}],
+    }
+
+    with patch("remediation.orchestrator.send_slack_alert", return_value=True):
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            events_client=mock_events,
+        )
+        assert res["processed_events"] == 5
+        mock_events.put_events.assert_called_once()
+        put_entry = mock_events.put_events.call_args.kwargs["Entries"][0]
+        detail_data = json.loads(put_entry["Detail"])
+
+        # raw_logs 검증
+        assert "raw_logs" in detail_data
+        assert len(detail_data["raw_logs"]) == 5
+        for msg in messages:
+            assert msg in detail_data["raw_logs"]
+
+        # 워커 호출 시뮬레이션
+        worker_event = {
+            "source": put_entry["Source"],
+            "detail-type": put_entry["DetailType"],
+            "id": "ev-raw-logs-test",
+            "detail": detail_data,
+        }
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.return_value = {
+            "stopReason": "end_turn",
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "text": json.dumps(
+                                {
+                                    "summary_ko": "원문 로그 5건 기반 심층 분석 완료",
+                                    "recommendations": ["차단 상태 유지"],
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    ],
+                }
+            },
+        }
+
+        with patch("remediation.llm_worker.send_deep_analysis_slack_alert", return_value=True):
+            worker_res = llm_analysis_handler(event=worker_event, bedrock_client=mock_bedrock)
+            assert worker_res["status"] == "accepted"
+            assert worker_res["llm_analyzed"] is True
+            assert worker_res["raw_logs_count"] == 5
+
+
+def test_apply_rollback_default_baseline_sg_auto_discovery(
+    mocked_ec2_target: MockEc2Target,
+    sample_incident_report: IncidentReport,
+) -> None:
+    """baseline_sg_id 미지정 시 기본 이름(CloudShield-Target-SG) 자동 복원 검증."""
+    from remediation.remediation import apply_remediation, apply_rollback
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    report = sample_incident_report.model_copy(
+        update={
+            "target_identifier": mocked_ec2_target.instance_id,
+            "action_required": "QUARANTINE_EC2",
+        }
+    )
+
+    # 1. 격리 집행
+    rem_res = apply_remediation(report=report, ec2_client=ec2_client)
+    assert rem_res["quarantine_applied"] is True
+
+    # 2. baseline_sg_id 없이 기본 SG 이름(CloudShield-Target-SG) 자동 탐색으로 롤백 집행
+    rollback_res = apply_rollback(
+        report=report,
+        ec2_client=ec2_client,
+        baseline_sg_id=None,
+    )
+    assert rollback_res["quarantine_restored"] is True
+
+    # 인스턴스 보안 그룹이 정상 기준선 SG로 복원되었는지 확인
+    desc = ec2_client.describe_instances(InstanceIds=[mocked_ec2_target.instance_id])
+    assert [sg["GroupId"] for sg in desc["Reservations"][0]["Instances"][0]["SecurityGroups"]] == [
+        mocked_ec2_target.normal_sg_id
+    ]
+
+    # 잘못된 기준선 SG 이름 지정 시 탐색 실패 및 False 반환 검증
+    ec2_client.modify_instance_attribute(
+        InstanceId=mocked_ec2_target.instance_id,
+        Groups=[mocked_ec2_target.quarantine_sg_id],
+    )
+    failing_rollback = apply_rollback(
+        report=report,
+        ec2_client=ec2_client,
+        baseline_sg_id=None,
+        baseline_sg_name="NonExistent-SG",
+    )
+    assert failing_rollback["quarantine_restored"] is False
+
+
+def test_apply_rollback_waf_verify_url_observed_source_ip_routes(
+    mocked_waf_ipset: MockWafTarget,
+    sample_incident_report: IncidentReport,
+) -> None:
+    """apply_rollback의 verify_url 경로에서 관측 출발지 IP 일치/미제공/불일치 경로 검증."""
+    from remediation.remediation import apply_remediation, apply_rollback
+
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    target_ip = "198.51.100.188"
+    report = sample_incident_report.model_copy(
+        update={
+            "source_ip": target_ip,
+            "action_required": "BLOCK_WAF",
+        }
+    )
+
+    # 1. 차단 집행
+    rem_res = apply_remediation(report=report, waf_client=waf_client)
+    assert rem_res["waf_blocked"] is True
+
+    # 2. 미제공 경로: observed_source_ip가 없으면 검증 가드에 의해 조기 거부(False)
+    res_missing = apply_rollback(
+        report=report,
+        waf_client=waf_client,
+        waf_ipset_name=mocked_waf_ipset.ipset_name,
+        waf_ipset_id=mocked_waf_ipset.ipset_id,
+        waf_scope=mocked_waf_ipset.scope,
+        verify_url="http://example.com/health",
+        observed_source_ip=None,
+    )
+    assert res_missing["waf_unblocked"] is False
+
+    # 3. 불일치 경로: observed_source_ip가 해제 대상 IP와 다르면 거부(False)
+    res_mismatch = apply_rollback(
+        report=report,
+        waf_client=waf_client,
+        waf_ipset_name=mocked_waf_ipset.ipset_name,
+        waf_ipset_id=mocked_waf_ipset.ipset_id,
+        waf_scope=mocked_waf_ipset.scope,
+        verify_url="http://example.com/health",
+        observed_source_ip="198.51.100.99",
+    )
+    assert res_mismatch["waf_unblocked"] is False
+
+    # 4. 일치 경로: observed_source_ip가 일치하고 프로브 성공 시 정상 해제(True)
+    res_success = apply_rollback(
+        report=report,
+        waf_client=waf_client,
+        waf_ipset_name=mocked_waf_ipset.ipset_name,
+        waf_ipset_id=mocked_waf_ipset.ipset_id,
+        waf_scope=mocked_waf_ipset.scope,
+        verify_url="http://example.com/health",
+        observed_source_ip=target_ip,
+        http_probe_fn=lambda url, timeout: 200,
+        verify_timeout=1.0,
+    )
+    assert res_success["waf_unblocked"] is True
+
+    # IPSet에서 실제로 제거되었는지 확인
+    ip_set = waf_client.get_ip_set(
+        Name=mocked_waf_ipset.ipset_name,
+        Scope=mocked_waf_ipset.scope,
+        Id=mocked_waf_ipset.ipset_id,
+    )
+    assert f"{target_ip}/32" not in ip_set["IPSet"]["Addresses"]
+
+
+def test_orchestrator_stage_timestamps_preserves_remediation_duration(
+    mocked_dynamodb_table: Any,
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+) -> None:
+    """오케스트레이터가 실제 단계 경계에서 시각을 기록하여 소요 시간을 보존하는지 검증."""
+    import time
+    from unittest.mock import MagicMock, patch
+
+    import remediation.orchestrator as orch_mod
+    from remediation.auth_window import AuthFailureWindow
+    from remediation.orchestrator import threat_orchestrator_handler
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+
+    attacker_ip = "198.51.100.222"
+    messages = [
+        (
+            f"Sep 04 15:01:0{i} target-ec2 sshd[2220{i}]: Failed password for "
+            f"root from {attacker_ip} port 4220{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    mock_events = MagicMock()
+    mock_events.put_events.return_value = {
+        "FailedEntryCount": 0,
+        "Entries": [{"EventId": "ev-timestamp-test"}],
+    }
+
+    # apply_remediation 호출 시 0.05초 지연 시뮬레이션
+    real_apply_remediation = orch_mod.apply_remediation
+
+    def delayed_remediation(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.05)
+        return real_apply_remediation(*args, **kwargs)
+
+    with (
+        patch("remediation.orchestrator.apply_remediation", side_effect=delayed_remediation),
+        patch("remediation.orchestrator.send_slack_alert", return_value=True),
+    ):
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            events_client=mock_events,
+        )
+        assert res["processed_events"] == 5
+        mock_events.put_events.assert_called_once()
+        put_entry = mock_events.put_events.call_args.kwargs["Entries"][0]
+        detail_data = json.loads(put_entry["Detail"])
+
+        assert "pipeline_timestamps" in detail_data
+        timestamps = detail_data["pipeline_timestamps"]
+        assert "detected_epoch" in timestamps
+        assert "remediated_epoch" in timestamps
+        duration = timestamps["remediated_epoch"] - timestamps["detected_epoch"]
+        assert duration >= 0.04
