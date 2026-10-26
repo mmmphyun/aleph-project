@@ -34,6 +34,7 @@ from contracts.incident import IncidentReport
 logger = logging.getLogger(__name__)
 
 DEFAULT_QUARANTINE_SG_NAME = "CloudShield-Quarantine-SG"
+DEFAULT_BASELINE_SG_NAME = "TargetNormalSG"
 DEFAULT_WAF_IPSET_NAME = "CloudShield-Block-IPSet"
 DEFAULT_WAF_SCOPE = "REGIONAL"
 MAX_WAF_UPDATE_RETRIES = 3
@@ -51,6 +52,19 @@ class RemediationResult(TypedDict):
     waf_blocked: bool
     quarantine_applied: bool
     iam_revoked: bool
+
+
+class RollbackResult(TypedDict):
+    """AWS 다중 계층 원자적 복구(Rollback) 실행 결과 모델.
+
+    Why:
+        L4 EC2 Baseline SG 복원과 L7 WAF IPSet 해제 및 Identity IAM 복구 결과를
+        구조화된 계약 모델로 반환하여 상위 오케스트레이터 및 리포터 모듈과의 결합도를 유지함.
+    """
+
+    waf_unblocked: bool
+    quarantine_restored: bool
+    iam_restored: bool
 
 
 def find_quarantine_security_group(
@@ -350,6 +364,142 @@ def quarantine_ec2_instance(
 
 # 노션 DoD 및 인터페이스 호환을 위한 격리 함수 별칭
 isolate_ec2_instance = quarantine_ec2_instance
+
+
+def find_baseline_security_group(
+    ec2_client: Any,
+    vpc_id: str | None = None,
+    group_name: str = DEFAULT_BASELINE_SG_NAME,
+) -> str | None:
+    """정상 운영 기준선 보안 그룹(TargetNormalSG)의 GroupId를 조회.
+
+    Why:
+        복구(Rollback) 시 인프라 환경에 따라 정상 보안 그룹의 ID가 동적으로 변경될 수 있으므로,
+        표준 네이밍 규약 또는 파라미터에 따라 해당 VPC 내의 정상 SG를 탐색하여 결합도를 낮춤.
+
+    Constraints:
+        - group_name: 조회 대상 기준선 보안 그룹명 (기본값: TargetNormalSG).
+        - 반환값: 탐색 성공 시 'sg-xxxx' 문자열, 미발견 시 None.
+
+    Side-effects / Edge-cases:
+        - AWS API 호출 실패(ClientError) 시 에러를 전파하지 않고 None을 반환하여
+          복구 엔진의 예외 격리 원칙을 준수함.
+    """
+    filters: list[dict[str, Any]] = [{"Name": "group-name", "Values": [group_name]}]
+    if vpc_id:
+        filters.append({"Name": "vpc-id", "Values": [vpc_id]})
+
+    try:
+        response = ec2_client.describe_security_groups(Filters=filters)
+        security_groups = response.get("SecurityGroups", [])
+        if not security_groups:
+            logger.warning(
+                "기준선 보안 그룹 탐색 실패: group_name=%s, vpc_id=%s",
+                group_name,
+                vpc_id,
+            )
+            return None
+        return str(security_groups[0]["GroupId"])
+    except ClientError as e:
+        logger.error("기준선 보안 그룹 조회 중 AWS ClientError 발생: %s", e)
+        return None
+
+
+def restore_ec2_baseline_sg(
+    instance_id: str,
+    ec2_client: Any = None,
+    baseline_sg_id: str | None = None,
+    baseline_sg_name: str = DEFAULT_BASELINE_SG_NAME,
+) -> bool:
+    """침해 타깃 EC2의 보안 그룹을 정상 기준선 보안 그룹(Baseline SG)으로 원자적 복원.
+
+    Why:
+        침해사고 종결, 오탐 판정 또는 모의 공격 관통 테스트 종료 후,
+        격리 보안 그룹(Quarantine SG)으로 격리되었던 타깃 EC2를 기존 정상 운영 보안 그룹으로
+        원자적 교체(modify_instance_attribute)하여 정상 서비스 가용성을 복원함.
+
+    Constraints:
+        - instance_id: 'i-' 접두사로 시작하는 유효한 AWS EC2 인스턴스 ID.
+        - baseline_sg_id 미지정 시 환경변수(BASELINE_SG_ID) 또는 baseline_sg_name으로 자동 탐색.
+        - 교체 직후 describe_instances 동기 재조회를 통해 Baseline SG 단독 적용을 확증함.
+
+    Side-effects / Edge-cases:
+        - 이미 Baseline SG 단독 적용 상태인 경우 중복 API 호출 없이 즉시 True 반환
+          (상태 기반 멱등성).
+        - 인스턴스 미존재, 권한 부족, API 실패(ClientError) 시 False 반환 및 결함 격리.
+    """
+    if ec2_client is None:
+        region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        ec2_client = boto3.client("ec2", region_name=region)
+
+    try:
+        # 1. 대상 인스턴스 상태 및 VPC, 현재 연결된 보안 그룹 조회
+        desc_res = ec2_client.describe_instances(InstanceIds=[instance_id])
+        reservations = desc_res.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            logger.error("복원 대상 인스턴스를 찾을 수 없음: %s", instance_id)
+            return False
+
+        target_instance = reservations[0]["Instances"][0]
+        vpc_id = target_instance.get("VpcId")
+        current_sgs = [sg["GroupId"] for sg in target_instance.get("SecurityGroups", [])]
+
+        # 2. 복원 대상 기준선 보안 그룹 ID 확정
+        target_baseline_sg_id = baseline_sg_id or os.getenv("BASELINE_SG_ID")
+        if not target_baseline_sg_id:
+            target_baseline_sg_id = find_baseline_security_group(
+                ec2_client, vpc_id=vpc_id, group_name=baseline_sg_name
+            )
+
+        if not target_baseline_sg_id:
+            logger.error(
+                "인스턴스 %s 복원에 필요한 기준선 보안 그룹(%s)을 찾을 수 없음",
+                instance_id,
+                baseline_sg_name,
+            )
+            return False
+
+        # 3. 멱등성 검사: 이미 Baseline SG 단독 적용 상태인지 확인
+        if current_sgs == [target_baseline_sg_id]:
+            logger.info(
+                "인스턴스 %s는 이미 기준선 보안 그룹(%s) 단독 적용 상태임 (멱등 처리)",
+                instance_id,
+                target_baseline_sg_id,
+            )
+            return True
+
+        # 4. 원자적 보안 그룹 교체 (기존 보안 그룹 목록을 Baseline SG 1개로 단독 대체)
+        ec2_client.modify_instance_attribute(
+            InstanceId=instance_id,
+            Groups=[target_baseline_sg_id],
+        )
+
+        # 5. Read-after-Write 동기 재조회 검증
+        verify_res = ec2_client.describe_instances(InstanceIds=[instance_id])
+        verified_sgs = [
+            sg["GroupId"]
+            for sg in verify_res["Reservations"][0]["Instances"][0].get("SecurityGroups", [])
+        ]
+        if verified_sgs != [target_baseline_sg_id]:
+            logger.error(
+                "인스턴스 %s Baseline SG 복구 검증 실패: 예상=[%s], 실제=%s",
+                instance_id,
+                target_baseline_sg_id,
+                verified_sgs,
+            )
+            return False
+
+        logger.info(
+            "인스턴스 %s Baseline SG 복원 완료: SG %s -> [%s]",
+            instance_id,
+            current_sgs,
+            target_baseline_sg_id,
+        )
+        return True
+
+    except ClientError as e:
+        logger.error("인스턴스 %s Baseline SG 복원 중 AWS ClientError 발생: %s", instance_id, e)
+        return False
 
 
 def find_waf_ip_set(
@@ -1094,5 +1244,83 @@ def apply_remediation(
     if action == "REVOKE_IAM_SESSION":
         # TODO(cloud-a): IAM 세션 무효화 인라인 정책 적용 연동 구현
         result["iam_revoked"] = False
+
+    return result
+
+
+def apply_rollback(
+    report: IncidentReport,
+    ec2_client: Any = None,
+    waf_client: Any = None,
+    iam_client: Any = None,
+    baseline_sg_id: str | None = None,
+    baseline_sg_name: str = DEFAULT_BASELINE_SG_NAME,
+    waf_ipset_name: str = DEFAULT_WAF_IPSET_NAME,
+    waf_ipset_id: str | None = None,
+    waf_scope: str = DEFAULT_WAF_SCOPE,
+    verify_url: str | None = None,
+    verify_timeout: float = DEFAULT_WAF_VERIFY_TIMEOUT,
+    poll_interval: float = DEFAULT_WAF_POLL_INTERVAL,
+) -> RollbackResult:
+    """침해사고 보고서에 집행되었던 AWS 다중 계층 차단 조치를 원자적으로 롤백 복구.
+
+    Why:
+        apply_remediation()에 의해 L4 격리 및 L7 WAF 차단이 적용되었던 인프라를
+        사고 조사 완료 또는 오탐 판정 시 안전하게 원복함.
+        한 계층의 복구 실패가 다른 계층의 원복을 방해하지 않도록 계층별 독립 격리 실행함.
+
+    Constraints:
+        - report: IncidentReport 객체.
+        - action_required에 따라 원래 적용되었던 계층만 대칭적으로 롤백함.
+        - 반환값: RollbackResult (waf_unblocked, quarantine_restored, iam_restored).
+
+    Side-effects / Edge-cases:
+        - L4 복구 시 ClientError가 발생해도 L7 차단 해제는 정상 시도됨 (결함 격리).
+        - 멱등성을 보장하여 이미 해제된 상태에서 중복 호출되어도 True 반환.
+    """
+    result: RollbackResult = {
+        "waf_unblocked": False,
+        "quarantine_restored": False,
+        "iam_restored": False,
+    }
+
+    action = report.action_required
+    if action in ("NONE", "ALERT_ONLY"):
+        return result
+
+    # 1. L4 EC2 Baseline SG 복원 (QUARANTINE_EC2 또는 BLOCK_AND_QUARANTINE 롤백)
+    if action in ("QUARANTINE_EC2", "BLOCK_AND_QUARANTINE"):
+        try:
+            result["quarantine_restored"] = restore_ec2_baseline_sg(
+                instance_id=report.target_identifier,
+                ec2_client=ec2_client,
+                baseline_sg_id=baseline_sg_id,
+                baseline_sg_name=baseline_sg_name,
+            )
+        except Exception as exc:
+            logger.error("L4 EC2 Baseline SG 복구 중 예외 발생 격리: %s", exc)
+            result["quarantine_restored"] = False
+
+    # 2. L7 WAF IP 차단 해제 (BLOCK_WAF, BLOCK_AND_QUARANTINE, BLOCK_IP_ONLY 롤백)
+    if action in ("BLOCK_WAF", "BLOCK_AND_QUARANTINE", "BLOCK_IP_ONLY"):
+        try:
+            result["waf_unblocked"] = unblock_ip_wafv2(
+                source_ip=report.source_ip,
+                unblock_all=False,
+                ipset_name=waf_ipset_name,
+                ipset_id=waf_ipset_id,
+                scope=waf_scope,
+                waf_client=waf_client,
+                verify_url=verify_url,
+                verify_timeout=verify_timeout,
+                poll_interval=poll_interval,
+            )
+        except Exception as exc:
+            logger.error("L7 WAF IP 차단 해제 중 예외 발생 격리: %s", exc)
+            result["waf_unblocked"] = False
+
+    # 3. Identity IAM 복구 연계 영역
+    if action == "REVOKE_IAM_SESSION":
+        result["iam_restored"] = False
 
     return result

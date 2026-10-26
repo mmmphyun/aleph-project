@@ -290,7 +290,16 @@ def llm_analysis_handler(
     response["incident_id"] = report.incident_id
 
     # 3. 사후 LLM 심층 침해 분석 파이프라인 수행 (실제 어댑터 호출)
-    raw_logs = detail.get("raw_logs", []) if isinstance(detail, dict) else []
+    raw_logs: list[str] = []
+    if isinstance(detail, dict):
+        raw_logs = detail.get("raw_logs", [])
+    elif isinstance(detail, str):
+        try:
+            detail_obj = json.loads(detail)
+            if isinstance(detail_obj, dict):
+                raw_logs = detail_obj.get("raw_logs", [])
+        except Exception:
+            raw_logs = []
     if not isinstance(raw_logs, list):
         raw_logs = []
 
@@ -302,6 +311,7 @@ def llm_analysis_handler(
         model_id=model_id,
     )
     response["llm_analyzed"] = is_enhanced
+    response["raw_logs_count"] = len(raw_logs)
 
     # 4. 2차 사후 심층 분석 Slack 카드 전파
     target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
