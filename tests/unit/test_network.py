@@ -15,6 +15,597 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture
+def roundtrip(monkeypatch):
+    directory = Path(__file__).resolve().parents[2] / "network"
+    monkeypatch.syspath_prepend(str(directory))
+    spec = importlib.util.spec_from_file_location(
+        "roundtrip_timeline", directory / "roundtrip_timeline.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def roundtrip_case(tmp_path):
+    """합성 로컬 증거로만 구성한다. backing 원문과 sidecar의 출처 선언을 구분한다."""
+
+    def make(scenario="ssh", *, missing=()):
+        context = {
+            "schema_version": "cloudshield-roundtrip-input-v1",
+            "run_id": "synthetic-run",
+            "scenario": scenario,
+            "target_key": "synthetic-target",
+            "incident_id": None,
+            "clocks": {"client": {"max_error_seconds": None}},
+            "measurement_limits": {"probe_interval_seconds": "1", "probe_timeout_seconds": "0.8"},
+            "evidence": [],
+        }
+
+        def row(key, kind, time, **kwargs):
+            source = "tcp_probe" if scenario == "ssh" else "http_probe"
+            if kind == "first_attack":
+                source = "pcap_tcp" if scenario == "ssh" else "pcap_http"
+            elif kind.startswith("recovery_"):
+                source = "cloud_a"
+            return {
+                "event_id": key,
+                "kind": kind,
+                "time": time,
+                "source_kind": source,
+                "locator": "synthetic/" + key,
+                "backing_evidence_id": "raw",
+                **kwargs,
+            }
+
+        def probe(key, kind, time, *, blocked=False):
+            values = (
+                {"outcome": "timeout" if blocked else "connected"}
+                if scenario == "ssh"
+                else {"outcome": "http", "http_status": 403 if blocked else 200}
+            )
+            return row(key, kind, time, connection_kind="new", **values)
+
+        rows = [
+            probe("baseline", "baseline", "100.000000001"),
+            row("first", "first_attack", "101.000000001"),
+            probe("last", "probe", "102.000000001"),
+            probe("block", "probe", "103.000000002", blocked=True),
+            row("restore", "recovery_started", "104.000000003"),
+            probe("restored", "probe", "105.000000004"),
+        ]
+        rows = [r for r in rows if r["event_id"] not in missing]
+
+        def add(name, form, raw, **extras):
+            path = tmp_path / (name + ".private")
+            path.write_bytes(raw)
+            entry = {
+                "evidence_id": name,
+                "format": form,
+                "path": path.name,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "clock_id": "client",
+                **{k: context[k] for k in ("run_id", "scenario", "target_key")},
+                **extras,
+            }
+            context["evidence"].append(entry)
+            return entry
+
+        def save():
+            path = tmp_path / "input.private.json"
+            path.write_text(json.dumps(context), encoding="utf-8")
+            return path
+
+        def observations():
+            return json.dumps(
+                {**{k: context[k] for k in ("run_id", "scenario", "target_key")}, "events": rows}
+            ).encode()
+
+        add("raw", "opaque", b"synthetic evidence bytes only")
+        return context, rows, add, save, observations
+
+    return make
+
+
+@pytest.mark.parametrize("scenario", ["ssh", "web"])
+def test_roundtrip_precise_roundtrip_and_atomic_output(
+    roundtrip, roundtrip_case, tmp_path, scenario
+):
+    context, rows, add, save, observations = roundtrip_case(scenario)
+    add("obs", "observations", observations())
+    target = tmp_path / "summary.json"
+    result = roundtrip.write_summary(save(), target)
+    assert result["durations"]["block_observation"]["seconds"] == "2.000000001"
+    assert result["durations"]["block_hold_observation"]["seconds"] == "2.000000002"
+    assert result["durations"]["recovery_processing_observation"]["seconds"] == "1.000000001"
+    assert result["observations"]["last_normal_before_candidate"]["event_id"] == "obs:last"
+    assert result["correlation"]["status"] == "unlinked"
+    assert result["incident_id"] is None
+    assert result["durations"]["block_observation"]["clock_error_bound_seconds"] is None
+    assert result["stage_status"]["configuration_restored"] == "not_verified"
+    assert result["stage_status"]["sla"] == "not_evaluated"
+    assert "private" not in target.read_text(encoding="utf-8")
+    before = target.read_bytes()
+    with pytest.raises(FileExistsError):
+        roundtrip.write_summary(save(), target)
+    assert target.read_bytes() == before
+    assert not list(tmp_path.glob(".roundtrip-*"))
+
+
+@pytest.mark.parametrize(
+    "missing,metric",
+    [
+        (("first",), "block_observation"),
+        (("block",), "block_hold_observation"),
+        (("restored",), "block_hold_observation"),
+        (("restore",), "recovery_processing_observation"),
+        (("baseline",), "block_observation"),
+    ],
+)
+def test_roundtrip_missing_is_null_with_reason(roundtrip, roundtrip_case, missing, metric):
+    context, rows, add, save, observations = roundtrip_case(missing=missing)
+    add("obs", "observations", observations())
+    result = roundtrip.build_summary(save())
+    assert result["durations"][metric]["seconds"] is None
+    assert result["durations"][metric]["reason"] == "endpoint_not_observed"
+    assert result["stage_status"]["observation_complete"] is False
+
+
+def test_roundtrip_reverse_duplicate_and_conflict(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case()
+    rows.reverse()
+    rows.append(dict(rows[0]))
+    entry = add("obs", "observations", observations())
+    result = roundtrip.build_summary(save())
+    assert result["integrity"] == {"duplicate_event_count": 1, "input_out_of_order": True}
+    rows[-1]["time"] = "106"
+    Path(save().parent / entry["path"]).write_bytes(observations())
+    entry["sha256"] = hashlib.sha256(observations()).hexdigest()
+    with pytest.raises(ValueError, match="충돌"):
+        roundtrip.build_summary(save())
+
+
+@pytest.mark.parametrize(
+    "value,resolution",
+    [
+        ("NaN", "infer"),
+        ("-1", "infer"),
+        ("1e3", "infer"),
+        ("1.0000000001", "infer"),
+        ("2026-02-30T00:00:00Z", "infer"),
+        ("2026-01-01T00:00:00+09:00", "infer"),
+        ("100.001", "1"),
+        ("100", "0.001"),
+        ("100", "0"),
+        ("100.0", "0.2"),
+    ],
+)
+def test_roundtrip_invalid_time_and_resolution(roundtrip, value, resolution):
+    with pytest.raises(ValueError):
+        roundtrip.timestamp(value, resolution=resolution)
+
+
+def test_roundtrip_nanosecond_utc_and_original_seconds(roundtrip):
+    value = roundtrip.timestamp("2026-10-27T00:00:00.123456789Z")
+    assert value["epoch_seconds"] == "1793059200.123456789"
+    assert value["utc"] == "2026-10-27T00:00:00.123456789Z"
+    assert value["resolution_seconds"] == "0.000000001"
+    assert roundtrip.timestamp("2026-10-27T00:00:00Z")["utc"].endswith("00:00:00Z")
+
+
+@pytest.mark.parametrize(
+    "key,new_time", [("block", "100.5"), ("restore", "102"), ("restored", "103.5")]
+)
+def test_roundtrip_rejects_causality_reversal(roundtrip, roundtrip_case, key, new_time):
+    context, rows, add, save, observations = roundtrip_case()
+    next(r for r in rows if r["event_id"] == key)["time"] = new_time
+    add("obs", "observations", observations())
+    with pytest.raises(ValueError):
+        roundtrip.build_summary(save())
+
+
+def test_roundtrip_equal_attack_and_candidate_is_observed_zero(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case()
+    rows[1]["time"] = rows[3]["time"]
+    add("obs", "observations", observations())
+    result = roundtrip.build_summary(save())
+    assert Decimal(result["durations"]["block_observation"]["seconds"]) == 0
+    assert result["durations"]["block_observation"]["reason"] is None
+
+
+def test_roundtrip_equal_normal_and_candidate_is_ambiguous(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case()
+    rows[2]["time"] = rows[3]["time"]
+    add("obs", "observations", observations())
+    with pytest.raises(ValueError, match="모호"):
+        roundtrip.build_summary(save())
+
+
+@pytest.mark.parametrize(
+    "key,value", [("run_id", "other"), ("target_key", "other"), ("scenario", "web")]
+)
+def test_roundtrip_rejects_mixed_evidence_binding(roundtrip, roundtrip_case, key, value):
+    context, rows, add, save, observations = roundtrip_case()
+    entry = add("obs", "observations", observations())
+    entry[key] = value
+    with pytest.raises(ValueError, match="불일치"):
+        roundtrip.build_summary(save())
+
+
+@pytest.mark.parametrize("outcome", ["refused", "network_error", "rst", "fin", "connected"])
+def test_roundtrip_ssh_errors_never_become_timeout_block(roundtrip, roundtrip_case, outcome):
+    context, rows, add, save, observations = roundtrip_case(missing=("restore",))
+    rows[3]["outcome"] = outcome
+    add("obs", "observations", observations())
+    assert roundtrip.build_summary(save())["stage_status"]["block"] == "not_observed"
+
+
+@pytest.mark.parametrize("status", [200, 401, 404, 500, 503])
+def test_roundtrip_web_errors_never_become_waf_block(roundtrip, roundtrip_case, status):
+    context, rows, add, save, observations = roundtrip_case("web", missing=("restore",))
+    rows[3]["http_status"] = status
+    add("obs", "observations", observations())
+    result = roundtrip.build_summary(save())
+    assert result["stage_status"]["block"] == "not_observed"
+    assert result["stage_status"]["policy_cause"] == "not_confirmed"
+
+
+def test_roundtrip_established_reset_and_operator_attestation_are_not_control(
+    roundtrip, roundtrip_case
+):
+    context, rows, add, save, observations = roundtrip_case(missing=("restore",))
+    rows[3]["connection_kind"] = "established"
+    rows.append(
+        {
+            **rows[1],
+            "event_id": "attested",
+            "kind": "recovery_attested",
+            "time": "104",
+            "source_kind": "operator",
+        }
+    )
+    add("obs", "observations", observations())
+    result = roundtrip.build_summary(save())
+    assert result["stage_status"]["block"] == "not_observed"
+    assert result["durations"]["recovery_processing_observation"]["seconds"] is None
+
+
+@pytest.mark.parametrize(
+    "incident,expected", [(None, "error"), ("INC-synthetic", "linked"), ("INC-other", "error")]
+)
+def test_roundtrip_incident_requires_matching_source(roundtrip, roundtrip_case, incident, expected):
+    context, rows, add, save, observations = roundtrip_case()
+    context["incident_id"] = incident
+    rows[4]["incident_id"] = "INC-synthetic"
+    add("obs", "observations", observations())
+    if expected == "error":
+        with pytest.raises(ValueError, match="사건 ID"):
+            roundtrip.build_summary(save())
+    else:
+        assert roundtrip.build_summary(save())["correlation"]["status"] == expected
+
+
+def test_roundtrip_cross_device_unknown_clock_not_zero(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case()
+    context["clocks"]["server"] = {"max_error_seconds": None}
+    server = rows.pop(4)
+    server_data = {
+        **{k: context[k] for k in ("run_id", "scenario", "target_key")},
+        "events": [server],
+    }
+    add("server", "observations", json.dumps(server_data).encode(), clock_id="server")
+    add("obs", "observations", observations())
+    metric = roundtrip.build_summary(save())["durations"]["recovery_processing_observation"]
+    assert metric["basis"] == "cross_device_wall_time"
+    assert metric["clock_error_bound_seconds"] is None
+    assert metric["accuracy"] == "clock_error_unknown"
+
+
+def test_roundtrip_pcap_sha_and_existing_tcp_parser(roundtrip, roundtrip_case, waf_timeline):
+    context, rows, add, save, observations = roundtrip_case()
+    rows.pop(1)
+    context.update(source_ip="192.0.2.1", target_ips=["192.0.2.2"])
+    raw = ",".join(waf_timeline.FIELDS) + "\n101.000000001,7,192.0.2.1,40001,192.0.2.2,22,1,0,0,0\n"
+    entry = add(
+        "tcp",
+        "tcp_csv",
+        raw.encode(),
+        start_epoch="100",
+        end_epoch="106",
+        attack_streams=[{"stream": 7, "source": "192.0.2.1:40001", "destination": "192.0.2.2:22"}],
+    )
+    add("obs", "observations", observations())
+    result = roundtrip.build_summary(save())
+    assert result["observations"]["first_attack"]["source"]["kind"] == "pcap_tcp"
+    assert result["durations"]["block_observation"]["seconds"] == "2.000000001"
+    entry["attack_streams"][0]["destination"] = "192.0.2.3:22"
+    with pytest.raises(ValueError, match="불일치"):
+        roundtrip.build_summary(save())
+
+
+@pytest.mark.parametrize("failure", ["hash", "size", "count", "read", "write", "sync", "publish"])
+def test_roundtrip_limits_and_partial_failure_never_publish(
+    roundtrip, roundtrip_case, tmp_path, monkeypatch, failure
+):
+    context, rows, add, save, observations = roundtrip_case()
+    entry = add("obs", "observations", observations())
+    source = save()
+    if failure == "hash":
+        entry["sha256"] = "0" * 64
+        source = save()
+    elif failure == "size":
+        monkeypatch.setattr(roundtrip, "MAX_FILE_BYTES", 1)
+    elif failure == "count":
+        monkeypatch.setattr(roundtrip, "MAX_ROWS", 1)
+    elif failure == "read":
+        (tmp_path / entry["path"]).unlink()
+    else:
+
+        def fail(*args, **kwargs):
+            raise OSError("synthetic failure")
+
+        if failure == "write":
+            monkeypatch.setattr(roundtrip.tempfile, "mkstemp", fail)
+        else:
+            monkeypatch.setattr(roundtrip.os, "fsync" if failure == "sync" else "link", fail)
+    target = tmp_path / "summary.json"
+    with pytest.raises((ValueError, OSError)):
+        roundtrip.write_summary(source, target)
+    assert not target.exists()
+    assert not list(tmp_path.glob(".roundtrip-*"))
+
+
+def test_roundtrip_rejects_duplicate_json_keys_and_bad_cli(roundtrip, tmp_path, capsys):
+    source, target = tmp_path / "bad.json", tmp_path / "summary.json"
+    source.write_text('{"run_id":"secret-value","run_id":"other"}', encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        roundtrip.main([str(source), str(target)])
+    assert exc.value.code == 2
+    assert "secret-value" not in capsys.readouterr().err
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("scenario", ["ssh", "web"])
+def test_roundtrip_actual_reporter_format_and_no_first_packet_fallback(
+    roundtrip, roundtrip_case, demo_runner, tmp_path, scenario
+):
+    context, rows, add, save, observations = roundtrip_case(scenario)
+    reporter = demo_runner.Reporter(tmp_path)
+
+    def stamp(n):
+        return f"2026-10-27T00:00:0{n}.000Z"
+
+    def probe(n, blocked=False):
+        return {
+            "started_at": stamp(n),
+            "ended_at": stamp(n),
+            "elapsed_ms": 0.1,
+            **(
+                {"state": "timeout" if blocked else "connected"}
+                if scenario == "ssh"
+                else {"http_status": 403 if blocked else 200}
+            ),
+        }
+
+    reporter.emit(
+        scenario, "start", "synthetic", stamp=stamp(0), details={"run_id": context["run_id"]}
+    )
+    reporter.emit(scenario, "baseline", "synthetic", stamp=stamp(0), details=probe(0))
+    reporter.emit(scenario, "attack_started", "synthetic", stamp=stamp(1))
+    reporter.emit(scenario, "probe", "synthetic", stamp=stamp(3), details=probe(3, True))
+    reporter.emit(scenario, "probe", "synthetic", stamp=stamp(5), details=probe(5))
+    reporter.emit(scenario, "end", "synthetic", stamp=stamp(6), details={"exit_code": 130})
+    reporter.close()
+    runner_raw = (tmp_path / "events.jsonl").read_bytes()
+    lines = runner_raw.splitlines(keepends=True)
+    add("runner", "runner_events", runner_raw + lines[0] + lines[3])
+    result = roundtrip.build_summary(save())
+    assert result["durations"]["block_observation"]["seconds"] is None
+    assert result["durations"]["block_hold_observation"]["seconds"] == "2.000"
+    assert result["stage_status"]["interrupted"] is True
+    assert result["stage_status"]["observation_complete"] is True
+    assert result["integrity"]["duplicate_event_count"] == 1
+    assert result["observations"]["attack_invoked"]["time"]["resolution_seconds"] is None
+
+
+def test_roundtrip_ssh_child_manifest_and_parent_hash_binding(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case()
+
+    def probe(n, state):
+        return {"started_at": str(n), "ended_at": str(n), "state": state}
+
+    data = {
+        "schema": "cloudshield-p3-3-private-evidence-v1",
+        "run_id": "child-run",
+        "started_at": "100",
+        "target": "TARGET_EC2_PUBLIC_IP",
+        "port": 22,
+        "baseline": probe(100, "connected"),
+        "hydra": {"started_at": "101"},
+        "probes": [probe(103, "timeout")],
+        "ended_at": "104",
+        "interrupted": False,
+    }
+    child = add("child", "ssh_manifest", json.dumps(data).encode(), source_run_id="child-run")
+    runner = [
+        {
+            "sequence": 1,
+            "recorded_at": "100",
+            "scenario": "ssh",
+            "stage": "start",
+            "details": {"run_id": context["run_id"]},
+        },
+        {
+            "sequence": 2,
+            "recorded_at": "104",
+            "scenario": "ssh",
+            "stage": "attack_finished",
+            "details": {"run_id": "child-run", "manifest_sha256": child["sha256"]},
+        },
+    ]
+    add("runner", "runner_events", "\n".join(json.dumps(r) for r in runner).encode())
+    result = roundtrip.build_summary(save())
+    assert result["observations"]["first_block_candidate"]["source"]["evidence_id"] == "child"
+    child["source_run_id"] = "unrelated-run"
+    with pytest.raises(ValueError, match="하위 실행"):
+        roundtrip.build_summary(save())
+
+
+def test_roundtrip_web_scan_calls_are_not_packets_or_recovery(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case("web")
+    context["target_origin"] = "http://example.invalid"
+    raw = (
+        "tool=curl\ntarget=http://example.invalid\nstate=completed\nexit_code=0\n"
+        "attempted_requests=2\nended_at=2026-10-27T00:00:05Z\n"
+        "request_1_started_at=2026-10-27T00:00:01.001Z\n"
+        "request_1_observed_at=2026-10-27T00:00:02.001Z\n"
+        "request_1_http_status=403\nrequest_1_exit_code=0\n"
+        "request_2_started_at=2026-10-27T00:00:03.001Z\n"
+        "request_2_observed_at=2026-10-27T00:00:04.001Z\n"
+        "request_2_http_status=200\nrequest_2_exit_code=0\n"
+    )
+    add("scan", "web_scan", raw.encode())
+    result = roundtrip.build_summary(save())
+    assert result["observations"]["first_attack"] is None
+    assert result["observations"]["first_normal_after_block"] is None
+    assert result["stage_status"]["block"] == "not_observed"
+    assert result["observations"]["attack_invoked"]["time"]["resolution_seconds"] == "0.001"
+
+
+def test_roundtrip_ssh_exporter_csv_projection_preserves_packet_time(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case()
+    context.update(source_ip="192.0.2.1", target_ips=["192.0.2.2"])
+    raw = (
+        "frame.number,frame.time_epoch,tcp.stream,ip.src,tcp.srcport,ip.dst,tcp.dstport,"
+        "tcp.flags,tcp.seq,tcp.ack,tcp.analysis.retransmission\n"
+        "6,101.123456789,2,192.0.2.1,40001,192.0.2.2,22,0x0002,0,0,\n"
+    )
+    add(
+        "tcp",
+        "tcp_csv",
+        raw.encode(),
+        start_epoch="100",
+        end_epoch="110",
+        attack_streams=[{"stream": 2, "source": "192.0.2.1:40001", "destination": "192.0.2.2:22"}],
+    )
+    first = roundtrip.build_summary(save())["observations"]["first_attack"]
+    assert first["time"]["epoch_seconds"] == "101.123456789"
+    assert first["source"]["locator"] == "stream/2"
+
+
+@pytest.mark.parametrize(
+    "violation",
+    [
+        "sidecar",
+        "source",
+        "backing",
+        "incident",
+        "clock",
+        "metadata_size",
+        "files",
+        "json_nan",
+        "web_syn",
+    ],
+)
+def test_roundtrip_rejects_corrupt_sources_and_bounds(
+    roundtrip, roundtrip_case, monkeypatch, violation
+):
+    context, rows, add, save, observations = roundtrip_case(
+        "web" if violation == "web_syn" else "ssh"
+    )
+    if violation == "source":
+        rows[4]["source_kind"] = "operator"
+    elif violation == "backing":
+        rows[0]["backing_evidence_id"] = "absent"
+    elif violation == "incident":
+        rows[0]["incident_id"] = "INC-absent"
+    elif violation == "clock":
+        context["clocks"]["client"]["max_error_seconds"] = "NaN"
+    elif violation == "files":
+        monkeypatch.setattr(roundtrip, "MAX_FILES", 1)
+    elif violation == "web_syn":
+        rows[1]["source_kind"] = "pcap_tcp"
+    raw = observations()
+    if violation == "sidecar":
+        raw = raw.replace(b"synthetic-run", b"other-run")
+    elif violation == "metadata_size":
+        raw += b" " * (roundtrip.MAX_BYTES + 1)
+    elif violation == "json_nan":
+        raw = b'{"events": NaN}'
+    add("obs", "observations", raw)
+    with pytest.raises(ValueError):
+        roundtrip.build_summary(save())
+
+
+def test_roundtrip_mid_write_failure_keeps_no_final_json(
+    roundtrip, roundtrip_case, tmp_path, monkeypatch
+):
+    context, rows, add, save, observations = roundtrip_case()
+    add("obs", "observations", observations())
+    original = roundtrip.os.fdopen
+
+    class PartialWriter:
+        def __init__(self, descriptor, mode):
+            self.stream = original(descriptor, mode)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def write(self, payload):
+            self.stream.write(payload[:17])
+            self.stream.flush()
+            raise OSError("synthetic disk full")
+
+    monkeypatch.setattr(roundtrip.os, "fdopen", PartialWriter)
+    target = tmp_path / "summary.json"
+    with pytest.raises(OSError, match="disk full"):
+        roundtrip.write_summary(save(), target)
+    assert not target.exists()
+    assert not list(tmp_path.glob(".roundtrip-*"))
+
+
+@pytest.mark.parametrize("violation", ["server_probe", "event_run", "ssh_request", "bad_interrupt"])
+def test_roundtrip_rejects_wrong_direct_observation_source(roundtrip, roundtrip_case, violation):
+    context, rows, add, save, observations = roundtrip_case()
+    if violation == "server_probe":
+        rows[0]["source_kind"] = "cloud_a"
+    elif violation == "event_run":
+        rows[0]["run_id"] = "other-run"
+    elif violation == "ssh_request":
+        rows[1]["source_kind"] = "http_request"
+    else:
+        rows[0]["interrupted"] = "false"
+    add("obs", "observations", observations())
+    with pytest.raises(ValueError):
+        roundtrip.build_summary(save())
+
+
+def test_roundtrip_control_completion_and_known_clock_bounds(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case()
+    context["incident_id"] = "INC-synthetic"
+    context["clocks"]["client"]["max_error_seconds"] = "0.01"
+    rows.extend(
+        [
+            {**rows[4], "event_id": "api", "kind": "recovery_api_completed", "time": "104.1"},
+            {**rows[4], "event_id": "config", "kind": "configuration_verified", "time": "104.2"},
+        ]
+    )
+    add("obs", "observations", observations())
+    result = roundtrip.build_summary(save())
+    assert result["correlation"]["status"] == "unverified"
+    assert result["stage_status"]["configuration_restored"] == "evidence_provided"
+    assert result["stage_status"]["idempotency"] == "not_evaluated"
+    assert (
+        result["durations"]["recovery_processing_observation"]["clock_error_bound_seconds"]
+        == "0.02"
+    )
+    assert result["durations"]["recovery_processing_observation"]["seconds"] == "1.000000001"
+
+
 @pytest.mark.parametrize("module,expected_runs", [("vpc", 14), ("quarantine_sg", 42)])
 def test_terraform_network_mock_contracts(module, expected_runs, tmp_path):
     """HCL 자체를 평가해 라우팅/격리/출력 계약 및 잘못된 입력의 거부를 확인한다.
