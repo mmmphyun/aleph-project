@@ -420,7 +420,6 @@ def web_scan(raw, context, evidence):
                 "probe",
                 {"started_at": started, "ended_at": ended, "http_status": int(status)},
             )
-            item["connection_kind"] = "established"
             item["scan_request"] = True
             result.append(item)
         elif code not in {None, "unknown"}:
@@ -606,23 +605,21 @@ def observations(raw, context, evidence):
 
 
 def normal(item, scenario):
-    return (
-        item.get("connection_kind") == "new"
-        and not item.get("scan_request")
-        and (
-            item.get("outcome") == "connected"
-            if scenario == "ssh"
-            else item.get("outcome") == "http" and item.get("http_status") == 200
-        )
-    )
+    # SSH는 신규 연결 결과, Web은 TCP 재사용 여부와 독립된 HTTP 응답이 관측 단위다.
+    # 스캔 후보 경로의 응답은 같은 루트 탐침의 상태 전이로 합치지 않는다.
+    if item.get("scan_request"):
+        return False
+    if scenario == "ssh":
+        return item.get("connection_kind") == "new" and item.get("outcome") == "connected"
+    return item.get("outcome") == "http" and item.get("http_status") == 200
 
 
 def candidate(item, scenario):
-    return item.get("connection_kind") == "new" and (
-        item.get("outcome") == "timeout"
-        if scenario == "ssh"
-        else item.get("outcome") == "http" and item.get("http_status") == 403
-    )
+    if item.get("scan_request"):
+        return False
+    if scenario == "ssh":
+        return item.get("connection_kind") == "new" and item.get("outcome") == "timeout"
+    return item.get("outcome") == "http" and item.get("http_status") == 403
 
 
 def seconds(item):

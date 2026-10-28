@@ -133,6 +133,44 @@ def test_roundtrip_precise_roundtrip_and_atomic_output(
     assert not list(tmp_path.glob(".roundtrip-*"))
 
 
+@pytest.mark.parametrize("source_kind", ["http_probe", "pcap_http"])
+def test_roundtrip_web_keepalive_observes_http_transitions(roundtrip, roundtrip_case, source_kind):
+    context, rows, add, save, observations = roundtrip_case("web")
+    for row in rows:
+        if row["kind"] in {"baseline", "probe"}:
+            row.update(connection_kind="established", source_kind=source_kind)
+    add("obs", "observations", observations())
+    result = roundtrip.build_summary(save())
+    assert result["stage_status"]["block"] == "candidate_observed"
+    assert result["stage_status"]["recovery"] == "communication_observed"
+    assert result["durations"]["block_observation"]["seconds"] == "2.000000001"
+    assert result["durations"]["block_hold_observation"]["seconds"] == "2.000000002"
+    assert result["durations"]["recovery_processing_observation"]["seconds"] == "1.000000001"
+
+
+def test_roundtrip_web_scan_cannot_supply_root_probe_transition(roundtrip, roundtrip_case):
+    context, rows, add, save, observations = roundtrip_case("web")
+    rows[:] = rows[:2]
+    context["target_origin"] = "http://example.invalid"
+    add("obs", "observations", observations())
+    raw = (
+        "tool=curl\ntarget=http://example.invalid\nstate=completed\nexit_code=0\n"
+        "attempted_requests=2\nended_at=106\n"
+        "request_1_started_at=101\nrequest_1_observed_at=103\n"
+        "request_1_http_status=403\nrequest_1_exit_code=0\n"
+        "request_2_started_at=104\nrequest_2_observed_at=105\n"
+        "request_2_http_status=200\nrequest_2_exit_code=0\n"
+    )
+    add("scan", "web_scan", raw.encode())
+    result = roundtrip.build_summary(save())
+    assert result["observations"]["baseline"] is not None
+    assert result["stage_status"]["block"] == "not_observed"
+    assert result["observations"]["first_normal_after_block"] is None
+    scan_probes = [row for row in result["timeline"] if row.get("scan_request")]
+    assert len(scan_probes) == 2
+    assert all(row["connection_kind"] == "new" for row in scan_probes)
+
+
 @pytest.mark.parametrize(
     "missing,metric",
     [

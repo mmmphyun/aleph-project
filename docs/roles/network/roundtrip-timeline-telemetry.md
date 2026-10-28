@@ -200,7 +200,7 @@ with (root / "input.private.json").open("x", encoding="utf-8") as handle:
 
 ## 정확도·판정·보존 한계
 
-- **첫 관측은 정책 적용 순간이 아니다.** SSH timeout 확인의 ended_at과 무응답 SYN 송신 시각을 구분한다. 정상 연결 정리 FIN/RST, refused, network error를 SG 차단으로 합치지 않는다. 기존 Established 연결은 신규 연결의 차단/회복 표본으로 쓰지 않는다.
+- **첫 관측은 정책 적용 순간이 아니다.** SSH timeout 확인의 ended_at과 무응답 SYN 송신 시각을 구분한다. 정상 연결 정리 FIN/RST, refused, network error를 SG 차단으로 합치지 않는다. SSH의 기존 Established 연결은 신규 연결의 차단/회복 표본으로 쓰지 않는다. Web은 같은 TCP 연결을 재사용해도 동일 루트의 HTTP 200→403→200 응답 전이를 평가한다.
 - HTTP 403은 후보이며 WAF 원본 BLOCK·규칙·request ID 대조가 필요하다. timeout/5xx를 WAF 차단으로 표시하지 않는다. Web 스캔 후보 경로의 200/404를 루트 정상 탐침 회복으로 사용하지 않는다.
 - A의 API 완료/구성 조회와 실제 통신 회복은 별도 사건이다. 통신 회복으로 구성 원복·복구 멱등성을 증명하지 않는다. API 완료보다 먼저 통신이 회복될 수 있어 이 둘의 순서를 강제하지 않는다.
 - 원본 초 단위 시각에 밀리초를 추가하지 않는다. 기존 러너는 observed_at을 밀리초 형식으로 정규화하므로 원래 해상도는 null로 남기고, 탐침 details/SSH manifest/Web 원문이 있으면 해당 원본 해상도를 사용한다. 원본의 소수 자릿수는 NTP 정확도 보장이 아니다.
@@ -226,7 +226,7 @@ P5-4에서는 별도 승인 후 실제 SSH/Web 공격 첫 패킷/요청, 정상�
 
 `tests/unit/test_network.py`에서 외부 소켓 차단 상태로 기존 러너 실제 Reporter 출력·SSH/Web 결과·TCP CSV와 합성 sidecar를 검증한다. 정상뿐 아니라 미완료·시간 역전·중복 충돌·해상도 모순·출처 혼합·오류 판정·해시/용량·부분 저장 실패를 검출한다. 공통 mock 데이터·검증 게이트·의존성은 변경하지 않는다.
 
-필수 게이트: 저장소 루트에서 `powershell .\scripts\check.ps1`. 2026-10-27 검증 결과:
+필수 게이트: 저장소 루트에서 `powershell .\scripts\check.ps1`. 최초 PR 커밋 `e6e8568`의 2026-10-27 검증 결과:
 
 - 원 작업 폴더 `C:\Aleph`: 새 합성 테스트 **71개 통과**, Ruff lint/format 통과. pytest 캐시 쓰기 경고가 있었다. 필수 게이트는 R&R 통과 후 기존 `.pytest_cache` ACL로 테스트 파일 경로 순회에서 중단됐다. 캐시 ACL·게이트·검증 제약을 변경하지 않았다.
 - 분리 검증 폴더: `C:\Users\User\.codex\worktrees\network-roundtrip-validation\Aleph`. 기준 커밋 `c1d149050f2b4df9ee9176d91faeb7721b6efd5e`에 이 작업의 소스·테스트·문서 세 파일만 적용했다. 사용자 미추적 문서와 비공개 증거는 복사하지 않았다.
@@ -236,3 +236,13 @@ P5-4에서는 별도 승인 후 실제 SSH/Web 공격 첫 패킷/요청, 정상�
 - 검증한 소스 SHA-256: `43bd20ad1d9a5096d7a242a70d5f1458dead865f7937c1ad3c0983f000ab2fc4`. 테스트 SHA-256: `b1b8a7db1a6375d1a9302fac36d7647c1209c824b4b27eb5fb39035e13e51103`. 원 작업 폴더와 검증 폴더의 바이트 일치를 대조했다.
 - 전체 게이트 로그는 저장소 밖 `%TEMP%\cloudshield-roundtrip-check-final.log`에 보존했다. 문서의 합성 생성 예제와 CLI도 임시 디렉터리에서 그대로 실행해 정밀 지연·미확보 처리 결과를 확인했다. 최종 문서의 결과 기록·예제 보강은 코드/테스트를 바꾸지 않는다.
 - 원격 CI 결과는 PR에서 별도 확인한다. 실제 공격·탐침·캡처·SSH·AWS 변경·P5-4 실측은 수행하지 않았다. 별도 요청 전 머지하지 않는다.
+
+### 머지 전 회귀 수정 (2026-10-28)
+
+사용자의 재검토·머지 요청에 따라, Web keepalive 연결의 200→403→200이 SSH 신규 연결 조건 때문에 미관측으로 처리되는 결함을 수정했다. SSH에는 신규 연결 제약을 유지하고, Web은 TCP 재사용 여부와 독립적으로 HTTP 응답을 평가한다. 스캔 후보 경로의 응답은 `scan_request`로 명시적으로 제외하며, 새 curl 연결을 established로 바꿔 적지 않는다.
+
+HTTP 탐침/PCAP HTTP 관측의 keepalive 회귀 2건은 수정 전 실제 판정 실패를 검출했다. 별도 스캔 제외 회귀 1건과 기존 71건을 합한 74건이 수정 후 통과했다. 새 이슈 없이 기존 PR #220에서 수정하며, 실제 네트워크·AWS 호출은 수행하지 않는다.
+
+최종 소스·테스트로 같은 분리 작업 폴더에서 `powershell .\scripts\check.ps1`을 우회 없이 실행해 종료 코드 0을 확인했다. Python 3.12.14·기존 잠긴 의존성·`AGENT_ROLE=network` 조건이며, R&R·테스트 경로·Ruff lint/format 통과, **1390 passed / 4 skipped / 1 warning, 266.10초**다. skip 4건과 warning 1건은 위와 같은 기존 Terraform mock 준비 조건 및 소켓 차단 smoke 경고다. 최초 샌드박스 실행의 임시 폴더 생성 권한 오류는 정상 로컬 권한 재실행으로 분리했다.
+
+이번 검증 소스 SHA-256은 `ccc6f26948e8ba932dad71d07f13858dd7b66a98d76631b4a96ece3bace2c57a`, 테스트 SHA-256은 `21c9fefc984ece270fb33ccee820cfafff6407b43130551f6c592b7b33729b0d`다. 로그는 저장소 밖 `%TEMP%\cloudshield-roundtrip-merge-review-final.log`에 보존하며 최신 원격 CI 결과는 PR에 기록한다.
