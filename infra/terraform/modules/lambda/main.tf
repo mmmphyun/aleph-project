@@ -115,7 +115,18 @@ data "aws_iam_policy_document" "least_privilege" {
     sid    = "WAFv2GetWebACLForResource"
     effect = "Allow"
     actions = [
-      "wafv2:GetWebACLForResource",
+      "wafv2:GetWebACLForResource"
+    ]
+    resources = [
+      var.target_alb_arn != "" ? var.target_alb_arn : "arn:aws:elasticloadbalancing:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:loadbalancer/app/*/*",
+      "arn:aws:wafv2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:regional/webacl/*/*"
+    ]
+  }
+
+  statement {
+    sid    = "WAFv2GetWebACL"
+    effect = "Allow"
+    actions = [
       "wafv2:GetWebACL"
     ]
     resources = [
