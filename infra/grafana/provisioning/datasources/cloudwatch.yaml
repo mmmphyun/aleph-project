@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: CloudWatch
+    type: cloudwatch
+    access: proxy
+    uid: cloudshield-cloudwatch
+    isDefault: true
+    jsonData:
+      defaultRegion: ${AWS_DEFAULT_REGION}
+      authType: default
+    editable: false

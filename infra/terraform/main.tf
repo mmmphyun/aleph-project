@@ -137,3 +137,67 @@ resource "aws_wafv2_web_acl_logging_configuration" "waf_logs" {
   resource_arn            = module.waf.web_acl_arn
 }
 
+# ==============================================================================
+# 10. Grafana 관제용 CloudWatch 최소 권한 IAM 정책 (클라우드 A 전담)
+# ==============================================================================
+# Why:
+#   Grafana 컨테이너가 CloudWatch Logs Insights 쿼리 및 메트릭 조회를 수행할 수 있도록
+#   최소 권한(CloudWatch Logs/Metrics ReadOnly)만을 정의하여 인프라 변경 권한 노출을 원천 차단함.
+#
+# Constraints:
+#   - 로그 및 메트릭 조회 액션만 허용하고, 쓰기/삭제 및 타 AWS 서비스 접근은 전면 차단.
+data "aws_iam_policy_document" "grafana_cloudwatch_readonly" {
+  statement {
+    sid    = "CloudWatchMetricsReadOnly"
+    effect = "Allow"
+    actions = [
+      "cloudwatch:DescribeAlarmsForMetric",
+      "cloudwatch:DescribeAlarmHistory",
+      "cloudwatch:DescribeAlarms",
+      "cloudwatch:ListMetrics",
+      "cloudwatch:GetMetricData",
+      "cloudwatch:GetMetricStatistics"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "CloudWatchLogsReadOnly"
+    effect = "Allow"
+    actions = [
+      "logs:DescribeLogGroups",
+      "logs:DescribeLogStreams",
+      "logs:GetLogEvents",
+      "logs:GetLogGroupFields",
+      "logs:GetLogRecord",
+      "logs:GetQueryResults",
+      "logs:FilterLogEvents",
+      "logs:StartQuery",
+      "logs:StopQuery"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "EC2RegionsReadOnly"
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeRegions"
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "grafana_cloudwatch_readonly" {
+  name        = "CloudShield-Grafana-CloudWatch-ReadOnly-${var.environment}"
+  description = "Read-only CloudWatch access policy for CloudShield Grafana dashboards"
+  policy      = data.aws_iam_policy_document.grafana_cloudwatch_readonly.json
+
+  tags = {
+    Project     = "CloudShield"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+    Component   = "Observability"
+  }
+}
+
