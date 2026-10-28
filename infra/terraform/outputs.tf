@@ -121,3 +121,8 @@ output "waf_log_group_arn" {
   value       = aws_cloudwatch_log_group.waf_logs.arn
 }
 
+output "grafana_cloudwatch_policy_arn" {
+  description = "Grafana 관제용 CloudWatch ReadOnly IAM Policy ARN"
+  value       = aws_iam_policy.grafana_cloudwatch_readonly.arn
+}
+
