@@ -76,6 +76,8 @@ def execute_bedrock_analysis(
     raw_logs: list[str],
     bedrock_client: Any = None,
     model_id: str = DEFAULT_BEDROCK_MODEL_ID,
+    *,
+    require_executive_format: bool = False,
 ) -> tuple[IncidentReport, bool]:
     """보안 프롬프트 빌더 및 파서를 결합하여 Bedrock converse 호출을 실행하는 어댑터.
 
@@ -88,6 +90,8 @@ def execute_bedrock_analysis(
     """
     try:
         from detection.llm_deep_analyzer import (
+            _converse_response_text,
+            _log_analysis_status,
             build_bedrock_analysis_prompt,
             parse_bedrock_response_to_incident,
         )
@@ -126,8 +130,12 @@ def execute_bedrock_analysis(
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             inferenceConfig={"maxTokens": BEDROCK_MAX_OUTPUT_TOKENS, "temperature": 0},
         )
-        response_text = _extract_converse_text(response)
-        parsed_report = parse_bedrock_response_to_incident(response_text, report)
+        response_text = _converse_response_text(response)
+        parsed_report = parse_bedrock_response_to_incident(
+            response_text,
+            report,
+            require_executive_format=require_executive_format,
+        )
         # 파서가 검증 실패 시 base_report 원본을 그대로 반환하므로 필드 갱신 여부 대조
         is_enhanced = (
             parsed_report.summary_ko != report.summary_ko
@@ -136,6 +144,7 @@ def execute_bedrock_analysis(
         return parsed_report, is_enhanced
     except Exception as exc:
         logger.warning("Bedrock API 호출 또는 파싱 중 예외 발생 격리 (원본 유지): %s", exc)
+        _log_analysis_status(report, "call_failed", "bedrock_call")
         return report, False
     finally:
         if owns_client and client is not None and hasattr(client, "close"):
@@ -151,6 +160,8 @@ def analyze_incident_with_bedrock(
     raw_logs: list[str],
     bedrock_client: Any = None,
     model_id: str = DEFAULT_BEDROCK_MODEL_ID,
+    *,
+    require_executive_format: bool = True,
 ) -> IncidentReport:
     """사후 LLM 심층 침해 분석을 실행하고 최종 IncidentReport를 반환."""
     analyzed_report, _ = execute_bedrock_analysis(
@@ -158,6 +169,7 @@ def analyze_incident_with_bedrock(
         raw_logs=raw_logs,
         bedrock_client=bedrock_client,
         model_id=model_id,
+        require_executive_format=require_executive_format,
     )
     return analyzed_report
 
@@ -172,7 +184,7 @@ def send_deep_analysis_slack_alert(
 
     Why:
         클라우드 B에서 제공하는 build_llm_slack_payload 카드 빌더와
-        검증된 send_slack_alert의 네트워크 타임아웃/예외 격리 전송 엔진을 결합하여
+        검증된 send_llm_slack_alert의 네트워크 타임아웃/예외 격리 전송 엔진을 결합하여
         사후 심층 분석 전용 알림을 안정적으로 발송함.
     """
     target_webhook = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
@@ -181,25 +193,13 @@ def send_deep_analysis_slack_alert(
         return False
 
     try:
-        from reporter.slack_notifier import build_llm_slack_payload
+        from reporter.slack_notifier import send_llm_slack_alert
 
-        payload = build_llm_slack_payload(report)
-        import urllib.request
-
-        encoded_data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url=target_webhook,
-            data=encoded_data,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
+        return send_llm_slack_alert(
+            report=report,
+            webhook_url=target_webhook,
+            timeout=timeout,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            status_code = getattr(response, "status", None) or response.getcode()
-            if status_code == 200:
-                logger.info("2차 LLM 심층 분석 Slack 알림 전송 성공: %s", report.incident_id)
-                return True
-            logger.warning("2차 LLM 심층 분석 Slack 알림 응답 비정상: %s", status_code)
-            return False
     except Exception as exc:
         logger.error("2차 LLM 심층 분석 Slack 알림 전송 실패 격리: %s", exc)
         return False
