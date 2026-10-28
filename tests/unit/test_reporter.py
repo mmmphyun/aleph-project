@@ -24,7 +24,10 @@ from contracts.incident import IncidentReport
 from reporter.slack_notifier import (
     MAX_FIELD_LENGTH,
     MAX_HEADER_LENGTH,
+    MAX_SLACK_BLOCKS,
     build_llm_slack_payload,
+    build_mrkdwn_sections,
+    build_recovery_slack_payload,
     build_slack_payload,
     build_waf_slack_payload,
     escape_slack_text,
@@ -86,6 +89,184 @@ def test_llm_card_empty_analysis(sample_incident_report: IncidentReport) -> None
     assert "분석 요약 없음" in rendered
     assert "지정 대상 없음" in rendered
     assert "추가 권고 조치 없음" in rendered
+
+
+def test_llm_card_preserves_long_report_across_multiple_blocks(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """500자 초과 분석과 권고를 여러 블록으로 나누되 원문을 생략하지 않는다."""
+    summary = "요약<!channel>&" * 180
+    recommendation = "복구 검증 <필수>&" * 160
+    report = sample_incident_report.model_copy(
+        update={"summary_ko": summary, "recommendations": (recommendation,)}
+    )
+
+    payload = build_llm_slack_payload(report)
+    section_texts = [
+        block["text"]["text"]
+        for block in payload["blocks"]
+        if block.get("type") == "section" and "text" in block
+    ]
+    rendered = "".join(section_texts)
+
+    assert len(payload["blocks"]) > 6
+    assert all(len(text) <= MAX_FIELD_LENGTH for text in section_texts)
+    assert escape_slack_text(summary) in rendered
+    assert escape_slack_text(recommendation) in rendered
+    assert "<!channel>" not in rendered
+    assert "..." not in rendered
+
+
+def test_mrkdwn_sections_split_without_truncation() -> None:
+    """공통 렌더러가 긴 원문을 500자 이하 블록으로 완전히 보존한다."""
+    blocks = build_mrkdwn_sections("분석", "가" * (MAX_FIELD_LENGTH * 2), empty_value="없음")
+    assert len(blocks) == 3
+    assert all(len(block["text"]["text"]) <= MAX_FIELD_LENGTH for block in blocks)
+    assert MAX_SLACK_BLOCKS == 50
+
+
+def test_recovery_card_links_incident_and_preserves_verification_details(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """3차 카드는 동일 사건 ID와 복구 엔진의 관측 결과를 가공 없이 연결한다."""
+    long_detail = "HTTP 403 → 200 복구 확인 <!channel>&" * 80
+    recovery_result = {
+        "quarantine_restored": True,
+        "waf_unblocked": True,
+        "iam_restored": False,
+        "status": "restored",
+        "verification_status": "트래픽 복구 확인 완료",
+        "t_restored_iso": "2026-10-28T12:34:56+09:00",
+        "details": (long_detail, "Baseline SG 재부착 확인"),
+    }
+
+    payload = build_recovery_slack_payload(sample_incident_report, recovery_result)
+    rendered = json.dumps(payload, ensure_ascii=False)
+    section_text = "".join(
+        block["text"]["text"]
+        for block in payload["blocks"]
+        if block.get("type") == "section" and "text" in block
+    )
+
+    assert payload["is_recovery_card"] is True
+    assert payload["incident_id"] == sample_incident_report.incident_id
+    assert payload["recovery_status"] == "설정 복구 확인"
+    assert "트래픽 복구 확인 완료" in rendered
+    assert escape_slack_text(long_detail) in section_text
+    assert "<!channel>" not in rendered
+    assert all(
+        len(block["text"]["text"]) <= MAX_FIELD_LENGTH
+        for block in payload["blocks"]
+        if block.get("type") == "section" and "text" in block
+    )
+
+
+def test_recovery_card_missing_result_fields_are_unconfirmed(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """복구 근거가 없으면 완료로 추정하지 않고 미확인으로 표시한다."""
+    payload = build_recovery_slack_payload(sample_incident_report, {})
+    rendered = json.dumps(payload, ensure_ascii=False)
+    assert payload["recovery_status"] == "복구 결과 미확인"
+    assert rendered.count("미확인") >= 3
+    assert "restored" not in rendered
+
+
+@pytest.mark.parametrize("length", [1, 5, 497, 498, 499, 500, 501, 1000])
+def test_mrkdwn_sections_preserves_whitespace_and_escape_boundaries(length: int) -> None:
+    """엔티티와 공백이 블록 경계에 놓여도 원문 및 500자 상한을 보존한다."""
+    source = " \n" + "가" * length + "&<>" * 90 + "\n "
+    blocks = build_mrkdwn_sections("분석", source, empty_value="없음")
+    texts = [block["text"]["text"] for block in blocks]
+    assert "".join(texts).removeprefix("*분석:*\n") == escape_slack_text(source)
+    assert all(0 < len(text) <= MAX_FIELD_LENGTH for text in texts)
+    for text in texts:
+        assert not text.endswith(("&", "&a", "&am", "&amp", "&l", "&lt", "&g", "&gt"))
+
+
+@pytest.mark.parametrize("max_length", [0, 4, 501, 3000])
+def test_mrkdwn_sections_rejects_invalid_limits(max_length: int) -> None:
+    with pytest.raises(ValueError):
+        build_mrkdwn_sections("분석", "내용", empty_value="없음", max_length=max_length)
+
+
+@pytest.mark.parametrize("builder", [build_llm_slack_payload, build_recovery_slack_payload])
+def test_cards_reject_more_than_fifty_blocks(
+    builder: Any, sample_incident_report: IncidentReport
+) -> None:
+    report = sample_incident_report.model_copy(update={"summary_ko": "가" * 25000})
+    with pytest.raises(ValueError, match="블록 상한"):
+        if builder is build_llm_slack_payload:
+            builder(report)
+        else:
+            builder(report, {"details": "가" * 25000})
+
+
+def test_llm_card_accepts_exactly_fifty_blocks(sample_incident_report: IncidentReport) -> None:
+    chunk_size = MAX_FIELD_LENGTH - len("*LLM 분석 요약:*\n")
+    report = sample_incident_report.model_copy(update={"summary_ko": "가" * (chunk_size * 45)})
+    assert len(build_llm_slack_payload(report)["blocks"]) == MAX_SLACK_BLOCKS
+    oversized = report.model_copy(update={"summary_ko": report.summary_ko + "가"})
+    with pytest.raises(ValueError, match="블록 상한"):
+        build_llm_slack_payload(oversized)
+
+
+@pytest.mark.parametrize(
+    ("action", "result", "expected"),
+    [
+        (
+            "BLOCK_AND_QUARANTINE",
+            {"quarantine_restored": True, "waf_unblocked": False},
+            "일부 미완료",
+        ),
+        ("BLOCK_AND_QUARANTINE", {"quarantine_restored": True}, "미확인"),
+        ("BLOCK_WAF", {"waf_unblocked": True, "quarantine_restored": False}, "설정 복구 확인"),
+        ("BLOCK_IP_ONLY", {"waf_unblocked": True}, "설정 복구 확인"),
+        ("QUARANTINE_EC2", {"quarantine_restored": True}, "설정 복구 확인"),
+        ("REVOKE_IAM_SESSION", {"iam_restored": False}, "일부 미완료"),
+        ("ALERT_ONLY", {"waf_unblocked": True}, "미대상"),
+        ("NONE", {}, "미대상"),
+        ("BLOCK_WAF", {"waf_unblocked": "true"}, "미확인"),
+        ("BLOCK_WAF", {"waf_unblocked": 1}, "미확인"),
+    ],
+)
+def test_recovery_card_uses_required_rollback_layers(
+    sample_incident_report: IncidentReport, action: str, result: dict[str, Any], expected: str
+) -> None:
+    report = sample_incident_report.model_copy(update={"action_required": action})
+    payload = build_recovery_slack_payload(report, result)
+    assert expected in payload["recovery_status"]
+    assert "실제 통신 회복: 미확인" in json.dumps(payload, ensure_ascii=False)
+
+
+def test_recovery_card_never_renders_unescaped_mentions(
+    sample_incident_report: IncidentReport,
+) -> None:
+    result = {
+        "status": "<!channel>",
+        "verification_status": "<!here>&",
+        "t_restored_iso": "<@U123>",
+        "details": None,
+    }
+    payload = build_recovery_slack_payload(sample_incident_report, result)
+    rendered = json.dumps(payload, ensure_ascii=False)
+    assert "<!" not in rendered
+    assert "<@" not in rendered
+    assert "추가 상세 없음" in rendered
+
+
+def test_llm_summary_preserves_leading_and_trailing_whitespace(
+    sample_incident_report: IncidentReport,
+) -> None:
+    summary = " \n" + "분석" * 400 + "\n "
+    report = sample_incident_report.model_copy(update={"summary_ko": summary})
+    payload = build_llm_slack_payload(report)
+    text = "".join(
+        block["text"]["text"]
+        for block in payload["blocks"]
+        if block.get("type") == "section" and "text" in block
+    )
+    assert summary in text
 
 
 def test_truncate_text_within_limit() -> None:

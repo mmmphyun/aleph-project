@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from contracts.incident import IncidentReport
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 # Slack Block Kit 안전 글자 수 상한
 MAX_FIELD_LENGTH = 500
 MAX_HEADER_LENGTH = 150
+MAX_SLACK_BLOCKS = 50
 
 
 def escape_slack_text(text: str) -> str:
@@ -88,6 +90,64 @@ def truncate_text(text: str, max_length: int = MAX_FIELD_LENGTH) -> str:
     if max_length <= 3:
         return text[:max_length]
     return f"{text[: max_length - 3]}..."
+
+
+def _split_escaped_slack_text(text: str, max_length: int) -> list[str]:
+    """Slack 이스케이프 결과를 엔티티 중간에서 자르지 않고 여러 조각으로 분할한다."""
+    if max_length < 5:
+        raise ValueError("Slack 텍스트 조각 상한은 5자 이상이어야 합니다")
+
+    chunks: list[str] = []
+    current = ""
+    for character in text:
+        token = escape_slack_text(character)
+        if current and len(current) + len(token) > max_length:
+            chunks.append(current)
+            if len(chunks) >= MAX_SLACK_BLOCKS:
+                raise ValueError(f"Slack 카드 블록 상한({MAX_SLACK_BLOCKS}개)을 초과했습니다")
+            current = ""
+        current += token
+    if current or not chunks:
+        chunks.append(current)
+    return chunks
+
+
+def build_mrkdwn_sections(
+    label: str,
+    value: str,
+    *,
+    empty_value: str,
+    max_length: int = MAX_FIELD_LENGTH,
+) -> list[dict[str, Any]]:
+    """긴 표시 문자열을 생략하지 않고 여러 Slack section 블록으로 렌더링한다.
+
+    Why:
+        2차 LLM 보고서는 요약과 권고가 500자를 넘을 수 있으므로 말줄임 처리하면
+        관제 판단 근거가 사라진다. 블록별 프로젝트 상한은 지키되 원문 전체를 보존한다.
+    Constraints:
+        라벨을 포함한 각 블록은 ``max_length`` 이하이며 Slack 제어 문자는 이스케이프한다.
+        단일 카드의 Slack 상한(50블록)을 넘는 입력은 조용히 유실하지 않고 예외로 알린다.
+    Side-effects / Edge-cases:
+        외부 호출이나 상태 변경은 없다. HTML 엔티티는 조각 경계에서 분리되지 않는다.
+    """
+    rendered_value = value if value else empty_value
+    if not 5 <= max_length <= MAX_FIELD_LENGTH:
+        raise ValueError(f"Slack 섹션 상한은 5~{MAX_FIELD_LENGTH}자여야 합니다")
+    escaped_label = escape_slack_text(label)
+    first_prefix = f"*{escaped_label}:*\n"
+    if len(first_prefix) >= max_length:
+        raise ValueError("Slack 섹션 라벨이 텍스트 상한보다 깁니다")
+
+    chunks = _split_escaped_slack_text(rendered_value, max_length - len(first_prefix))
+    blocks = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"{first_prefix}{chunks[0]}"},
+        }
+    ]
+    for chunk in chunks[1:]:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk}})
+    return blocks
 
 
 def build_slack_payload(
@@ -573,15 +633,6 @@ def build_llm_slack_payload(report: IncidentReport) -> dict[str, Any]:
         대체 문구로 표시하며 잘못된 입력의 예외는 호출자에게 전파한다.
     """
 
-    def section(label: str, value: str) -> dict[str, Any]:
-        return {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": truncate_text(f"*{label}:*\n{escape_slack_text(value)}"),
-            },
-        }
-
     fields = [
         ("사건 ID", report.incident_id),
         ("공격 유형", report.attack_type),
@@ -590,42 +641,181 @@ def build_llm_slack_payload(report: IncidentReport) -> dict[str, Any]:
         ("대상 인스턴스", report.target_identifier),
         ("MITRE ATT&CK", report.mitre_id),
     ]
-    # 출력 상한에 필요한 항목만 처리하여 과도한 권고/계정 목록의 중간 문자열을 제한한다.
     recommendations = "\n".join(
-        f"{index + 1}. {truncate_text(item)}"
-        for index, item in enumerate(report.recommendations[:MAX_FIELD_LENGTH])
+        f"{index + 1}. {item}" for index, item in enumerate(report.recommendations)
     )
-    accounts = ", ".join(truncate_text(item) for item in report.target_accounts[:MAX_FIELD_LENGTH])
+    accounts = ", ".join(report.target_accounts)
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "CloudShield 2차 LLM 심층 분석"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": truncate_text(f"*{label}:*\n{escape_slack_text(value)}"),
+                }
+                for label, value in fields
+            ],
+        },
+    ]
+    blocks.extend(
+        build_mrkdwn_sections(
+            "LLM 분석 요약",
+            report.summary_ko if report.summary_ko.strip() else "",
+            empty_value="분석 요약 없음",
+        )
+    )
+    blocks.extend(
+        build_mrkdwn_sections("공격 대상 계정/엔드포인트", accounts, empty_value="지정 대상 없음")
+    )
+    blocks.extend(
+        build_mrkdwn_sections("후속 권고 조치", recommendations, empty_value="추가 권고 조치 없음")
+    )
+    blocks.extend(
+        build_mrkdwn_sections(
+            "분석 권고 액션 (집행 결과 아님)", report.action_required, empty_value="NONE"
+        )
+    )
+    if len(blocks) > MAX_SLACK_BLOCKS:
+        raise ValueError(f"Slack 카드 블록 상한({MAX_SLACK_BLOCKS}개)을 초과했습니다")
+
     return {
         "text": truncate_text(
             f"[2차 LLM 심층 분석][{report.risk_level}] "
             f"{escape_slack_text(report.incident_id)}: {escape_slack_text(report.attack_type)}"
         ),
-        "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": "CloudShield 2차 LLM 심층 분석"},
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {
-                        "type": "mrkdwn",
-                        "text": truncate_text(f"*{label}:*\n{escape_slack_text(value)}"),
-                    }
-                    for label, value in fields
-                ],
-            },
-            section("LLM 분석 요약", report.summary_ko.strip() or "분석 요약 없음"),
-            section("공격 대상 계정/엔드포인트", accounts or "지정 대상 없음"),
-            section("후속 권고 조치", recommendations or "추가 권고 조치 없음"),
-            section("분석 권고 액션 (집행 결과 아님)", report.action_required),
-        ],
+        "blocks": blocks,
         "incident_id": report.incident_id,
         "rule_name": report.attack_type,
         "source_ip": report.source_ip,
         "remediation_action": report.action_required,
         "is_llm_card": True,
+    }
+
+
+def build_recovery_slack_payload(
+    report: IncidentReport,
+    recovery_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """복구 엔진 결과를 동일 사건에 연결한 3차 Slack 알림 카드로 생성한다.
+
+    Why:
+        탐지·분석 알림과 실제 복구 관측을 분리해 복구 완료를 추정하거나 과장하지 않는다.
+    Constraints:
+        apply_rollback의 기존 결과 키를 소비하며 지시된 계층만 집계한다.
+        API 설정 복구와 실제 통신 회복은 구분하며 누락/비불리언 값은 성공 근거가 아니다.
+    Side-effects / Edge-cases:
+        입력 키 누락은 '미확인'으로 표시하며 외부 호출이나 인프라 변경은 수행하지 않는다.
+    """
+
+    def display(key: str, fallback: str = "미확인") -> str:
+        value = recovery_result.get(key)
+        return str(value) if value not in (None, "") else fallback
+
+    layers = [
+        (
+            "L4 EC2 Baseline SG",
+            "quarantine_restored",
+            report.action_required in ("BLOCK_AND_QUARANTINE", "QUARANTINE_EC2"),
+        ),
+        (
+            "L7 WAF IP 차단 해제",
+            "waf_unblocked",
+            report.action_required in ("BLOCK_AND_QUARANTINE", "BLOCK_WAF", "BLOCK_IP_ONLY"),
+        ),
+        ("Identity IAM", "iam_restored", report.action_required == "REVOKE_IAM_SESSION"),
+    ]
+    required_results = [recovery_result.get(key) for _, key, required in layers if required]
+    if not required_results:
+        recovery_status = "복구 미대상"
+    elif all(value is True for value in required_results):
+        recovery_status = "설정 복구 확인"
+    elif any(value is False for value in required_results):
+        recovery_status = "복구 실패 / 일부 미완료"
+    else:
+        recovery_status = "복구 결과 미확인"
+    layer_lines = []
+    for label, key, required in layers:
+        value = recovery_result.get(key)
+        if not required:
+            state = "미대상"
+        elif value is True:
+            state = "설정 복구 확인"
+        elif value is False:
+            state = "실패 / 미완료"
+        else:
+            state = "미확인"
+        layer_lines.append(f"• {label}: {state}")
+
+    details_value = recovery_result.get("details")
+    if details_value is None:
+        details_value = ()
+    if isinstance(details_value, str):
+        details = details_value
+    elif isinstance(details_value, Sequence):
+        details = "\n".join(f"{index + 1}. {item}" for index, item in enumerate(details_value))
+    else:
+        details = str(details_value)
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "CloudShield 3차 복구 결과 알림"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": truncate_text(f"*사건 ID:*\n`{escape_slack_text(report.incident_id)}`"),
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*복구 상태:*\n{recovery_status}",
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": truncate_text(f"*출발지 IP:*\n`{escape_slack_text(report.source_ip)}`"),
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": truncate_text(
+                        f"*엔진 보고 시각:*\n{escape_slack_text(display('t_restored_iso'))}"
+                    ),
+                },
+            ],
+        },
+    ]
+    blocks.extend(
+        build_mrkdwn_sections("계층별 복구 결과", "\n".join(layer_lines), empty_value="미확인")
+    )
+    traffic_status = "확인" if recovery_result.get("traffic_verified") is True else "미확인"
+    blocks.extend(
+        build_mrkdwn_sections(
+            "복구 검증 결과",
+            f"엔진 검증: {display('verification_status')}\n실제 통신 회복: {traffic_status}",
+            empty_value="미확인",
+        )
+    )
+    blocks.extend(build_mrkdwn_sections("복구 상세", details, empty_value="추가 상세 없음"))
+    if len(blocks) > MAX_SLACK_BLOCKS:
+        raise ValueError(f"Slack 카드 블록 상한({MAX_SLACK_BLOCKS}개)을 초과했습니다")
+
+    return {
+        "text": truncate_text(
+            f"[3차 복구 결과][{recovery_status}] "
+            f"{escape_slack_text(report.incident_id)}: {escape_slack_text(report.attack_type)}"
+        ),
+        "blocks": blocks,
+        "incident_id": report.incident_id,
+        "rule_name": report.attack_type,
+        "source_ip": report.source_ip,
+        "remediation_action": report.action_required,
+        "recovery_status": recovery_status,
+        "is_recovery_card": True,
     }
 
 
