@@ -4463,3 +4463,50 @@ def test_orchestrator_stage_timestamps_preserves_remediation_duration(
         assert "remediated_epoch" in timestamps
         duration = timestamps["remediated_epoch"] - timestamps["detected_epoch"]
         assert duration >= 0.04
+
+
+def test_grafana_provisioning_and_iam_policy_specs() -> None:
+    """[P5-1] Grafana 무상태 프로비저닝 파일 및 Terraform IAM 정책 정합성 검증.
+
+    Why:
+        코드형 Grafana 프로비저닝에 필요한 데이터소스(cloudwatch.yaml),
+        대시보드 프로바이더(dashboards.yaml), 도커 컴포즈 및 Terraform 최소 권한 IAM 정책이
+        정합성 있게 정의되어 있는지 정적/구조적 검증함.
+    """
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    grafana_dir = repo_root / "infra" / "grafana"
+
+    # 1. 파일 존재 검증
+    compose_path = grafana_dir / "docker-compose.yml"
+    ds_path = grafana_dir / "provisioning" / "datasources" / "cloudwatch.yaml"
+    db_prov_path = grafana_dir / "provisioning" / "dashboards" / "dashboards.yaml"
+    db_json_path = grafana_dir / "dashboards" / "cloudshield-secops-overview.json"
+
+    assert compose_path.is_file(), "docker-compose.yml 파일이 존재해야 함"
+    assert ds_path.is_file(), "cloudwatch.yaml 데이터소스 설정이 존재해야 함"
+    assert db_prov_path.is_file(), "dashboards.yaml 프로바이더 설정이 존재해야 함"
+    assert db_json_path.is_file(), "cloudshield-secops-overview.json 대시보드가 존재해야 함"
+
+    # 2. 내용 규격 검증
+    compose_content = compose_path.read_text(encoding="utf-8")
+    assert "grafana/grafana-oss:11.2.0" in compose_content
+    assert "cloudshield-grafana" in compose_content
+    assert "3000:3000" in compose_content
+
+    ds_content = ds_path.read_text(encoding="utf-8")
+    assert "uid: cloudshield-cloudwatch" in ds_content
+    assert "type: cloudwatch" in ds_content
+
+    db_json_data = json.loads(db_json_path.read_text(encoding="utf-8"))
+    assert db_json_data.get("uid") == "cloudshield-overview"
+    assert "panels" in db_json_data
+
+    # 3. Terraform 최소 권한 IAM 정책 선언 확인
+    tf_main_path = repo_root / "infra" / "terraform" / "main.tf"
+    tf_content = tf_main_path.read_text(encoding="utf-8")
+    assert "CloudShield-Grafana-CloudWatch-ReadOnly" in tf_content
+    assert "logs:DescribeLogGroups" in tf_content
+    assert "logs:StartQuery" in tf_content
+    assert "cloudwatch:GetMetricData" in tf_content
