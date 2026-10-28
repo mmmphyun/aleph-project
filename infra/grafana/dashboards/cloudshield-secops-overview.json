@@ -1,0 +1,71 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "title": "CloudShield SecOps Overview (Overview Skeleton)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudshield-cloudwatch"
+      },
+      "description": "CloudShield 10초 관통 대응 및 4개 직무(네트워크/클라우드B/보안/클라우드A) 텔레메트리 중앙 관제 대시보드 스켈레톤",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "# CloudShield SecOps 관제 센터\n\n- **환경**: AWS ap-southeast-2 (시드니)\n- **타깃 인스턴스**: `i-027b9d94be16b0d77`\n- **데이터소스**: CloudWatch Logs & Metrics (`cloudshield-cloudwatch`)\n- **후속 확장**: 클라우드 B `[P5-2]`에서 4사분면 CloudWatch Logs Insights 쿼리 패널 결합 예정",
+        "mode": "markdown"
+      },
+      "pluginVersion": "11.2.0",
+      "title": "CloudShield SecOps Information",
+      "type": "text"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": [
+    "cloudshield",
+    "secops",
+    "cloudwatch"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "CloudShield SecOps Overview",
+  "uid": "cloudshield-overview",
+  "version": 1,
+  "weekStart": ""
+}

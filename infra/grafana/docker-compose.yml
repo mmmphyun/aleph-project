@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  grafana:
+    image: grafana/grafana-oss:11.2.0
+    container_name: cloudshield-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-cloudshield}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-southeast-2}
+      - AWS_REGION=${AWS_DEFAULT_REGION:-ap-southeast-2}
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      # 호스트의 AWS 자격증명 파일이 존재하는 경우 읽기 전용으로 연동
+      - ${HOME:-~}/.aws:/usr/share/grafana/.aws:ro
