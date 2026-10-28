@@ -18,8 +18,12 @@ from botocore.stub import Stubber
 
 from contracts.incident import IncidentReport
 from detection.llm_deep_analyzer import (
+    EXECUTIVE_RECOMMENDATION_LABELS,
+    EXECUTIVE_SECTION_LABELS,
     MAX_BASE_REPORT_BYTES,
     MAX_BEDROCK_CONTENT_BLOCKS,
+    MAX_EXECUTIVE_SECTION_CHARS,
+    MAX_EXECUTIVE_SUMMARY_CHARS,
     MAX_LLM_RESPONSE_BYTES,
     MAX_LOG_BYTES,
     MAX_LOG_LINE_CHARS,
@@ -80,8 +84,14 @@ def _prompt_log_lines(prompt: str) -> list[str]:
 def _analysis_json(**changes: Any) -> str:
     return json.dumps(
         {
-            "summary_ko": "동일 출발지에서 반복된 인증 실패가 확인되었습니다.",
-            "recommendations": ["인증 로그와 접근 권한을 점검하세요."],
+            "summary_ko": "[1. 침해 개요]\n반복 인증 실패를 관측했습니다.\n\n"
+            "[2. 관측 로그 근거]\n제공된 실패 로그를 추가 확인해야 합니다.\n\n"
+            "[3. 영향도 및 침해 판정]\n침해 성공 여부는 미확인입니다.",
+            "recommendations": [
+                "[즉시 조치] 인증 로그를 대조하세요.",
+                "[설정 점검] 접근 권한을 점검하세요.",
+                "[재발 방지] 계정 정책을 재검증하세요.",
+            ],
             **changes,
         },
         ensure_ascii=False,
@@ -304,8 +314,9 @@ def test_parser_accepts_unambiguous_model_response_envelopes(
         envelope.format(_analysis_json()), sample_incident_report
     )
     assert result is not sample_incident_report
-    assert result.summary_ko == "동일 출발지에서 반복된 인증 실패가 확인되었습니다."
-    assert result.recommendations == ("인증 로그와 접근 권한을 점검하세요.",)
+    expected = json.loads(_analysis_json())
+    assert result.summary_ko == expected["summary_ko"]
+    assert result.recommendations == tuple(expected["recommendations"])
     assert sample_incident_report.model_dump(mode="json") == before
     assert result.model_dump(exclude={"summary_ko", "recommendations"}) == (
         sample_incident_report.model_dump(exclude={"summary_ko", "recommendations"})
@@ -343,7 +354,8 @@ def test_parser_accepts_an_empty_recommendation_list(
     sample_incident_report: IncidentReport,
 ) -> None:
     result = parse_bedrock_response_to_incident(
-        _analysis_json(recommendations=[]), sample_incident_report
+        _analysis_json(summary_ko="기존 단문 요약입니다.", recommendations=[]),
+        sample_incident_report,
     )
     assert result is not sample_incident_report
     assert result.recommendations == ()
@@ -515,6 +527,8 @@ def test_bedrock_adapter_uses_the_official_converse_schema_and_preserves_decisio
     logs = ["sshd: Failed password for root from 198.51.100.50 port 50000 ssh2"]
     response = _converse_response(
         _analysis_json(
+            summary_ko="동일 출발지에서 반복된 인증 실패가 확인되었습니다.",
+            recommendations=["인증 로그와 접근 권한을 점검하세요."],
             incident_id="MODEL-OVERRIDE",
             source_ip="127.0.0.1",
             action_required="NONE",
@@ -552,7 +566,7 @@ def test_bedrock_adapter_uses_the_official_converse_schema_and_preserves_decisio
                 },
             )
             result = analyze_incident_with_bedrock(
-                sample_incident_report, logs, bedrock_client=client
+                sample_incident_report, logs, bedrock_client=client, require_executive_format=False
             )
             stubber.assert_no_pending_responses()
     finally:
@@ -563,8 +577,8 @@ def test_bedrock_adapter_uses_the_official_converse_schema_and_preserves_decisio
     assert result.model_dump(include=protected) == sample_incident_report.model_dump(
         include=protected
     )
-    assert result.summary_ko == json.loads(_analysis_json())["summary_ko"]
-    assert result.recommendations == tuple(json.loads(_analysis_json())["recommendations"])
+    assert result.summary_ko == "동일 출발지에서 반복된 인증 실패가 확인되었습니다."
+    assert result.recommendations == ("인증 로그와 접근 권한을 점검하세요.",)
     assert sample_incident_report.model_dump(mode="json") == original
     assert logs == ["sshd: Failed password for root from 198.51.100.50 port 50000 ssh2"]
 
@@ -880,3 +894,197 @@ def test_bedrock_adapter_does_not_reuse_previous_incident_or_response_state(
     assert sample_incident_report.summary_ko != first_result.summary_ko
     assert client.converse.call_count == 2
     client.close.assert_not_called()
+
+
+def _executive_summary_at_lengths(lengths: tuple[int, int, int]) -> str:
+    return "\n\n".join(
+        label + "\n" + "가" * (length - len(label) - 1)
+        for label, length in zip(EXECUTIVE_SECTION_LABELS, lengths, strict=True)
+    )
+
+
+def test_executive_format_labels_and_exact_boundaries(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """헤더·개행까지 상한에 포함하여 후속 Slack 분할기가 실제 길이를 오판하지 않는다."""
+    assert EXECUTIVE_SECTION_LABELS == (
+        "[1. 침해 개요]",
+        "[2. 관측 로그 근거]",
+        "[3. 영향도 및 침해 판정]",
+    )
+    assert EXECUTIVE_RECOMMENDATION_LABELS == ("[즉시 조치]", "[설정 점검]", "[재발 방지]")
+    summary = _executive_summary_at_lengths((400, 400, 396))
+    assert len(summary) == MAX_EXECUTIVE_SUMMARY_CHARS == 1200
+    assert max(map(len, summary.split("\n\n"))) == MAX_EXECUTIVE_SECTION_CHARS == 400
+    recommendations = [
+        label + " " + "점" * (500 - len(label) - 1) for label in EXECUTIVE_RECOMMENDATION_LABELS
+    ]
+    result = parse_bedrock_response_to_incident(
+        _analysis_json(summary_ko=summary, recommendations=recommendations),
+        sample_incident_report,
+        require_executive_format=True,
+    )
+    assert result is not sample_incident_report
+    assert result.summary_ko == summary
+    assert result.recommendations == tuple(recommendations)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "단순 요약만 있습니다.",
+        _executive_summary_at_lengths((401, 100, 100)),
+        _executive_summary_at_lengths((400, 400, 397)),
+        "[1. 침해 개요]\n내용\n\n[2. 관측 로그 근거]\n내용",
+        "[2. 관측 로그 근거]\n내용\n\n[1. 침해 개요]\n내용\n\n[3. 영향도 및 침해 판정]\n내용",
+        "[1. 침해 개요]\n \n\n[2. 관측 로그 근거]\n내용\n\n[3. 영향도 및 침해 판정]\n내용",
+        "[1. 침해 개요]\n[1. 침해 개요]\n\n[2. 관측 로그 근거]\n내용\n\n"
+        "[3. 영향도 및 침해 판정]\n내용",
+        _executive_summary_at_lengths((100, 100, 100)) + "\n\n별도 결론",
+        " " + _executive_summary_at_lengths((100, 100, 100)),
+        _executive_summary_at_lengths((100, 100, 100)) + " ",
+    ],
+)
+def test_executive_summary_rejects_invalid_structure_without_partial_merge(
+    sample_incident_report: IncidentReport, summary: str
+) -> None:
+    original = sample_incident_report.model_dump()
+    assert (
+        parse_bedrock_response_to_incident(
+            _analysis_json(summary_ko=summary),
+            sample_incident_report,
+            require_executive_format=True,
+        )
+        is sample_incident_report
+    )
+    assert sample_incident_report.model_dump() == original
+
+
+@pytest.mark.parametrize(
+    "recommendations",
+    [
+        [],
+        ["[즉시 조치] 조사", "[설정 점검] 조사"],
+        ["[설정 점검] 조사", "[즉시 조치] 조사", "[재발 방지] 조사"],
+        ["[즉시 조치] 조사", "[즉시 조치] 조사", "[재발 방지] 조사"],
+        ["[즉시 조치] ", "[설정 점검] 조사", "[재발 방지] 조사"],
+        ["[즉시 조치] " + "가" * 501, "[설정 점검] 조사", "[재발 방지] 조사"],
+    ],
+)
+def test_executive_recommendations_require_all_three_stages(
+    sample_incident_report: IncidentReport, recommendations: list[str]
+) -> None:
+    assert (
+        parse_bedrock_response_to_incident(
+            _analysis_json(recommendations=recommendations),
+            sample_incident_report,
+            require_executive_format=True,
+        )
+        is sample_incident_report
+    )
+
+
+@pytest.mark.parametrize(
+    "field", sorted(set(IncidentReport.model_fields) - {"summary_ko", "recommendations"})
+)
+def test_executive_parser_rejects_each_supplied_protected_field_override(
+    sample_incident_report: IncidentReport, field: str
+) -> None:
+    supplied = json.loads(_analysis_json())
+    supplied[field] = "MODEL-OVERRIDE"
+    assert (
+        parse_bedrock_response_to_incident(
+            json.dumps(supplied), sample_incident_report, require_executive_format=True
+        )
+        is sample_incident_report
+    )
+
+
+def test_legacy_parser_compatibility_and_executive_adapter_default(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """기존 워커의 단문 입력은 보존하되 새 어댑터 기본 경로는 형식 누락을 거부한다."""
+    legacy = _analysis_json(summary_ko="기존 단문 요약", recommendations=["기존 권고"])
+    assert parse_bedrock_response_to_incident(legacy, sample_incident_report) is not (
+        sample_incident_report
+    )
+    assert (
+        analyze_incident_with_bedrock(
+            sample_incident_report, [], bedrock_client=_converse_client(_converse_response(legacy))
+        )
+        is sample_incident_report
+    )
+    legacy_result = analyze_incident_with_bedrock(
+        sample_incident_report,
+        [],
+        bedrock_client=_converse_client(_converse_response(legacy)),
+        require_executive_format=False,
+    )
+    assert legacy_result.summary_ko == "기존 단문 요약"
+
+
+@pytest.mark.parametrize("option", [None, 0, 1, "true", []])
+def test_executive_option_input_errors_propagate_before_sdk_calls(
+    sample_incident_report: IncidentReport, option: Any
+) -> None:
+    client = _converse_client(_converse_response())
+    with pytest.raises(TypeError):
+        analyze_incident_with_bedrock(
+            sample_incident_report, [], bedrock_client=client, require_executive_format=option
+        )
+    with pytest.raises(TypeError):
+        parse_bedrock_response_to_incident(
+            _analysis_json(), sample_incident_report, require_executive_format=option
+        )
+    client.converse.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        ("success", "enhanced"),
+        ("bad_json", "parse_failed"),
+        ("bad_envelope", "parse_failed"),
+        ("timeout", "call_failed"),
+    ],
+)
+def test_structured_status_logging_excludes_evidence_and_sdk_details(
+    sample_incident_report: IncidentReport,
+    caplog: pytest.LogCaptureFixture,
+    outcome: str,
+    expected: str,
+) -> None:
+    private = "PRIVATE-RAW-OR-SDK-CONTENT"
+    client = _converse_client(_converse_response())
+    if outcome == "timeout":
+        client.converse.side_effect = TimeoutError(private)
+    elif outcome == "bad_json":
+        client.converse.return_value = _converse_response(private)
+    elif outcome == "bad_envelope":
+        client.converse.return_value = None
+    with caplog.at_level(logging.INFO, logger="detection.llm_deep_analyzer"):
+        result = analyze_incident_with_bedrock(
+            sample_incident_report, [private], bedrock_client=client
+        )
+    events = [json.loads(r.getMessage()) for r in caplog.records if r.getMessage().startswith("{")]
+    assert len(events) == 1
+    assert events[0]["event"] == "cloudshield.llm_analysis"
+    assert events[0]["status"] == expected
+    assert events[0]["incident_id"] == sample_incident_report.incident_id
+    assert private not in caplog.text and sample_incident_report.source_ip not in caplog.text
+    assert (result is sample_incident_report) is (outcome != "success")
+
+
+def test_structured_status_bounds_oversized_incident_identifiers(
+    sample_incident_report: IncidentReport, caplog: pytest.LogCaptureFixture
+) -> None:
+    report = IncidentReport.model_validate(
+        sample_incident_report.model_dump() | {"incident_id": "PRIVATE-ID-" * 1000}
+    )
+    with caplog.at_level(logging.INFO, logger="detection.llm_deep_analyzer"):
+        assert parse_bedrock_response_to_incident("bad", report) is report
+    event = next(
+        json.loads(r.getMessage()) for r in caplog.records if r.getMessage().startswith("{")
+    )
+    assert "incident_id" not in event and len(event["incident_ref"]) == 64
+    assert "PRIVATE-ID" not in caplog.text
