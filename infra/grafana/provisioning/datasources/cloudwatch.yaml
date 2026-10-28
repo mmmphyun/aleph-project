@@ -7,6 +7,6 @@ datasources:
     uid: cloudshield-cloudwatch
     isDefault: true
     jsonData:
-      defaultRegion: ${AWS_DEFAULT_REGION:-ap-southeast-2}
+      defaultRegion: ${AWS_DEFAULT_REGION}
       authType: default
     editable: false

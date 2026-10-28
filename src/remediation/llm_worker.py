@@ -77,7 +77,7 @@ def execute_bedrock_analysis(
     bedrock_client: Any = None,
     model_id: str = DEFAULT_BEDROCK_MODEL_ID,
     *,
-    require_executive_format: bool = False,
+    require_executive_format: bool = True,
 ) -> tuple[IncidentReport, bool]:
     """보안 프롬프트 빌더 및 파서를 결합하여 Bedrock converse 호출을 실행하는 어댑터.
 
@@ -309,6 +309,7 @@ def llm_analysis_handler(
         raw_logs=raw_logs,
         bedrock_client=bedrock_client,
         model_id=model_id,
+        require_executive_format=True,
     )
     response["llm_analyzed"] = is_enhanced
     response["raw_logs_count"] = len(raw_logs)

@@ -594,10 +594,18 @@ def test_e2e_scenario1_async_eventbridge_to_llm_worker_pipeline(
     mock_bedrock = MagicMock()
     llm_payload_json = json.dumps(
         {
-            "summary_ko": f"출발지 {attacker_ip}의 SSH 무차별 대입 공격에 대한 심층 분석 보고서.",
+            "summary_ko": (
+                "[1. 침해 개요]\n"
+                f"출발지 {attacker_ip}의 SSH 무차별 대입 공격에 대한 심층 분석 보고서.\n\n"
+                "[2. 관측 로그 근거]\n"
+                "sshd 인증 실패 로그 5건이 관측되었습니다.\n\n"
+                "[3. 영향도 및 침해 판정]\n"
+                "추가 침해 정황은 미확인이며 1차 격리 조치를 유지합니다."
+            ),
             "recommendations": [
-                "L4 SG 격리 및 L7 WAF 차단 상태 유지",
-                "타깃 인스턴스의 SSH 포트 외부 노출 차단 및 SSM Session Manager 전환",
+                "[즉시 조치] L4 SG 격리 및 L7 WAF 차단 상태 유지",
+                "[설정 점검] 타깃 인스턴스의 SSH 포트 외부 노출 차단 점검",
+                "[재발 방지] 비밀번호 로그인 비활성화 및 SSM Session Manager 전환",
             ],
         },
         ensure_ascii=False,
@@ -631,4 +639,5 @@ def test_e2e_scenario1_async_eventbridge_to_llm_worker_pipeline(
         mock_secondary_slack.assert_called_once()
         sent_report = mock_secondary_slack.call_args.kwargs["report"]
         assert "SSH 무차별 대입 공격에 대한 심층 분석 보고서" in sent_report.summary_ko
-        assert len(sent_report.recommendations) == 2
+        assert len(sent_report.recommendations) == 3
+        assert sent_report.recommendations[0].startswith("[즉시 조치]")

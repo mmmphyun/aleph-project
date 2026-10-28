@@ -416,13 +416,21 @@ def test_e2e_scenario2_async_eventbridge_to_llm_worker_pipeline(
     }
 
     mock_bedrock = MagicMock()
-    summary_text = f"출발지 {attacker_ip}의 웹 경로 조작(Path Traversal) 공격 심층 분석 보고서."
+    summary_text = (
+        "[1. 침해 개요]\n"
+        f"출발지 {attacker_ip}의 웹 경로 조작(Path Traversal) 공격 심층 분석 보고서.\n\n"
+        "[2. 관측 로그 근거]\n"
+        "GET /../../etc/passwd 요청 1건이 관측되었습니다.\n\n"
+        "[3. 영향도 및 침해 판정]\n"
+        "추가 침해 정황은 미확인이며 1차 WAF 차단 조치를 유지합니다."
+    )
     llm_payload_json = json.dumps(
         {
             "summary_ko": summary_text,
             "recommendations": [
-                "AWS WAFv2 Core Rule Set(CRS) 활성화 및 URI 검증 규칙 강화",
-                "Nginx 설정에서 정적 파일 및 민감 시스템 경로 접근 차단 디렉티브 보강",
+                "[즉시 조치] AWS WAFv2 Core Rule Set(CRS) 활성화 및 URI 검증 규칙 강화",
+                "[설정 점검] Nginx 설정에서 정적 파일 및 민감 시스템 경로 접근 차단 점검",
+                "[재발 방지] 웹 애플리케이션 입력값 검증 및 경로 정규화 로직 적용",
             ],
         },
         ensure_ascii=False,
@@ -456,4 +464,5 @@ def test_e2e_scenario2_async_eventbridge_to_llm_worker_pipeline(
         mock_secondary_slack.assert_called_once()
         sent_report = mock_secondary_slack.call_args.kwargs["report"]
         assert "웹 경로 조작(Path Traversal) 공격 심층 분석 보고서" in sent_report.summary_ko
-        assert len(sent_report.recommendations) == 2
+        assert len(sent_report.recommendations) == 3
+        assert sent_report.recommendations[0].startswith("[즉시 조치]")

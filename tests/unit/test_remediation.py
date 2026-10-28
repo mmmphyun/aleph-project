@@ -3918,13 +3918,21 @@ def test_llm_worker_handler_pipeline_integration(sample_incident_report: Inciden
         },
     }
 
-    # Bedrock Converse API 정상 JSON 응답 모의
+    # Bedrock Converse API 정상 3단 상사 보고서 규격 JSON 응답 모의
     llm_payload_json = json.dumps(
         {
-            "summary_ko": "출발지 IP 198.51.100.50의 Bedrock 심층 침해사고 분석 완료.",
+            "summary_ko": (
+                "[1. 침해 개요]\n"
+                "출발지 IP 198.51.100.50의 SSH 무차별 대입 공격 징후를 식별했습니다.\n\n"
+                "[2. 관측 로그 근거]\n"
+                "sshd 인증 실패 로그 1건이 관측되었습니다.\n\n"
+                "[3. 영향도 및 침해 판정]\n"
+                "추가 침해 정황은 미확인이며 1차 격리 조치를 유지합니다."
+            ),
             "recommendations": [
-                "침해 의심 IP의 1차 WAF/SG 차단 상태 지속 모니터링",
-                "타깃 서버의 SSH 공개키 인증 전면 강제 및 비밀번호 로그인 비활성화",
+                "[즉시 조치] 침해 의심 IP의 1차 WAF/SG 차단 상태 지속 모니터링",
+                "[설정 점검] 타깃 서버의 SSH 인증 로그 및 세션 상태 추가 점검",
+                "[재발 방지] 비밀번호 로그인 비활성화 및 공개키 기반 인증 정책 적용",
             ],
         },
         ensure_ascii=False,
@@ -3959,8 +3967,9 @@ def test_llm_worker_handler_pipeline_integration(sample_incident_report: Inciden
         mock_bedrock.converse.assert_called_once()
         mock_send_slack.assert_called_once()
         sent_report = mock_send_slack.call_args.kwargs["report"]
-        assert "Bedrock 심층 침해사고 분석 완료" in sent_report.summary_ko
-        assert len(sent_report.recommendations) == 2
+        assert "[1. 침해 개요]" in sent_report.summary_ko
+        assert len(sent_report.recommendations) == 3
+        assert sent_report.recommendations[0].startswith("[즉시 조치]")
 
 
 def test_llm_worker_handler_bedrock_failure_fallback(
@@ -4008,6 +4017,78 @@ def test_llm_worker_handler_bedrock_failure_fallback(
         sent_report = mock_send_slack.call_args.kwargs["report"]
         # Fallback으로 원본 보고서가 유지되어야 함
         assert sent_report.summary_ko == sample_incident_report.summary_ko
+
+
+def test_llm_worker_handler_unstructured_bedrock_response_fallback(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """비정형 Bedrock 응답(3단 양식 미준수) 수신 시 원본 유지 및 llm_analyzed=False 검증.
+
+    Why:
+        보안 직무의 엄격한 상사 보고 형식 검증(require_executive_format=True)이
+        Lambda 진입점(llm_analysis_handler)에 누락 없이 연결되어,
+        3단 제목 및 단계별 권고가 결여된 비정형 응답이 들어왔을 때
+        결정론적 1차 IncidentReport로 안전하게 Fallback됨을 회귀 검증함.
+    """
+    from unittest.mock import MagicMock
+
+    from remediation.llm_worker import llm_analysis_handler
+
+    event = {
+        "version": "0",
+        "id": "fe942b08-32a2-4a0b-9ffb-34a1eb1d81a3",
+        "detail-type": "ThreatRemediated",
+        "source": "cloudshield.security",
+        "time": "2026-10-21T01:00:00Z",
+        "detail": sample_incident_report.model_dump()
+        | {
+            "raw_logs": [
+                "Oct 21 00:00:01 target-ec2 sshd[100]: Failed password for root from 198.51.100.50"
+            ]
+        },
+    }
+
+    # 3단 제목 및 단계별 권고가 없는 비정형 Bedrock JSON 응답 모의
+    unstructured_payload_json = json.dumps(
+        {
+            "summary_ko": "unstructured summary without executive section headers",
+            "recommendations": ["unstructured advice without level prefix"],
+        },
+        ensure_ascii=False,
+    )
+
+    mock_bedrock = MagicMock()
+    mock_bedrock.converse.return_value = {
+        "stopReason": "end_turn",
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": f"```json\n{unstructured_payload_json}\n```"}],
+            }
+        },
+    }
+
+    with patch(
+        "remediation.llm_worker.send_deep_analysis_slack_alert",
+        return_value=True,
+    ) as mock_send_slack:
+        result = llm_analysis_handler(
+            event=event,
+            bedrock_client=mock_bedrock,
+            slack_webhook_url="https://hooks.slack.com/services/T00/B00/TEST_LLM_SLACK",
+        )
+
+        assert result["status"] == "accepted"
+        assert result["incident_id"] == sample_incident_report.incident_id
+        assert result["llm_analyzed"] is False
+        assert result["slack_notified"] is True
+
+        mock_bedrock.converse.assert_called_once()
+        mock_send_slack.assert_called_once()
+        sent_report = mock_send_slack.call_args.kwargs["report"]
+        # 비정형 응답 거부로 원본 보고서가 보존되어야 함
+        assert sent_report.summary_ko == sample_incident_report.summary_ko
+        assert sent_report.recommendations == sample_incident_report.recommendations
 
 
 def test_restore_ec2_baseline_sg_roundtrip_and_idempotency(
@@ -4266,8 +4347,28 @@ def test_orchestrator_to_llm_worker_raw_logs_context_propagation(
                         {
                             "text": json.dumps(
                                 {
-                                    "summary_ko": "원문 로그 5건 기반 심층 분석 완료",
-                                    "recommendations": ["차단 상태 유지"],
+                                    "summary_ko": (
+                                        "[1. 침해 개요]\n"
+                                        "원문 로그 5건 기반 심층 침해 분석 완료.\n\n"
+                                        "[2. 관측 로그 근거]\n"
+                                        "sshd 인증 실패 로그 5건이 관측되었습니다.\n\n"
+                                        "[3. 영향도 및 침해 판정]\n"
+                                        "추가 침해 정황은 미확인이며 1차 격리 조치를 유지합니다."
+                                    ),
+                                    "recommendations": [
+                                        (
+                                            "[즉시 조치] 침해 의심 IP의 1차 WAF/SG "
+                                            "차단 상태 지속 모니터링"
+                                        ),
+                                        (
+                                            "[설정 점검] 타깃 서버의 SSH 인증 로그 "
+                                            "및 세션 상태 추가 점검"
+                                        ),
+                                        (
+                                            "[재발 방지] 비밀번호 로그인 비활성화 "
+                                            "및 공개키 기반 인증 정책 적용"
+                                        ),
+                                    ],
                                 },
                                 ensure_ascii=False,
                             )
@@ -4493,11 +4594,18 @@ def test_grafana_provisioning_and_iam_policy_specs() -> None:
     compose_content = compose_path.read_text(encoding="utf-8")
     assert "grafana/grafana-oss:11.2.0" in compose_content
     assert "cloudshield-grafana" in compose_content
-    assert "3000:3000" in compose_content
+    assert "127.0.0.1:3000:3000" in compose_content
+    assert (
+        "GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}"
+        in compose_content
+    )
+    assert ":-cloudshield" not in compose_content
 
     ds_content = ds_path.read_text(encoding="utf-8")
     assert "uid: cloudshield-cloudwatch" in ds_content
     assert "type: cloudwatch" in ds_content
+    assert "defaultRegion: ${AWS_DEFAULT_REGION}" in ds_content
+    assert ":-ap-southeast-2" not in ds_content
 
     db_json_data = json.loads(db_json_path.read_text(encoding="utf-8"))
     assert db_json_data.get("uid") == "cloudshield-overview"

@@ -23,7 +23,7 @@ Track 1(PR #218, #220, #223, #224)에서 완성된 4대 직무의 코어 산출�
 | **Lambda Bundle** | `infra/terraform/modules/lambda/build/orchestrator.zip` | 2,737,982 bytes (Linux x86_64 ELF) | 1차 오케스트레이터 및 2차 LLM 분석 워커 공통 번들 |
 | **Worker Enhancement** | `src/remediation/llm_worker.py` | `require_executive_format` 지원, `_log_analysis_status` 연동 | PR #224 상태 로깅 및 PR #223 멀티블록 알림 연계 |
 | **IAM Policy** | `infra/terraform/main.tf` (`aws_iam_policy.grafana_cloudwatch_readonly`) | `CloudShield-Grafana-CloudWatch-ReadOnly-dev` | Logs/Metrics ReadOnly 최소 권한 정책 |
-| **Grafana Container** | `infra/grafana/docker-compose.yml` | `grafana/grafana-oss:11.2.0` (포트 3000) | 무상태 볼륨 마운트 및 호스트 AWS 자격증명 연동 |
+| **Grafana Container** | `infra/grafana/docker-compose.yml` | `grafana/grafana-oss:11.2.0` (로컬 포트 127.0.0.1:3000) | 무상태 볼륨 마운트 및 필수 비밀번호 지정 |
 | **Data Source as Code** | `infra/grafana/provisioning/datasources/cloudwatch.yaml` | `uid: cloudshield-cloudwatch` (CloudWatch) | ap-southeast-2 리전 기본 바인딩 |
 | **Dashboard Provider** | `infra/grafana/provisioning/dashboards/dashboards.yaml` | Provider Name: `CloudShield Dashboards` | `/var/lib/grafana/dashboards` 자동 로드 |
 | **Dashboard Skeleton** | `infra/grafana/dashboards/cloudshield-secops-overview.json` | `uid: cloudshield-overview` | SecOps 기본 정보 및 후속 4사분면 패널 확장 스켈레톤 |
@@ -62,7 +62,7 @@ Track 1(PR #218, #220, #223, #224)에서 완성된 4대 직무의 코어 산출�
 ## 5. 후속 직무(클라우드 B `[P5-2]`, 보안 `[P5-3]`, 네트워크 `[P5-4]`) 연계 가이드
 
 1. **클라우드 B (`[P5-2]` Grafana 4사분면 CloudWatch Logs Insights 쿼리 패널 구성)**:
-   - 로컬 또는 관제 서버에서 `docker compose -f infra/grafana/docker-compose.yml up -d`를 실행하여 Grafana(`http://localhost:3000`, `admin / cloudshield`)를 기동하십시오.
+   - 로컬 또는 관제 서버에서 `GRAFANA_ADMIN_PASSWORD` 환경변수(예: `$env:GRAFANA_ADMIN_PASSWORD="<보안비밀번호>"`)를 설정한 후 `docker compose -f infra/grafana/docker-compose.yml up -d`를 실행하여 Grafana(`http://127.0.0.1:3000`)를 기동하십시오 (보안을 위해 기본 비밀번호가 제거되었으며, 로컬 인터페이스 `127.0.0.1:3000`에만 바인딩됩니다).
    - `cloudshield-cloudwatch` 데이터소스가 이미 등록되어 있으므로, `infra/grafana/dashboards/` 내의 대시보드 파일에 4사분면 CloudWatch Logs Insights 쿼리(공격 인입 건수, 10초 차단 SLA 소요 시간, LLM 정상/Fallback 전환율, 사건 처리 타임라인) 패널을 추가하여 JSON을 고정하십시오.
 2. **보안 (`[P5-3]` 실인프라 2차 LLM 상사 보고서 품질 및 정량 지표 검수)**:
    - 본 배포로 Bedrock 장애 및 성공 상태가 `cloudshield.llm_analysis` 규격으로 CloudWatch Logs에 기록됩니다.
