@@ -205,8 +205,7 @@ def simulate_threat_and_verify(
             for inc_dict in incidents:
                 rep = IncidentReport.model_validate(inc_dict)
                 rec_payload = {
-                    "quarantine_restored": restore_result.get("status")
-                    in ("restored", "idempotent_no_change"),
+                    "quarantine_restored": restore_result.get("status") in ("success", "unchanged"),
                     "t_restored_iso": restore_result.get("t_restored_iso"),
                     "verification_status": "Baseline SG Verified",
                     "traffic_verified": True,

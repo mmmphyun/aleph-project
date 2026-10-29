@@ -1378,16 +1378,30 @@ def send_recovery_slack_alert(
                 if status_code < 500:
                     return False
         except urllib.error.HTTPError as exc:
-            logger.error("3차 복구 Slack Webhook HTTP 오류 (%s): %s", exc.code, exc.reason)
+            logger.error(
+                "3차 복구 Slack Webhook HTTP 오류 (코드: %s, 유형: %s, 시도: %d)",
+                exc.code,
+                type(exc).__name__,
+                attempt + 1,
+            )
             if exc.code < 500:
                 return False
         except TimeoutError:
             logger.error("3차 복구 Slack Webhook 요청 시간 초과 (timeout=%.2f초)", req_timeout)
             return False
         except urllib.error.URLError as exc:
-            logger.error("3차 복구 Slack Webhook 연결 실패: %s", exc.reason)
+            logger.error(
+                "3차 복구 Slack Webhook 연결 실패 (유형: %s, 시도: %d)",
+                type(getattr(exc, "reason", exc)).__name__,
+                attempt + 1,
+            )
         except Exception as exc:
-            logger.error("3차 복구 Slack Webhook 전송 중 오류 발생: %s", exc)
+            # InvalidURL 등 일반 예외 시 URL/토큰이 포함될 수 있는 exc 원문 노출 차단
+            logger.error(
+                "3차 복구 Slack Webhook 전송 중 오류 발생 (유형: %s, 시도: %d)",
+                type(exc).__name__,
+                attempt + 1,
+            )
             return False
 
         if attempt < max_retries:
