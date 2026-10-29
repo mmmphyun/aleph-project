@@ -462,3 +462,78 @@ def test_simulate_threat_and_verify_recovery_slack_sent(
     call_kwargs = mock_send_recovery.call_args[1]
     assert call_kwargs["report"].incident_id == "INC-20261029-TEST"
     assert call_kwargs["webhook_url"] == "https://hooks.slack.com/services/TEST/TOKEN"
+    assert call_kwargs["recovery_result"]["quarantine_restored"] is True
+
+
+def test_simulate_threat_and_verify_recovery_slack_sent_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Baseline SG가 이미 단독 적용된 unchanged 멱등 복구 경로에서도 복구 카드 restored=True 검증.
+
+    Why:
+        restore_baseline_security_group()이 'unchanged'를 반환하는 멱등 경로에서도
+        정상 복구로 판정하여 Slack 복구 카드의 quarantine_restored가 True로 전달되어야 함.
+    """
+    import io
+    from unittest.mock import MagicMock
+
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_response_payload = {
+        "processed_events": 1,
+        "threats_detected": ["SSH_BRUTE_FORCE"],
+        "remediation_results": [{"quarantine_applied": True}],
+        "slack_notified": True,
+        "incidents": [
+            {
+                "incident_id": "INC-20261029-UNCHANGED",
+                "attack_type": "SSH Brute Force",
+                "mitre_id": "T1110.001",
+                "risk_level": "HIGH",
+                "source_ip": "198.51.100.10",
+                "target_identifier": "i-0123456789abcdef0",
+                "action_required": "QUARANTINE_EC2",
+                "summary_ko": "SSH 무차별 대입 공격 탐지",
+            }
+        ],
+    }
+    payload_bytes = json.dumps(mock_response_payload).encode("utf-8")
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(payload_bytes),
+    }
+
+    # 이미 sg-baseline 단독 적용 상태 -> restore_baseline_sg 반환값: status="unchanged"
+    mock_ec2.describe_instances.return_value = {
+        "Reservations": [
+            {
+                "Instances": [
+                    {"InstanceId": "i-test", "SecurityGroups": [{"GroupId": "sg-baseline"}]}
+                ]
+            }
+        ]
+    }
+
+    mock_send_recovery = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "reporter.slack_notifier.send_recovery_slack_alert",
+        mock_send_recovery,
+    )
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test",
+        baseline_sg_id="sg-baseline",
+        auto_restore=True,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+        slack_webhook_url="https://hooks.slack.com/services/TEST/TOKEN",
+    )
+
+    assert result["recovery_slack_sent"] is True
+    assert result["restore_result"]["status"] == "unchanged"
+    assert mock_send_recovery.called
+    call_kwargs = mock_send_recovery.call_args[1]
+    assert call_kwargs["report"].incident_id == "INC-20261029-UNCHANGED"
+    assert call_kwargs["recovery_result"]["quarantine_restored"] is True

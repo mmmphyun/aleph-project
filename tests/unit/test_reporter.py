@@ -2732,3 +2732,33 @@ def test_send_recovery_slack_alert_http_error_isolation(
     )
 
     assert result is False
+
+
+def test_send_recovery_slack_alert_secret_masking_in_request_exception(
+    sample_incident_report: IncidentReport,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """URL 경로 공백으로 InvalidURL 유발 시 3차 복구 Webhook Secret 로그 미노출 검증.
+
+    Why:
+        urllib.request/http.client 내부의 경로 검증에서 InvalidURL 등 예외 발생 시,
+        예외 문자열(exc)에 포함된 Secret 토큰이 로그로 누출되는 취약점을 원천 차단함.
+    """
+    secret_token = "SUPER_SECRET_RECOVERY_TOKEN_WITH_SPACE"
+    invalid_path_url = f"https://hooks.slack.com/services/FAKE_TEAM/FAKE_CHANNEL/{secret_token} bad"
+    recovery_result = {
+        "quarantine_restored": True,
+        "t_restored_iso": "2026-10-29T12:00:00Z",
+        "verification_status": "Baseline SG Verified",
+    }
+
+    with caplog.at_level("ERROR"):
+        caplog.clear()
+        result = send_recovery_slack_alert(
+            sample_incident_report,
+            recovery_result=recovery_result,
+            webhook_url=invalid_path_url,
+        )
+
+    assert result is False
+    assert secret_token not in caplog.text, "3차 복구 Webhook 예외 로그에 Secret 토큰이 노출됨"
