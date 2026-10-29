@@ -37,6 +37,22 @@ DEFAULT_BEDROCK_MODEL_ID = "apac.amazon.nova-micro-v1:0"
 BEDROCK_CONNECT_TIMEOUT_SECONDS = 2
 BEDROCK_READ_TIMEOUT_SECONDS = 20
 BEDROCK_MAX_OUTPUT_TOKENS = 2048
+# Lambda 실행시간 예산 방어 상수: Slack 예산 5초 및 버퍼 고려하여 S3 진입 최소 잔여시간 8000ms 설정
+DEFAULT_SLACK_TIMEOUT_SECONDS = 5.0
+S3_MIN_REMAINING_BUDGET_MS = 8000
+SLACK_DEADLINE_BUFFER_SECONDS = 0.5
+
+
+def _get_context_remaining_ms(context: Any) -> int | None:
+    """Lambda 컨텍스트 객체로부터 잔여 실행시간(ms)을 안전하게 조회."""
+    if context is not None and hasattr(context, "get_remaining_time_in_millis"):
+        try:
+            val = context.get_remaining_time_in_millis()
+            if isinstance(val, (int, float)):
+                return int(val)
+        except Exception:
+            return None
+    return None
 
 
 def _get_incident_report_class():
@@ -179,6 +195,7 @@ def send_deep_analysis_slack_alert(
     report: IncidentReport,
     webhook_url: str | None = None,
     timeout: float = 5.0,
+    report_url: str | None = None,
 ) -> bool:
     """사후 LLM 심층 분석 결과를 2차 알림 카드로 SecOps 채널에 전송.
 
@@ -199,6 +216,7 @@ def send_deep_analysis_slack_alert(
             report=report,
             webhook_url=target_webhook,
             timeout=timeout,
+            report_url=report_url,
         )
     except Exception as exc:
         logger.error("2차 LLM 심층 분석 Slack 알림 전송 실패 격리: %s", exc)
@@ -233,6 +251,7 @@ def llm_analysis_handler(
     context: Any = None,
     *,
     bedrock_client: Any = None,
+    s3_client: Any = None,
     slack_webhook_url: str | None = None,
 ) -> dict[str, Any]:
     """EventBridge 비동기 수신 사후 LLM 침해 분석 워커 진입점.
@@ -314,12 +333,92 @@ def llm_analysis_handler(
     response["llm_analyzed"] = is_enhanced
     response["raw_logs_count"] = len(raw_logs)
 
-    # 4. 2차 사후 심층 분석 Slack 카드 전파
+    # 4. 상사 보고용 HTML 렌더링 및 S3 Presigned URL 발급 (장애 완전 격리)
+    report_url: str | None = None
+    reports_bucket = os.getenv("REPORTS_S3_BUCKET")
+    remaining_ms = _get_context_remaining_ms(context)
+
+    if reports_bucket:
+        # P1 필수: 잔여 시간이 Slack 최소 전송 예산 확보 기준(8000ms) 미만인 경우 S3 생략
+        if remaining_ms is not None and remaining_ms < S3_MIN_REMAINING_BUDGET_MS:
+            logger.warning(
+                "Lambda 잔여 시간(%d ms)이 S3/Slack 최소 확보 예산(%d ms) 미만이므로 "
+                "S3 보고서 생성을 안전 생략합니다.",
+                remaining_ms,
+                S3_MIN_REMAINING_BUDGET_MS,
+            )
+            response["report_url"] = None
+        else:
+            try:
+                from remediation.report_renderer import (
+                    render_executive_html_report,
+                    upload_report_and_generate_presigned_url,
+                )
+
+                # P2 권장: processing_times/remediation_times 및 pipeline_timestamps 연동
+                processing_times: dict[str, Any] = {}
+                if isinstance(detail, dict):
+                    raw_times = detail.get("processing_times") or detail.get("remediation_times")
+                    if isinstance(raw_times, dict):
+                        processing_times.update(raw_times)
+
+                    # 생산자(orchestrator)가 발행한 pipeline_timestamps 연동
+                    pipeline_ts = detail.get("pipeline_timestamps")
+                    if isinstance(pipeline_ts, dict):
+                        det = pipeline_ts.get("detected_epoch")
+                        rem = pipeline_ts.get("remediated_epoch")
+                        if (
+                            isinstance(det, (int, float))
+                            and isinstance(rem, (int, float))
+                            and rem >= det
+                        ):
+                            elapsed = round(float(rem - det), 2)
+                            # 전체 대응 시간으로 별도 표기 (계층별 시간으로 복제 대입 금지)
+                            processing_times.setdefault("total", elapsed)
+
+                report_html = render_executive_html_report(
+                    report=analyzed_report,
+                    raw_logs=raw_logs,
+                    processing_times=processing_times if processing_times else None,
+                )
+                report_url = upload_report_and_generate_presigned_url(
+                    report_html=report_html,
+                    incident_id=analyzed_report.incident_id,
+                    bucket_name=reports_bucket,
+                    s3_client=s3_client,
+                )
+                response["report_url"] = report_url
+            except Exception as exc:
+                logger.error("S3 상세 보고서 생성 또는 Presigned URL 발급 실패 격리: %s", exc)
+                response["report_url"] = None
+
+    # 5. 2차 사후 심층 분석 Slack 카드 전파
     target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+    current_rem_ms = _get_context_remaining_ms(context)
+    if current_rem_ms is not None:
+        remaining_sec = current_rem_ms / 1000.0
+        usable_budget = remaining_sec - SLACK_DEADLINE_BUFFER_SECONDS
+        # 버퍼 차감 후 잔여 예산이 0 이하이면 네트워크 호출 생략 및 강제 종료 차단
+        if usable_budget <= 0:
+            logger.warning(
+                "Lambda 잔여 시간(%d ms)이 데드라인 버퍼(%d ms) 이하이므로 "
+                "Slack 알림 전파를 생략합니다.",
+                current_rem_ms,
+                int(SLACK_DEADLINE_BUFFER_SECONDS * 1000),
+            )
+            response["slack_notified"] = False
+            return response
+        # 양수인 경우에도 잔여 가용 예산을 초과하지 않도록 타임아웃 캡핑
+        slack_timeout = min(DEFAULT_SLACK_TIMEOUT_SECONDS, usable_budget)
+    else:
+        slack_timeout = DEFAULT_SLACK_TIMEOUT_SECONDS
+
     try:
         slack_sent = send_deep_analysis_slack_alert(
             report=analyzed_report,
             webhook_url=target_webhook,
+            timeout=slack_timeout,
+            report_url=report_url,
         )
         response["slack_notified"] = slack_sent
     except Exception as exc:

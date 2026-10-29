@@ -275,6 +275,22 @@ data "aws_iam_policy_document" "llm_analyzer_least_privilege" {
     ]
     resources = ["*"]
   }
+
+  # 4. S3 침해 보고서 업로드 및 Presigned URL 조회 최소 권한
+  dynamic "statement" {
+    for_each = var.reports_s3_bucket_arn != "" ? [var.reports_s3_bucket_arn] : []
+    content {
+      sid    = "S3ReportsAccess"
+      effect = "Allow"
+      actions = [
+        "s3:PutObject",
+        "s3:GetObject"
+      ]
+      resources = [
+        "${statement.value}/*"
+      ]
+    }
+  }
 }
 
 resource "aws_iam_policy" "llm_analyzer_least_privilege" {
@@ -332,6 +348,7 @@ resource "aws_lambda_function" "llm_analyzer" {
     variables = {
       SLACK_WEBHOOK_URL = var.slack_webhook_url
       BEDROCK_MODEL_ID  = var.bedrock_model_id
+      REPORTS_S3_BUCKET = var.reports_s3_bucket_name
     }
   }
 

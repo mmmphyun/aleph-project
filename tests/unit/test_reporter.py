@@ -2610,3 +2610,28 @@ def test_send_llm_slack_alert_semaphore_wait_deducted_from_overall_deadline(
     finally:
         release_thread.join(timeout=1.0)
         _SLACK_REQUEST_SEMAPHORE.release()
+
+
+def test_build_llm_slack_payload_with_report_url(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """report_url이 주어질 때 하단에 [📄 상사 보고용 상세 리포트 열기] 액션 버튼 블록 생성 검증."""
+    dummy_url = "https://cloudshield-secops-reports-dev.s3.amazonaws.com/reports/INC-001.html"
+
+    # 1. report_url 미전달 시 actions 블록 부재
+    payload_no_url = build_llm_slack_payload(sample_incident_report)
+    assert not any(b.get("type") == "actions" for b in payload_no_url["blocks"])
+    assert "report_url" not in payload_no_url
+
+    # 2. report_url 전달 시 최하단 actions 블록 생성 및 속성 검증
+    payload_with_url = build_llm_slack_payload(sample_incident_report, report_url=dummy_url)
+    assert payload_with_url.get("report_url") == dummy_url
+    actions_blocks = [b for b in payload_with_url["blocks"] if b.get("type") == "actions"]
+    assert len(actions_blocks) == 1
+    elements = actions_blocks[0].get("elements", [])
+    assert len(elements) == 1
+    button = elements[0]
+    assert button["type"] == "button"
+    assert button["text"]["text"] == "📄 상사 보고용 상세 리포트 열기"
+    assert button["url"] == dummy_url
+    assert button["style"] == "primary"
