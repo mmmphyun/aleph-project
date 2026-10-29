@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import boto3
@@ -39,6 +40,7 @@ from scripts.restore_baseline_sg import (
     restore_baseline_security_group,
 )
 from src.remediation.orchestrator import is_remediation_successful
+from src.remediation.remediation import unblock_ip_wafv2
 
 DEFAULT_FUNCTION_NAME = "CloudShield-Threat-Orchestrator"
 DEFAULT_TEST_SOURCE_IP = "198.51.100.50"
@@ -97,6 +99,7 @@ def simulate_threat_and_verify(
     auto_restore: bool = True,
     lambda_client: Any = None,
     ec2_client: Any = None,
+    waf_client: Any = None,
     slack_webhook_url: str | None = None,
 ) -> dict[str, Any]:
     """실제 AWS Lambda를 호출하여 관통 대응을 검증하고 선택적으로 인프라 롤백 수행.
@@ -105,12 +108,13 @@ def simulate_threat_and_verify(
         모의 이벤트를 단일 트랜잭션으로 주입하여 Lambda 위협 탐지, 차단,
         Slack 알림 발송을 실측하고 즉시 정상 운영 SG로 복원하여 안전성을 확보함.
     """
-    if lambda_client is None or ec2_client is None:
+    if lambda_client is None or ec2_client is None or waf_client is None:
         region = os.getenv("AWS_DEFAULT_REGION", DEFAULT_REGION)
         profile = os.getenv("AWS_PROFILE")
         session = boto3.Session(profile_name=profile, region_name=region)
         lambda_client = lambda_client or session.client("lambda")
         ec2_client = ec2_client or session.client("ec2")
+        waf_client = waf_client or session.client("wafv2")
 
     logger.info("실인프라 E2E 모의 위협 주입 시작 (타깃 함수: %s)", function_name)
     logger.info("타깃 인스턴스: %s, 모의 공격자 IP: %s", instance_id, source_ip)
@@ -164,22 +168,55 @@ def simulate_threat_and_verify(
         original_error = e
         logger.error("Lambda 호출 또는 응답 처리 중 오류 발생: %s", e)
     finally:
-        # 2. 실패 경로에서도 자동 롤백 복구 보장
+        # 2. 실패 경로에서도 자동 롤백 복구 보장 (L4 SG 복구와 L7 WAF 해제 독립 수행)
         if auto_restore:
+            restore_start = time.perf_counter()
+            logger.info("자동 복구 플래그 활성화: L4 SG 및 L7 WAF 다중 계층 복원 시작")
+            l4_restore_err: Exception | None = None
+
+            # 2-1. L4 Baseline SG 복구 시도 (독립 실행)
             try:
-                logger.info("자동 복구 플래그 활성화: Baseline SG(%s)로 복원 시작", baseline_sg_id)
                 restore_result = restore_baseline_security_group(
                     instance_id=instance_id,
                     baseline_sg_id=baseline_sg_id,
                     ec2_client=ec2_client,
                 )
-                logger.info("자동 복구 완료 (상태: %s)", restore_result.get("status"))
-            except Exception as restore_err:
-                logger.error("자동 복구 실행 중 오류 발생: %s", restore_err)
+            except Exception as l4_err:
+                logger.error("L4 Baseline SG 복원 중 오류 발생: %s", l4_err)
+                l4_restore_err = l4_err
+                restore_result = {
+                    "instance_id": instance_id,
+                    "target_sg_id": baseline_sg_id,
+                    "status": "failed",
+                    "error": str(l4_err),
+                }
+
+            # 2-2. L7 WAF IP 차단 해제 시도 (L4 복구 예외와 무관하게 독립 실행)
+            waf_unblocked = False
+            try:
+                waf_unblocked = unblock_ip_wafv2(
+                    source_ip=source_ip,
+                    waf_client=waf_client,
+                )
+            except Exception as waf_err:
+                logger.warning("L7 WAF IP 차단 해제 중 예외 발생 격리: %s", waf_err)
+                waf_unblocked = False
+
+            restore_duration_ms = round((time.perf_counter() - restore_start) * 1000, 2)
+            restore_result["waf_unblocked"] = waf_unblocked
+            restore_result["duration_ms"] = restore_duration_ms
+            logger.info(
+                "자동 복구 시도 완료 (L4 SG: %s, L7 WAF: %s, 소요 시간: %0.2f ms)",
+                restore_result.get("status"),
+                waf_unblocked,
+                restore_duration_ms,
+            )
+
+            # L4 복구 예외가 발생한 경우 L7 해제 시도 완료 후 오류 전파
+            if l4_restore_err is not None:
                 if original_error is not None:
-                    # 원본 오류와 복구 오류를 모두 보존하여 전파
-                    raise restore_err from original_error
-                raise
+                    raise l4_restore_err from original_error
+                raise l4_restore_err
 
         # Lambda 호출 단계에서 발생한 원본 오류 전파
         if original_error is not None:
@@ -202,15 +239,45 @@ def simulate_threat_and_verify(
             from reporter.slack_notifier import send_recovery_slack_alert
 
             target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+            quarantine_ok = restore_result.get("status") in ("success", "unchanged")
+            waf_ok = bool(restore_result.get("waf_unblocked", False))
+
+            if quarantine_ok and waf_ok:
+                verification_status = "Baseline SG & WAF IP Unblocked Verified"
+            elif quarantine_ok and not waf_ok:
+                verification_status = (
+                    "Partial Recovery: Baseline SG Verified, WAF IP Unblock Failed"
+                )
+            elif not quarantine_ok and waf_ok:
+                verification_status = (
+                    "Partial Recovery: Baseline SG Failed, WAF IP Unblocked Verified"
+                )
+            else:
+                verification_status = "Recovery Failed: Baseline SG & WAF IP Unblock Failed"
+
+            sg_detail = (
+                f"타깃 EC2({instance_id}) Baseline SG({baseline_sg_id}) 복구 완료"
+                if quarantine_ok
+                else f"타깃 EC2({instance_id}) Baseline SG({baseline_sg_id}) 복구 실패"
+            )
+            waf_detail = (
+                f"출발지 IP({source_ip}) L7 WAF IPSet 차단 해제 완료"
+                if waf_ok
+                else f"출발지 IP({source_ip}) L7 WAF IPSet 차단 해제 실패"
+            )
+
             for inc_dict in incidents:
                 rep = IncidentReport.model_validate(inc_dict)
                 rec_payload = {
-                    "quarantine_restored": restore_result.get("status") in ("success", "unchanged"),
+                    "quarantine_restored": quarantine_ok,
+                    "waf_unblocked": waf_ok,
+                    "iam_restored": False,
                     "t_restored_iso": restore_result.get("t_restored_iso"),
-                    "verification_status": "Baseline SG Verified",
-                    "traffic_verified": True,
+                    "verification_status": verification_status,
+                    "traffic_verified": quarantine_ok and waf_ok,
                     "details": [
-                        f"타깃 EC2({instance_id}) Baseline SG({baseline_sg_id}) 단독 복원 완료",
+                        sg_detail,
+                        waf_detail,
                         f"복구 소요 시간: {restore_result.get('duration_ms')}ms",
                     ],
                 }
@@ -247,13 +314,22 @@ def simulate_threat_and_verify(
                 for rem in remediation_results
             )
 
-    # 3. 엄격한 성공 조건 판정 (FunctionError 없음, 위협 탐지, 차단 성공, Slack 알림 성공 필수)
+    # 3. 엄격한 성공 조건 판정 (오류 없음, 위협 탐지, 차단 성공, Slack 전파, 복구 성공 필수)
+    restore_ok = True
+    if auto_restore:
+        restore_ok = bool(
+            restore_result
+            and restore_result.get("status") in ("success", "unchanged")
+            and restore_result.get("waf_unblocked") is True
+        )
+
     is_success = (
         status_code == 200
         and not function_error
         and bool(threats)
         and remediation_ok
         and (slack_notified is True)
+        and restore_ok
     )
 
     return {
@@ -325,6 +401,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> None:
     """CLI 진입점."""
+    project_root = Path(__file__).resolve().parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    if str(project_root / "src") not in sys.path:
+        sys.path.insert(0, str(project_root / "src"))
+
     args = parse_args()
 
     session_kwargs: dict[str, Any] = {"region_name": args.region}
@@ -334,6 +416,7 @@ def main() -> None:
     session = boto3.Session(**session_kwargs)
     lambda_client = session.client("lambda")
     ec2_client = session.client("ec2")
+    waf_client = session.client("wafv2")
 
     try:
         res = simulate_threat_and_verify(
@@ -345,6 +428,7 @@ def main() -> None:
             auto_restore=not args.no_restore,
             lambda_client=lambda_client,
             ec2_client=ec2_client,
+            waf_client=waf_client,
             slack_webhook_url=args.slack_webhook_url,
         )
         print(json.dumps(res, indent=2, ensure_ascii=False))
