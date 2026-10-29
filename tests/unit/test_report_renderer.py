@@ -96,6 +96,41 @@ class TestExecutiveHtmlReportRenderer:
         assert "size: A4 portrait;" in html_out
         assert "page-break-inside: avoid;" in html_out
 
+    def test_format_time_html_xss_escaping(
+        self,
+        sample_incident_report: IncidentReport,
+    ) -> None:
+        """P1 필수 검증: processing_times에 악성 XSS 문자열 인입 시 HTML 이스케이프 강제 검증."""
+        # 1. processing_times를 통한 악성 스크립트 인젝션 차단 검증
+        xss_payloads = {
+            "network": "<script>alert('pwned')</script>",
+            "waf": "1.25",  # 유효한 숫자형 문자열
+        }
+        html_out = render_executive_html_report(
+            report=sample_incident_report,
+            processing_times=xss_payloads,
+        )
+
+        assert "<script>" not in html_out
+        assert (
+            "&lt;script&gt;alert(&#x27;pwned&#x27;)&lt;/script&gt;" in html_out
+            or "&lt;script&gt;alert('pwned')&lt;/script&gt;" in html_out
+        )
+        assert "1.25초" in html_out
+
+        # 2. remediation_times 및 img 태그 XSS 차단 검증
+        img_xss = {
+            "waf": '<img src=x onerror=alert("xss")>',
+            "network": float("nan"),
+        }
+        html_out_img = render_executive_html_report(
+            report=sample_incident_report,
+            processing_times=img_xss,
+        )
+        assert "<img src=x" not in html_out_img
+        assert "&lt;img src=x onerror=alert(&quot;xss&quot;)&gt;" in html_out_img
+        assert "측정 정보 없음" in html_out_img
+
     def test_render_with_processing_times(
         self,
         sample_incident_report: IncidentReport,
@@ -316,3 +351,134 @@ class TestLlmWorkerReportIntegration:
             mock_send_slack.assert_called_once()
             _, kwargs = mock_send_slack.call_args
             assert kwargs.get("report_url") is None
+
+    def test_worker_s3_skipped_when_lambda_remaining_time_insufficient(
+        self,
+        sample_incident_report: IncidentReport,
+    ) -> None:
+        """P1 필수 검증: Bedrock 지연 등으로 잔여 시간이 부족(8000ms 미만)할 때
+        S3 호출을 안전 생략하고 Slack 전송 예산을 확보하는지 검증."""
+        event = {
+            "source": "cloudshield.security",
+            "detail-type": "ThreatRemediated",
+            "id": "evt-12345",
+            "detail": sample_incident_report.model_dump(),
+        }
+
+        mock_context = MagicMock()
+        # S3 진입 시점에 잔여시간 4000ms 반환 (S3_MIN_REMAINING_BUDGET_MS=8000 미만)
+        mock_context.get_remaining_time_in_millis.return_value = 4000
+
+        mock_s3 = MagicMock()
+        mock_bedrock = MagicMock()
+
+        with (
+            patch.dict(os.environ, {"REPORTS_S3_BUCKET": "cloudshield-secops-reports-dev"}),
+            patch(
+                "remediation.llm_worker.send_deep_analysis_slack_alert",
+                return_value=True,
+            ) as mock_send_slack,
+        ):
+            res = llm_analysis_handler(
+                event=event,
+                context=mock_context,
+                bedrock_client=mock_bedrock,
+                s3_client=mock_s3,
+            )
+
+            assert res["status"] == "accepted"
+            # S3 호출이 생략되어야 함
+            assert res["report_url"] is None
+            mock_s3.put_object.assert_not_called()
+            # Slack 알림은 잔여 시간에 맞춰 정상 호출되어야 함
+            assert res["slack_notified"] is True
+            mock_send_slack.assert_called_once()
+            _, kwargs = mock_send_slack.call_args
+            # 4000ms 잔여시간 기준: (4000 - 500) / 1000 = 3.5초 타임아웃 캡핑 검증
+            assert kwargs.get("timeout") == 3.5
+            assert kwargs.get("report_url") is None
+
+    @mock_aws
+    def test_worker_pipeline_timestamps_integration_with_s3_report(
+        self,
+        sample_incident_report: IncidentReport,
+    ) -> None:
+        """P2 권장 검증: 실제 생산자가 발행한 pipeline_timestamps를 소비하여
+        S3 보고서 HTML에 실측 시간(0.42초)이 연동 렌더링되는지 E2E 통합 검증."""
+        bucket_name = "cloudshield-secops-reports-dev"
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(
+            Bucket=bucket_name,
+            CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"},
+        )
+
+        # 생산자(orchestrator)가 발행하는 표준 형태의 이벤트
+        event = {
+            "source": "cloudshield.security",
+            "detail-type": "ThreatRemediated",
+            "id": "evt-prod-001",
+            "detail": {
+                **sample_incident_report.model_dump(),
+                "raw_logs": ["Sample syslog log message 1"],
+                "pipeline_timestamps": {
+                    "detected_epoch": 1700000000.0,
+                    "remediated_epoch": 1700000000.42,
+                },
+            },
+        }
+
+        with (
+            patch.dict(os.environ, {"REPORTS_S3_BUCKET": bucket_name}),
+            patch(
+                "remediation.llm_worker.send_deep_analysis_slack_alert",
+                return_value=True,
+            ),
+        ):
+            res = llm_analysis_handler(event, s3_client=s3)
+
+            assert res["status"] == "accepted"
+            assert res["report_url"] is not None
+
+            # S3에 업로드된 HTML 본문 조회
+            object_key = f"reports/{sample_incident_report.incident_id}.html"
+            s3_obj = s3.get_object(Bucket=bucket_name, Key=object_key)
+            html_body = s3_obj["Body"].read().decode("utf-8")
+
+            # 실측 계산된 0.42초가 네트워크 및 WAF 차단 행에 반영되었는지 검증
+            assert "0.42초" in html_body
+            # 미측정된 계층은 정직하게 '측정 정보 없음' 유지 검증
+            assert "측정 정보 없음" in html_body
+
+    @mock_aws
+    def test_worker_remediation_times_xss_escaping_via_handler(
+        self,
+        sample_incident_report: IncidentReport,
+    ) -> None:
+        """P1 필수: remediation_times 경로 악성 HTML 인입 시 S3 보고서 XSS 이스케이프 검증."""
+        bucket_name = "cloudshield-secops-reports-dev"
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(
+            Bucket=bucket_name,
+            CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"},
+        )
+        event = {
+            "source": "cloudshield.security",
+            "detail-type": "ThreatRemediated",
+            "id": "evt-xss-001",
+            "detail": {
+                **sample_incident_report.model_dump(),
+                "remediation_times": {"waf": "<img src=x onerror=alert(1)>"},
+            },
+        }
+        with (
+            patch.dict(os.environ, {"REPORTS_S3_BUCKET": bucket_name}),
+            patch("remediation.llm_worker.send_deep_analysis_slack_alert", return_value=True),
+        ):
+            res = llm_analysis_handler(event, s3_client=s3)
+            assert res["status"] == "accepted"
+            s3_obj = s3.get_object(
+                Bucket=bucket_name, Key=f"reports/{sample_incident_report.incident_id}.html"
+            )
+            html_body = s3_obj["Body"].read().decode("utf-8")
+            assert "<img src=x" not in html_body
+            assert "&lt;img src=x onerror=alert(1)&gt;" in html_body

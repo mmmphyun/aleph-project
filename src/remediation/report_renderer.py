@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import html
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -81,12 +82,25 @@ def render_executive_html_report(
     # 처리 시간 포맷팅 헬퍼 (실측값 우선 적용, 미측정 시 정직한 '측정 정보 없음' 표기)
     times = processing_times or {}
 
-    def _format_time(val: str | float | None) -> str:
+    def _format_time(val: Any) -> str:
         if val is None or val == "":
             return "측정 정보 없음"
         if isinstance(val, (int, float)):
+            if math.isnan(val) or math.isinf(val):
+                return "측정 정보 없음"
             return f"{val:.2f}초"
-        return str(val)
+        if isinstance(val, str):
+            clean_str = val.strip()
+            if not clean_str:
+                return "측정 정보 없음"
+            try:
+                num = float(clean_str)
+                if not (math.isnan(num) or math.isinf(num)):
+                    return f"{num:.2f}초"
+            except (ValueError, TypeError):
+                pass
+            return html.escape(clean_str)
+        return html.escape(str(val))
 
     time_network = _format_time(times.get("network"))
     time_waf = _format_time(times.get("waf"))
