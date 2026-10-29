@@ -106,6 +106,7 @@ def render_executive_html_report(
     time_waf = _format_time(times.get("waf"))
     time_iam = _format_time(times.get("iam"))
     time_auth = _format_time(times.get("auth"))
+    time_total = _format_time(times.get("total"))
 
     # 긴급 차단 조치 내역 테이블 행 생성
     remediation_rows: list[str] = []
@@ -314,6 +315,14 @@ def render_executive_html_report(
       color: #111111;
       text-align: center;
     }}
+    .report-table tfoot th {{
+      background-color: #f9f9f9;
+      font-weight: 600;
+    }}
+    .report-table tfoot th.total-label {{
+      text-align: right;
+      padding-right: 15px;
+    }}
     .report-table td.center {{
       text-align: center;
     }}
@@ -448,6 +457,12 @@ def render_executive_html_report(
       <tbody>
 {remediation_tbody}
       </tbody>
+      <tfoot>
+        <tr>
+          <th colspan="4" class="total-label">전체 긴급 대응 소요 시간</th>
+          <th class="center">{time_total}</th>
+        </tr>
+      </tfoot>
     </table>
   </div>
 

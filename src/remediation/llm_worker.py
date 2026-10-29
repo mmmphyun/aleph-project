@@ -373,14 +373,8 @@ def llm_analysis_handler(
                             and rem >= det
                         ):
                             elapsed = round(float(rem - det), 2)
-                            action = analyzed_report.action_required
-                            if action in ("BLOCK_WAF", "BLOCK_IP_ONLY"):
-                                processing_times.setdefault("waf", elapsed)
-                            elif action == "QUARANTINE_EC2":
-                                processing_times.setdefault("network", elapsed)
-                            elif action == "BLOCK_AND_QUARANTINE":
-                                processing_times.setdefault("network", elapsed)
-                                processing_times.setdefault("waf", elapsed)
+                            # 전체 대응 시간으로 별도 표기 (계층별 시간으로 복제 대입 금지)
+                            processing_times.setdefault("total", elapsed)
 
                 report_html = render_executive_html_report(
                     report=analyzed_report,
@@ -400,14 +394,26 @@ def llm_analysis_handler(
 
     # 5. 2차 사후 심층 분석 Slack 카드 전파
     target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
-    try:
-        # Slack 전송 직전 잔여시간을 재확인하여 Lambda SIGKILL 차단을 위한 타임아웃 동적 캡핑
-        current_rem_ms = _get_context_remaining_ms(context)
+    current_rem_ms = _get_context_remaining_ms(context)
+    if current_rem_ms is not None:
+        remaining_sec = current_rem_ms / 1000.0
+        usable_budget = remaining_sec - SLACK_DEADLINE_BUFFER_SECONDS
+        # 버퍼 차감 후 잔여 예산이 0 이하이면 네트워크 호출 생략 및 강제 종료 차단
+        if usable_budget <= 0:
+            logger.warning(
+                "Lambda 잔여 시간(%d ms)이 데드라인 버퍼(%d ms) 이하이므로 "
+                "Slack 알림 전파를 생략합니다.",
+                current_rem_ms,
+                int(SLACK_DEADLINE_BUFFER_SECONDS * 1000),
+            )
+            response["slack_notified"] = False
+            return response
+        # 양수인 경우에도 잔여 가용 예산을 초과하지 않도록 타임아웃 캡핑
+        slack_timeout = min(DEFAULT_SLACK_TIMEOUT_SECONDS, usable_budget)
+    else:
         slack_timeout = DEFAULT_SLACK_TIMEOUT_SECONDS
-        if current_rem_ms is not None:
-            safe_slack_timeout = max(0.5, (current_rem_ms / 1000.0) - SLACK_DEADLINE_BUFFER_SECONDS)
-            slack_timeout = min(DEFAULT_SLACK_TIMEOUT_SECONDS, safe_slack_timeout)
 
+    try:
         slack_sent = send_deep_analysis_slack_alert(
             report=analyzed_report,
             webhook_url=target_webhook,

@@ -131,6 +131,26 @@ class TestExecutiveHtmlReportRenderer:
         assert "&lt;img src=x onerror=alert(&quot;xss&quot;)&gt;" in html_out_img
         assert "측정 정보 없음" in html_out_img
 
+    def test_render_with_separate_total_and_layer_times(
+        self,
+        sample_incident_report: IncidentReport,
+    ) -> None:
+        """P2 권장 검증: 전체 대응 시간과 계층별 실측 시간이 분리 표기되는지 검증."""
+        times = {
+            "network": 0.82,
+            "waf": 0.45,
+            "total": 5.00,
+        }
+        html_out = render_executive_html_report(
+            sample_incident_report,
+            processing_times=times,
+        )
+
+        assert '<td class="center">0.82초</td>' in html_out
+        assert '<td class="center">0.45초</td>' in html_out
+        assert "전체 긴급 대응 소요 시간" in html_out
+        assert "5.00초" in html_out
+
     def test_render_with_processing_times(
         self,
         sample_incident_report: IncidentReport,
@@ -444,10 +464,13 @@ class TestLlmWorkerReportIntegration:
             s3_obj = s3.get_object(Bucket=bucket_name, Key=object_key)
             html_body = s3_obj["Body"].read().decode("utf-8")
 
-            # 실측 계산된 0.42초가 네트워크 및 WAF 차단 행에 반영되었는지 검증
+            # 실측 계산된 0.42초가 전체 긴급 대응 소요 시간에 단독 표기되었는지 검증
+            assert "전체 긴급 대응 소요 시간" in html_body
             assert "0.42초" in html_body
-            # 미측정된 계층은 정직하게 '측정 정보 없음' 유지 검증
+            # 개별 계층(네트워크, 웹 방화벽)은 복제되지 않고 정직하게 '측정 정보 없음' 유지 검증
             assert "측정 정보 없음" in html_body
+            assert '<td class="center">0.42초</td>' not in html_body
+            assert '<th class="center">0.42초</th>' in html_body
 
     @mock_aws
     def test_worker_remediation_times_xss_escaping_via_handler(
@@ -482,3 +505,171 @@ class TestLlmWorkerReportIntegration:
             html_body = s3_obj["Body"].read().decode("utf-8")
             assert "<img src=x" not in html_body
             assert "&lt;img src=x onerror=alert(1)&gt;" in html_body
+
+    @pytest.mark.parametrize("remaining_ms", [0, 200, 400, 500])
+    def test_worker_slack_skipped_on_boundary_remaining_times(
+        self,
+        sample_incident_report: IncidentReport,
+        remaining_ms: int,
+    ) -> None:
+        """P1 필수: 0, 200, 400, 500ms 경계값에서 데드라인 버퍼(500ms) 이하이므로
+        Slack 네트워크 호출을 생략하고 slack_notified=False를 반환하는지 검증."""
+        event = {
+            "source": "cloudshield.security",
+            "detail-type": "ThreatRemediated",
+            "id": f"evt-bound-{remaining_ms}",
+            "detail": sample_incident_report.model_dump(),
+        }
+
+        mock_context = MagicMock()
+        mock_context.get_remaining_time_in_millis.return_value = remaining_ms
+        mock_s3 = MagicMock()
+        mock_bedrock = MagicMock()
+
+        with (
+            patch.dict(os.environ, {"REPORTS_S3_BUCKET": "cloudshield-secops-reports-dev"}),
+            patch(
+                "remediation.llm_worker.send_deep_analysis_slack_alert",
+                return_value=True,
+            ) as mock_send_slack,
+        ):
+            res = llm_analysis_handler(
+                event=event,
+                context=mock_context,
+                bedrock_client=mock_bedrock,
+                s3_client=mock_s3,
+            )
+
+            assert res["status"] == "accepted"
+            assert res["report_url"] is None
+            mock_s3.put_object.assert_not_called()
+            assert res["slack_notified"] is False
+            mock_send_slack.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("remaining_ms", "expected_timeout"),
+        [
+            (600, 0.1),
+            (1000, 0.5),
+            (3000, 2.5),
+            (7000, 5.0),
+        ],
+    )
+    def test_worker_slack_timeout_clamped_to_exact_usable_budget(
+        self,
+        sample_incident_report: IncidentReport,
+        remaining_ms: int,
+        expected_timeout: float,
+    ) -> None:
+        """P1 필수: 버퍼 차감 후 잔여 예산이 양수인 경우, 해당 예산을 초과하지 않는
+        정확한 타임아웃으로 Slack이 호출되는지 검증 (5.0초 상한 준수)."""
+        event = {
+            "source": "cloudshield.security",
+            "detail-type": "ThreatRemediated",
+            "id": f"evt-budget-{remaining_ms}",
+            "detail": sample_incident_report.model_dump(),
+        }
+
+        mock_context = MagicMock()
+        mock_context.get_remaining_time_in_millis.return_value = remaining_ms
+        mock_s3 = MagicMock()
+        mock_bedrock = MagicMock()
+
+        with (
+            patch(
+                "remediation.llm_worker.send_deep_analysis_slack_alert",
+                return_value=True,
+            ) as mock_send_slack,
+        ):
+            res = llm_analysis_handler(
+                event=event,
+                context=mock_context,
+                bedrock_client=mock_bedrock,
+                s3_client=mock_s3,
+            )
+
+            assert res["status"] == "accepted"
+            assert res["slack_notified"] is True
+            mock_send_slack.assert_called_once()
+            _, kwargs = mock_send_slack.call_args
+            assert kwargs.get("timeout") == pytest.approx(expected_timeout)
+
+    @mock_aws
+    def test_worker_s3_success_then_slack_remaining_time_depleted(
+        self,
+        sample_incident_report: IncidentReport,
+    ) -> None:
+        """P1 필수: S3 진입 시 10,000ms로 성공했으나, S3 완료 후 잔여 시간이
+        400ms(버퍼 500ms 이하)로 급감한 경우 Slack 호출을 안전 생략하는지 검증."""
+        bucket_name = "cloudshield-secops-reports-dev"
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(
+            Bucket=bucket_name,
+            CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"},
+        )
+        event = {
+            "source": "cloudshield.security",
+            "detail-type": "ThreatRemediated",
+            "id": "evt-s3-then-depleted",
+            "detail": sample_incident_report.model_dump(),
+        }
+
+        mock_context = MagicMock()
+        # 1차(S3 진입 시): 10,000ms -> S3 진행
+        # 2차(Slack 진입 시): 400ms -> 버퍼 500ms 이하이므로 Slack 생략
+        mock_context.get_remaining_time_in_millis.side_effect = [10000, 400]
+
+        with (
+            patch.dict(os.environ, {"REPORTS_S3_BUCKET": bucket_name}),
+            patch(
+                "remediation.llm_worker.send_deep_analysis_slack_alert",
+                return_value=True,
+            ) as mock_send_slack,
+        ):
+            res = llm_analysis_handler(event, context=mock_context, s3_client=s3)
+
+            assert res["status"] == "accepted"
+            assert res["report_url"] is not None
+            assert res["slack_notified"] is False
+            mock_send_slack.assert_not_called()
+
+    @mock_aws
+    def test_worker_s3_success_then_slack_timeout_reduced(
+        self,
+        sample_incident_report: IncidentReport,
+    ) -> None:
+        """P1 필수: S3 10,000ms 성공 후 Slack 진입 시 잔여 3,500ms로 감소한 경우
+        Slack 타임아웃이 3.0초((3500-500)/1000)로 동적 축소 적용되는지 검증."""
+        bucket_name = "cloudshield-secops-reports-dev"
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(
+            Bucket=bucket_name,
+            CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"},
+        )
+        event = {
+            "source": "cloudshield.security",
+            "detail-type": "ThreatRemediated",
+            "id": "evt-s3-then-reduced",
+            "detail": sample_incident_report.model_dump(),
+        }
+
+        mock_context = MagicMock()
+        # 1차(S3 진입 시): 10,000ms -> S3 진행
+        # 2차(Slack 진입 시): 3,500ms -> 가용 예산 3.0초
+        mock_context.get_remaining_time_in_millis.side_effect = [10000, 3500]
+
+        with (
+            patch.dict(os.environ, {"REPORTS_S3_BUCKET": bucket_name}),
+            patch(
+                "remediation.llm_worker.send_deep_analysis_slack_alert",
+                return_value=True,
+            ) as mock_send_slack,
+        ):
+            res = llm_analysis_handler(event, context=mock_context, s3_client=s3)
+
+            assert res["status"] == "accepted"
+            assert res["report_url"] is not None
+            assert res["slack_notified"] is True
+            mock_send_slack.assert_called_once()
+            _, kwargs = mock_send_slack.call_args
+            assert kwargs.get("timeout") == pytest.approx(3.0)
