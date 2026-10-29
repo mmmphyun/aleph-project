@@ -620,10 +620,7 @@ def build_waf_slack_payload(
     return result_payload
 
 
-def build_llm_slack_payload(
-    report: IncidentReport,
-    report_url: str | None = None,
-) -> dict[str, Any]:
+def build_llm_slack_payload(report: IncidentReport) -> dict[str, Any]:
     """사후 LLM 심층 분석 결과를 2차 알림 카드로 생성한다.
 
     Why:
@@ -682,24 +679,10 @@ def build_llm_slack_payload(
             "분석 권고 액션 (집행 결과 아님)", report.action_required, empty_value="NONE"
         )
     )
-    if report_url:
-        blocks.append(
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "📄 상사 보고용 상세 리포트 열기"},
-                        "url": report_url,
-                        "style": "primary",
-                    }
-                ],
-            }
-        )
     if len(blocks) > MAX_SLACK_BLOCKS:
         raise ValueError(f"Slack 카드 블록 상한({MAX_SLACK_BLOCKS}개)을 초과했습니다")
 
-    payload: dict[str, Any] = {
+    return {
         "text": truncate_text(
             f"[2차 LLM 심층 분석][{report.risk_level}] "
             f"{escape_slack_text(report.incident_id)}: {escape_slack_text(report.attack_type)}"
@@ -711,10 +694,6 @@ def build_llm_slack_payload(
         "remediation_action": report.action_required,
         "is_llm_card": True,
     }
-    if report_url:
-        payload["report_url"] = report_url
-
-    return payload
 
 
 def build_recovery_slack_payload(
@@ -1047,7 +1026,6 @@ def send_llm_slack_alert(
     timeout: float = 3.0,
     max_retries: int = 1,
     retry_delay: float = 0.5,
-    report_url: str | None = None,
 ) -> bool:
     """사후 LLM 심층 분석 보고서를 Slack Block Kit 카드로 렌더링하여 Webhook 발송.
 
@@ -1108,7 +1086,7 @@ def send_llm_slack_alert(
         return False
 
     try:
-        payload = build_llm_slack_payload(report, report_url=report_url)
+        payload = build_llm_slack_payload(report)
         encoded_data = json.dumps(payload).encode("utf-8")
     except Exception as exc:
         logger.error("2차 LLM Slack Block Kit 페이로드 직렬화 실패: %s", exc)

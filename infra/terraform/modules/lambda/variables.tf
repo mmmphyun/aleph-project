@@ -80,15 +80,3 @@ variable "bedrock_model_id" {
   default     = "apac.amazon.nova-micro-v1:0"
 }
 
-
-variable "reports_s3_bucket_arn" {
-  description = "침해 보고서 저장 S3 버킷 ARN"
-  type        = string
-  default     = ""
-}
-
-variable "reports_s3_bucket_name" {
-  description = "침해 보고서 저장 S3 버킷 이름"
-  type        = string
-  default     = ""
-}
