@@ -56,17 +56,19 @@ module "waf" {
 module "lambda" {
   source = "./modules/lambda"
 
-  function_name       = var.lambda_function_name
-  llm_function_name   = var.lambda_llm_function_name
-  bedrock_model_id    = var.bedrock_model_id
-  environment         = var.environment
-  dynamodb_table_arn  = module.dynamodb.table_arn
-  dynamodb_table_name = module.dynamodb.table_name
-  quarantine_sg_arn   = module.quarantine_sg.quarantine_sg_arn
-  waf_ipset_arn       = module.waf.ipset_arn
-  slack_webhook_url   = var.slack_webhook_url
-  target_alb_arn      = module.alb.alb_arn
-  target_web_acl_arn  = module.waf.web_acl_arn
+  function_name          = var.lambda_function_name
+  llm_function_name      = var.lambda_llm_function_name
+  bedrock_model_id       = var.bedrock_model_id
+  environment            = var.environment
+  dynamodb_table_arn     = module.dynamodb.table_arn
+  dynamodb_table_name    = module.dynamodb.table_name
+  quarantine_sg_arn      = module.quarantine_sg.quarantine_sg_arn
+  waf_ipset_arn          = module.waf.ipset_arn
+  slack_webhook_url      = var.slack_webhook_url
+  target_alb_arn         = module.alb.alb_arn
+  target_web_acl_arn     = module.waf.web_acl_arn
+  reports_s3_bucket_arn  = module.s3_reports.bucket_arn
+  reports_s3_bucket_name = module.s3_reports.bucket_name
   package_zip_path = var.lambda_package_zip_path != "" ? (
     startswith(var.lambda_package_zip_path, "/") || can(regex("^[A-Za-z]:", var.lambda_package_zip_path)) ?
     var.lambda_package_zip_path :
@@ -201,3 +203,14 @@ resource "aws_iam_policy" "grafana_cloudwatch_readonly" {
   }
 }
 
+
+
+# ==============================================================================
+# 8. 침해 보고서 S3 저장소 및 사내 IP 격리 모듈 (클라우드 A 전담)
+# ==============================================================================
+module "s3_reports" {
+  source = "./modules/s3"
+
+  environment          = var.environment
+  allowed_report_cidrs = var.allowed_report_cidrs
+}

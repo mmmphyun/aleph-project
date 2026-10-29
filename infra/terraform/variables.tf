@@ -162,3 +162,9 @@ variable "ec2_log_retention_days" {
   default     = 7
 }
 
+
+variable "allowed_report_cidrs" {
+  description = "침해 보고서 열람이 허용된 사내 공인 IP CIDR 목록"
+  type        = list(string)
+  default     = ["1.245.252.171/32"]
+}
