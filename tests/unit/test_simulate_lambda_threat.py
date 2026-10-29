@@ -442,6 +442,11 @@ def test_simulate_threat_and_verify_recovery_slack_sent(
     ]
 
     mock_send_recovery = MagicMock(return_value=True)
+    mock_unblock_waf = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "scripts.simulate_lambda_threat.unblock_ip_wafv2",
+        mock_unblock_waf,
+    )
     monkeypatch.setattr(
         "reporter.slack_notifier.send_recovery_slack_alert",
         mock_send_recovery,
@@ -463,6 +468,8 @@ def test_simulate_threat_and_verify_recovery_slack_sent(
     assert call_kwargs["report"].incident_id == "INC-20261029-TEST"
     assert call_kwargs["webhook_url"] == "https://hooks.slack.com/services/TEST/TOKEN"
     assert call_kwargs["recovery_result"]["quarantine_restored"] is True
+    assert call_kwargs["recovery_result"]["waf_unblocked"] is True
+    assert result["restore_result"]["waf_unblocked"] is True
 
 
 def test_simulate_threat_and_verify_recovery_slack_sent_unchanged(
@@ -516,6 +523,11 @@ def test_simulate_threat_and_verify_recovery_slack_sent_unchanged(
     }
 
     mock_send_recovery = MagicMock(return_value=True)
+    mock_unblock_waf = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "scripts.simulate_lambda_threat.unblock_ip_wafv2",
+        mock_unblock_waf,
+    )
     monkeypatch.setattr(
         "reporter.slack_notifier.send_recovery_slack_alert",
         mock_send_recovery,
@@ -537,3 +549,93 @@ def test_simulate_threat_and_verify_recovery_slack_sent_unchanged(
     call_kwargs = mock_send_recovery.call_args[1]
     assert call_kwargs["report"].incident_id == "INC-20261029-UNCHANGED"
     assert call_kwargs["recovery_result"]["quarantine_restored"] is True
+    assert call_kwargs["recovery_result"]["waf_unblocked"] is True
+    assert result["restore_result"]["waf_unblocked"] is True
+
+
+def test_simulate_threat_and_verify_waf_unblock_failure_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L7 WAF IP 해제 실패 시에도 L4 SG 복원 및 3차 알림이 안전 격리 전파되는지 검증.
+
+    Why:
+        WAFv2 클라이언트 API 장애 또는 타임아웃 발생 시에도 L4 EC2 복구 상태가 보존되고,
+        3차 Slack 카드에 waf_unblocked=False가 안전하게 반영되어 전체 파이프라인 중단을 차단함.
+    """
+    import io
+    from unittest.mock import MagicMock
+
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_response_payload = {
+        "processed_events": 1,
+        "threats_detected": ["SSH_BRUTE_FORCE"],
+        "remediation_results": [{"quarantine_applied": True}],
+        "slack_notified": True,
+        "incidents": [
+            {
+                "incident_id": "INC-20261029-WAF-FAIL",
+                "attack_type": "SSH Brute Force",
+                "mitre_id": "T1110.001",
+                "risk_level": "HIGH",
+                "source_ip": "198.51.100.99",
+                "target_identifier": "i-0123456789abcdef0",
+                "action_required": "BLOCK_AND_QUARANTINE",
+                "summary_ko": "SSH 무차별 대입 공격 탐지",
+            }
+        ],
+    }
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(json.dumps(mock_response_payload).encode("utf-8")),
+    }
+
+    mock_ec2.describe_instances.side_effect = [
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-test", "SecurityGroups": [{"GroupId": "sg-quarantine"}]}
+                    ]
+                }
+            ]
+        },
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "Instances": [],
+                            "InstanceId": "i-test",
+                            "SecurityGroups": [{"GroupId": "sg-baseline"}],
+                        }
+                    ]
+                }
+            ]
+        },
+    ]
+
+    mock_send_recovery = MagicMock(return_value=True)
+    # WAF 해제 중 RuntimeError 발생 유발
+    mock_unblock_waf_fail = MagicMock(side_effect=RuntimeError("WAF API Throttling"))
+
+    monkeypatch.setattr("reporter.slack_notifier.send_recovery_slack_alert", mock_send_recovery)
+    monkeypatch.setattr("scripts.simulate_lambda_threat.unblock_ip_wafv2", mock_unblock_waf_fail)
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test",
+        baseline_sg_id="sg-baseline",
+        auto_restore=True,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+        slack_webhook_url="https://hooks.slack.com/services/TEST/TOKEN",
+    )
+
+    assert result["recovery_slack_sent"] is True
+    assert result["restore_result"]["status"] == "success"
+    assert result["restore_result"]["waf_unblocked"] is False
+    call_kwargs = mock_send_recovery.call_args[1]
+    assert call_kwargs["recovery_result"]["quarantine_restored"] is True
+    assert call_kwargs["recovery_result"]["waf_unblocked"] is False
