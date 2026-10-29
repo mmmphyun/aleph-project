@@ -51,7 +51,7 @@ def test_build_mock_cw_logs_payload() -> None:
     assert "198.51.100.99" in payload["logEvents"][0]["message"]
 
 
-def test_simulate_threat_and_verify_success() -> None:
+def test_simulate_threat_and_verify_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Lambda 호출 및 자동 롤백 복구 연계 성공 검증.
 
     Why:
@@ -105,6 +105,12 @@ def test_simulate_threat_and_verify_success() -> None:
         },
     ]
 
+    mock_unblock_waf = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "scripts.simulate_lambda_threat.unblock_ip_wafv2",
+        mock_unblock_waf,
+    )
+
     result = simulate_threat_and_verify(
         function_name="CloudShield-Threat-Orchestrator",
         instance_id="i-test12345",
@@ -120,6 +126,7 @@ def test_simulate_threat_and_verify_success() -> None:
     assert result["threats_detected"] == ["SSH_BRUTE_FORCE"]
     assert result["slack_notified"] is True
     assert result["restore_result"]["status"] == "success"
+    assert result["restore_result"]["waf_unblocked"] is True
 
     # mock 호출 검증
     mock_lambda.invoke.assert_called_once()
@@ -292,7 +299,9 @@ def test_simulate_threat_and_verify_threats_detected_empty() -> None:
     assert result["status"] == "failed"
 
 
-def test_simulate_threat_and_verify_auto_restore_on_lambda_exception() -> None:
+def test_simulate_threat_and_verify_auto_restore_on_lambda_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Lambda 호출 중 예외가 발생해도 Baseline SG 롤백이 반드시 수행되는지 검증.
 
     Why:
@@ -325,6 +334,12 @@ def test_simulate_threat_and_verify_auto_restore_on_lambda_exception() -> None:
         },
     ]
 
+    mock_unblock_waf = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "scripts.simulate_lambda_threat.unblock_ip_wafv2",
+        mock_unblock_waf,
+    )
+
     with pytest.raises(RuntimeError, match="Lambda network failure"):
         simulate_threat_and_verify(
             function_name="CloudShield-Threat-Orchestrator",
@@ -341,13 +356,21 @@ def test_simulate_threat_and_verify_auto_restore_on_lambda_exception() -> None:
     )
 
 
-def test_simulate_threat_and_verify_exception_chaining() -> None:
+def test_simulate_threat_and_verify_exception_chaining(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Lambda와 복구 모두 실패 시 원본 예외와 복구 예외가 체이닝되어 전파되는지 검증."""
     mock_lambda = MagicMock()
     mock_ec2 = MagicMock()
 
     mock_lambda.invoke.side_effect = ValueError("Original Lambda failure")
     mock_ec2.describe_instances.side_effect = RuntimeError("EC2 restore failure")
+
+    mock_unblock_waf = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "scripts.simulate_lambda_threat.unblock_ip_wafv2",
+        mock_unblock_waf,
+    )
 
     with pytest.raises(RuntimeError, match="EC2 restore failure") as exc_info:
         simulate_threat_and_verify(
@@ -634,8 +657,67 @@ def test_simulate_threat_and_verify_waf_unblock_failure_isolation(
     )
 
     assert result["recovery_slack_sent"] is True
+    assert result["status"] == "failed"
     assert result["restore_result"]["status"] == "success"
     assert result["restore_result"]["waf_unblocked"] is False
     call_kwargs = mock_send_recovery.call_args[1]
     assert call_kwargs["recovery_result"]["quarantine_restored"] is True
     assert call_kwargs["recovery_result"]["waf_unblocked"] is False
+    assert (
+        call_kwargs["recovery_result"]["verification_status"]
+        == "Partial Recovery: Baseline SG Verified, WAF IP Unblock Failed"
+    )
+    assert "L7 WAF IPSet 차단 해제 실패" in call_kwargs["recovery_result"]["details"][1]
+    assert call_kwargs["recovery_result"]["traffic_verified"] is False
+
+
+def test_simulate_threat_and_verify_l4_exception_does_not_abort_waf_unblock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L4 SG 복구 중 예외가 발생해도 L7 WAF 해제가 독립 완결 호출되고 오류가 전파되는지 검증.
+
+    Why:
+        EC2 Client 오류나 네트워크 타임아웃으로 L4 Baseline SG 복원이 실패하더라도,
+        L7 WAF IPSet 해제 시도가 중단되지 않고 독립 실행된 후 L4 원본 오류가 안전하게 전파되어야 함.
+    """
+    import io
+    from unittest.mock import MagicMock
+
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+    mock_waf = MagicMock()
+
+    mock_response_payload = {
+        "processed_events": 1,
+        "threats_detected": ["SSH_BRUTE_FORCE"],
+        "remediation_results": [{"quarantine_applied": True}],
+        "slack_notified": True,
+    }
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(json.dumps(mock_response_payload).encode("utf-8")),
+    }
+
+    # L4 복구 시 describe_instances에서 RuntimeError 발생
+    mock_ec2.describe_instances.side_effect = RuntimeError("EC2 describe failed")
+
+    mock_unblock_waf = MagicMock(return_value=True)
+    monkeypatch.setattr("scripts.simulate_lambda_threat.unblock_ip_wafv2", mock_unblock_waf)
+
+    with pytest.raises(RuntimeError, match="EC2 describe failed"):
+        simulate_threat_and_verify(
+            function_name="CloudShield-Threat-Orchestrator",
+            instance_id="i-test",
+            baseline_sg_id="sg-baseline",
+            source_ip="198.51.100.77",
+            auto_restore=True,
+            lambda_client=mock_lambda,
+            ec2_client=mock_ec2,
+            waf_client=mock_waf,
+        )
+
+    # L4 예외에도 불구하고 L7 WAF unblock은 독립적으로 완결 호출되어야 함
+    mock_unblock_waf.assert_called_once_with(
+        source_ip="198.51.100.77",
+        waf_client=mock_waf,
+    )
