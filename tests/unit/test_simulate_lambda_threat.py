@@ -377,3 +377,88 @@ def test_parse_args_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.baseline_sg_id == DEFAULT_BASELINE_SG_ID
     assert args.source_ip == DEFAULT_TEST_SOURCE_IP
     assert args.no_restore is False
+
+
+def test_parse_args_slack_webhook_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI 인자 --slack-webhook-url 파싱 검증."""
+    test_url = "https://hooks.slack.com/services/TEST/TOKEN"
+    args = parse_args(["--slack-webhook-url", test_url])
+    assert args.slack_webhook_url == test_url
+
+
+def test_simulate_threat_and_verify_recovery_slack_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """자동 복구 성공 시 동일 사건 ID 기반 3차 Slack 알림 전송 호출 검증."""
+    import io
+    from unittest.mock import MagicMock
+
+    mock_lambda = MagicMock()
+    mock_ec2 = MagicMock()
+
+    mock_response_payload = {
+        "processed_events": 1,
+        "threats_detected": ["SSH_BRUTE_FORCE"],
+        "remediation_results": [{"quarantine_applied": True}],
+        "slack_notified": True,
+        "incidents": [
+            {
+                "incident_id": "INC-20261029-TEST",
+                "attack_type": "SSH Brute Force",
+                "mitre_id": "T1110.001",
+                "risk_level": "HIGH",
+                "source_ip": "198.51.100.10",
+                "target_identifier": "i-0123456789abcdef0",
+                "action_required": "QUARANTINE_EC2",
+                "summary_ko": "SSH 무차별 대입 공격 탐지",
+            }
+        ],
+    }
+    payload_bytes = json.dumps(mock_response_payload).encode("utf-8")
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(payload_bytes),
+    }
+
+    mock_ec2.describe_instances.side_effect = [
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-test", "SecurityGroups": [{"GroupId": "sg-quarantine"}]}
+                    ]
+                }
+            ]
+        },
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-test", "SecurityGroups": [{"GroupId": "sg-baseline"}]}
+                    ]
+                }
+            ]
+        },
+    ]
+
+    mock_send_recovery = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "reporter.slack_notifier.send_recovery_slack_alert",
+        mock_send_recovery,
+    )
+
+    result = simulate_threat_and_verify(
+        function_name="CloudShield-Threat-Orchestrator",
+        instance_id="i-test",
+        baseline_sg_id="sg-baseline",
+        auto_restore=True,
+        lambda_client=mock_lambda,
+        ec2_client=mock_ec2,
+        slack_webhook_url="https://hooks.slack.com/services/TEST/TOKEN",
+    )
+
+    assert result["recovery_slack_sent"] is True
+    assert mock_send_recovery.called
+    call_kwargs = mock_send_recovery.call_args[1]
+    assert call_kwargs["report"].incident_id == "INC-20261029-TEST"
+    assert call_kwargs["webhook_url"] == "https://hooks.slack.com/services/TEST/TOKEN"

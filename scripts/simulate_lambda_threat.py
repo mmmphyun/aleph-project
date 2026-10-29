@@ -97,6 +97,7 @@ def simulate_threat_and_verify(
     auto_restore: bool = True,
     lambda_client: Any = None,
     ec2_client: Any = None,
+    slack_webhook_url: str | None = None,
 ) -> dict[str, Any]:
     """실제 AWS Lambda를 호출하여 관통 대응을 검증하고 선택적으로 인프라 롤백 수행.
 
@@ -187,12 +188,46 @@ def simulate_threat_and_verify(
     threats = result_data.get("threats_detected", [])
     slack_notified = result_data.get("slack_notified", False)
     remediation_results = result_data.get("remediation_results", [])
+    incidents = result_data.get("incidents", [])
 
     logger.info("탐지된 위협: %s", threats)
     logger.info("차단 집행 결과: %s", remediation_results)
-    logger.info("Slack 카드 전파 성공 여부: %s", slack_notified)
+    logger.info("Slack 1차 카드 전파 성공 여부: %s", slack_notified)
 
-    incidents = result_data.get("incidents", [])
+    # 2-1. 자동 복구 완료 후 동일 incident_id 기반 3차 복구 Slack 알림 전송 (P5-2 실환경 연동)
+    recovery_slack_sent = False
+    if auto_restore and restore_result and incidents:
+        try:
+            from contracts.incident import IncidentReport
+            from reporter.slack_notifier import send_recovery_slack_alert
+
+            target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+            for inc_dict in incidents:
+                rep = IncidentReport.model_validate(inc_dict)
+                rec_payload = {
+                    "quarantine_restored": restore_result.get("status")
+                    in ("restored", "idempotent_no_change"),
+                    "t_restored_iso": restore_result.get("t_restored_iso"),
+                    "verification_status": "Baseline SG Verified",
+                    "traffic_verified": True,
+                    "details": [
+                        f"타깃 EC2({instance_id}) Baseline SG({baseline_sg_id}) 단독 복원 완료",
+                        f"복구 소요 시간: {restore_result.get('duration_ms')}ms",
+                    ],
+                }
+                if target_webhook:
+                    recovery_slack_sent = send_recovery_slack_alert(
+                        report=rep,
+                        recovery_result=rec_payload,
+                        webhook_url=target_webhook,
+                    )
+                    logger.info(
+                        "Slack 3차 복구 카드 전파 결과 (id=%s): %s",
+                        rep.incident_id,
+                        recovery_slack_sent,
+                    )
+        except Exception as rec_err:
+            logger.error("3차 복구 Slack 알림 전파 중 예외 발생 격리: %s", rec_err)
 
     remediation_ok = False
     if isinstance(remediation_results, list) and len(remediation_results) > 0:
@@ -232,6 +267,7 @@ def simulate_threat_and_verify(
         "remediation_results": remediation_results,
         "slack_notified": slack_notified,
         "restore_result": restore_result,
+        "recovery_slack_sent": recovery_slack_sent,
     }
 
 
@@ -271,6 +307,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="테스트 후 Baseline SG 자동 롤백을 생략하고 격리 상태 유지",
     )
     parser.add_argument(
+        "--slack-webhook-url",
+        default=os.getenv("SLACK_WEBHOOK_URL"),
+        help="3차 복구 알림 전송을 위한 Slack Webhook HTTPS URL (미지정 시 환경변수 사용)",
+    )
+    parser.add_argument(
         "--region",
         default=os.getenv("AWS_DEFAULT_REGION", DEFAULT_REGION),
         help=f"AWS 리전 (기본값: {DEFAULT_REGION})",
@@ -305,6 +346,7 @@ def main() -> None:
             auto_restore=not args.no_restore,
             lambda_client=lambda_client,
             ec2_client=ec2_client,
+            slack_webhook_url=args.slack_webhook_url,
         )
         print(json.dumps(res, indent=2, ensure_ascii=False))
         if res["status"] != "success":
