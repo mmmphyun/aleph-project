@@ -16,6 +16,7 @@ Constraints:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -369,6 +370,25 @@ def threat_orchestrator_handler(
             remediated_epoch = time.time()
             response["remediation_results"].append(remediation_result)
 
+            # CloudWatch 대응 시간 및 집행 결과 정형 JSON 메트릭 로깅 (Grafana 4사분면 대조용)
+            web_metric_log = {
+                "event_type": "ThreatRemediatedMetric",
+                "incident_id": incident_id,
+                "rule_name": rule_name,
+                "source_ip": source_ip,
+                "action_required": report.action_required,
+                "remediation_success": is_remediation_successful(
+                    report.action_required, remediation_result
+                ),
+                "duration_seconds": round(remediated_epoch - detected_epoch, 4),
+                "pipeline_timestamps": {
+                    "detected_epoch": detected_epoch,
+                    "remediated_epoch": remediated_epoch,
+                    "duration_seconds": round(remediated_epoch - detected_epoch, 4),
+                },
+            }
+            logger.info(json.dumps(web_metric_log))
+
             if is_remediation_successful(report.action_required, remediation_result):
                 web_window.clear_ip(target_instance_id, source_ip, reference_time=ts_epoch)
                 blocked_ips.add(source_ip)
@@ -510,6 +530,25 @@ def threat_orchestrator_handler(
         )
         remediated_epoch = time.time()
         response["remediation_results"].append(remediation_result)
+
+        # CloudWatch 대응 시간 및 집행 결과 정형 JSON 메트릭 로깅 (Grafana 4사분면 대조용)
+        ssh_metric_log = {
+            "event_type": "ThreatRemediatedMetric",
+            "incident_id": incident_id,
+            "rule_name": rule_name,
+            "source_ip": source_ip,
+            "action_required": report.action_required,
+            "remediation_success": is_remediation_successful(
+                report.action_required, remediation_result
+            ),
+            "duration_seconds": round(remediated_epoch - detected_epoch, 4),
+            "pipeline_timestamps": {
+                "detected_epoch": detected_epoch,
+                "remediated_epoch": remediated_epoch,
+                "duration_seconds": round(remediated_epoch - detected_epoch, 4),
+            },
+        }
+        logger.info(json.dumps(ssh_metric_log))
 
         # 6. 필수 격리 조치 완료 검증 후 마킹 (중복 차단 억제 멱등성 및 실패 시 재시도 보장)
         if is_remediation_successful(report.action_required, remediation_result):

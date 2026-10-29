@@ -32,6 +32,7 @@ from reporter.slack_notifier import (
     build_waf_slack_payload,
     escape_slack_text,
     send_llm_slack_alert,
+    send_recovery_slack_alert,
     send_slack_alert,
     truncate_text,
 )
@@ -2635,3 +2636,129 @@ def test_build_llm_slack_payload_with_report_url(
     assert button["text"]["text"] == "📄 상사 보고용 상세 리포트 열기"
     assert button["url"] == dummy_url
     assert button["style"] == "primary"
+
+
+def test_send_recovery_slack_alert_no_webhook(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SLACK_WEBHOOK_URL 환경변수 및 매개변수 부재 시 False 반환 및 전송 생략 검증."""
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    recovery_result = {
+        "quarantine_restored": True,
+        "t_restored_iso": "2026-10-29T12:00:00Z",
+        "verification_status": "Baseline SG Verified",
+        "traffic_verified": True,
+        "details": ["타깃 EC2 Baseline SG 단독 복원 완료"],
+    }
+    result = send_recovery_slack_alert(
+        report=sample_incident_report,
+        recovery_result=recovery_result,
+        webhook_url=None,
+    )
+    assert result is False
+
+
+def test_send_recovery_slack_alert_success(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """유효한 Webhook URL 및 정상 HTTP 200 수신 시 3차 복구 카드 발송 성공 검증."""
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.status = 200
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = None
+
+    captured_reqs: list[urllib.request.Request] = []
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        captured_reqs.append(req)
+        return mock_resp
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/RECOVERY_SUCCESS"
+    recovery_result = {
+        "quarantine_restored": True,
+        "t_restored_iso": "2026-10-29T12:00:00Z",
+        "verification_status": "Baseline SG Verified",
+        "traffic_verified": True,
+        "details": ["타깃 EC2 Baseline SG 단독 복원 완료"],
+    }
+
+    result = send_recovery_slack_alert(
+        report=sample_incident_report,
+        recovery_result=recovery_result,
+        webhook_url=webhook_url,
+    )
+
+    assert result is True
+    assert len(captured_reqs) == 1
+    sent_payload = json.loads(captured_reqs[0].data.decode("utf-8"))
+    assert sent_payload.get("incident_id") == sample_incident_report.incident_id
+    assert sent_payload.get("is_recovery_card") is True
+
+
+def test_send_recovery_slack_alert_http_error_isolation(
+    sample_incident_report: IncidentReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Webhook 전송 시 HTTP 500 에러 발생 시 예외를 삼키고 False 반환 격리 검증."""
+
+    def mock_urlopen(req: urllib.request.Request, timeout: float = 3.0) -> Any:
+        raise urllib.error.HTTPError(
+            url="https://hooks.slack.com/test",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},  # type: ignore[arg-type]
+            fp=io.BytesIO(b"server error"),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    webhook_url = "https://hooks.slack.com/services/TEST/RECOVERY_FAIL"
+    recovery_result = {
+        "quarantine_restored": True,
+        "t_restored_iso": "2026-10-29T12:00:00Z",
+        "verification_status": "Baseline SG Verified",
+    }
+
+    result = send_recovery_slack_alert(
+        report=sample_incident_report,
+        recovery_result=recovery_result,
+        webhook_url=webhook_url,
+        max_retries=0,
+    )
+
+    assert result is False
+
+
+def test_send_recovery_slack_alert_secret_masking_in_request_exception(
+    sample_incident_report: IncidentReport,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """URL 경로 공백으로 InvalidURL 유발 시 3차 복구 Webhook Secret 로그 미노출 검증.
+
+    Why:
+        urllib.request/http.client 내부의 경로 검증에서 InvalidURL 등 예외 발생 시,
+        예외 문자열(exc)에 포함된 Secret 토큰이 로그로 누출되는 취약점을 원천 차단함.
+    """
+    secret_token = "SUPER_SECRET_RECOVERY_TOKEN_WITH_SPACE"
+    invalid_path_url = f"https://hooks.slack.com/services/FAKE_TEAM/FAKE_CHANNEL/{secret_token} bad"
+    recovery_result = {
+        "quarantine_restored": True,
+        "t_restored_iso": "2026-10-29T12:00:00Z",
+        "verification_status": "Baseline SG Verified",
+    }
+
+    with caplog.at_level("ERROR"):
+        caplog.clear()
+        result = send_recovery_slack_alert(
+            sample_incident_report,
+            recovery_result=recovery_result,
+            webhook_url=invalid_path_url,
+        )
+
+    assert result is False
+    assert secret_token not in caplog.text, "3차 복구 Webhook 예외 로그에 Secret 토큰이 노출됨"
