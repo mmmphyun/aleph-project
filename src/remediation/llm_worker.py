@@ -179,6 +179,7 @@ def send_deep_analysis_slack_alert(
     report: IncidentReport,
     webhook_url: str | None = None,
     timeout: float = 5.0,
+    report_url: str | None = None,
 ) -> bool:
     """사후 LLM 심층 분석 결과를 2차 알림 카드로 SecOps 채널에 전송.
 
@@ -199,6 +200,7 @@ def send_deep_analysis_slack_alert(
             report=report,
             webhook_url=target_webhook,
             timeout=timeout,
+            report_url=report_url,
         )
     except Exception as exc:
         logger.error("2차 LLM 심층 분석 Slack 알림 전송 실패 격리: %s", exc)
@@ -233,6 +235,7 @@ def llm_analysis_handler(
     context: Any = None,
     *,
     bedrock_client: Any = None,
+    s3_client: Any = None,
     slack_webhook_url: str | None = None,
 ) -> dict[str, Any]:
     """EventBridge 비동기 수신 사후 LLM 침해 분석 워커 진입점.
@@ -314,12 +317,38 @@ def llm_analysis_handler(
     response["llm_analyzed"] = is_enhanced
     response["raw_logs_count"] = len(raw_logs)
 
-    # 4. 2차 사후 심층 분석 Slack 카드 전파
+    # 4. 상사 보고용 HTML 렌더링 및 S3 Presigned URL 발급 (장애 완전 격리)
+    report_url: str | None = None
+    reports_bucket = os.getenv("REPORTS_S3_BUCKET")
+    if reports_bucket:
+        try:
+            from remediation.report_renderer import (
+                render_executive_html_report,
+                upload_report_and_generate_presigned_url,
+            )
+
+            report_html = render_executive_html_report(
+                report=analyzed_report,
+                raw_logs=raw_logs,
+            )
+            report_url = upload_report_and_generate_presigned_url(
+                report_html=report_html,
+                incident_id=analyzed_report.incident_id,
+                bucket_name=reports_bucket,
+                s3_client=s3_client,
+            )
+            response["report_url"] = report_url
+        except Exception as exc:
+            logger.error("S3 상세 보고서 생성 또는 Presigned URL 발급 실패 격리: %s", exc)
+            response["report_url"] = None
+
+    # 5. 2차 사후 심층 분석 Slack 카드 전파
     target_webhook = slack_webhook_url or os.getenv("SLACK_WEBHOOK_URL")
     try:
         slack_sent = send_deep_analysis_slack_alert(
             report=analyzed_report,
             webhook_url=target_webhook,
+            report_url=report_url,
         )
         response["slack_notified"] = slack_sent
     except Exception as exc:

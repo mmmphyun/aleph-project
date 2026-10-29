@@ -126,3 +126,13 @@ output "grafana_cloudwatch_policy_arn" {
   value       = aws_iam_policy.grafana_cloudwatch_readonly.arn
 }
 
+
+output "reports_s3_bucket_name" {
+  description = "침해 보고서 저장 S3 버킷 명칭"
+  value       = module.s3_reports.bucket_name
+}
+
+output "reports_s3_bucket_arn" {
+  description = "침해 보고서 저장 S3 버킷 ARN"
+  value       = module.s3_reports.bucket_arn
+}
