@@ -14,6 +14,8 @@ from moto import mock_aws
 from contracts.incident import IncidentReport
 from remediation.llm_worker import llm_analysis_handler
 from remediation.report_renderer import (
+    S3_CONNECT_TIMEOUT_SECONDS,
+    S3_READ_TIMEOUT_SECONDS,
     render_executive_html_report,
     upload_report_and_generate_presigned_url,
 )
@@ -63,9 +65,10 @@ class TestExecutiveHtmlReportRenderer:
         assert "<th>검토</th>" in html_out
         assert "<th>결재</th>" in html_out
 
-        # 2. 위험도 텍스트 표기 및 배경 배지 배제 검증
+        # 2. 위험도 텍스트 표기 및 불필요한 영단어 병기 배제 검증
         assert 'class="risk-high"' in html_out
-        assert "높음 (HIGH)" in html_out
+        assert "높음" in html_out
+        assert "(HIGH)" not in html_out
         assert "badge" not in html_out  # 화려한 배지 클래스 배제
 
         # 3. 4대 한글 섹션 헤더 검증 (영단어 병기 배제)
@@ -74,10 +77,11 @@ class TestExecutiveHtmlReportRenderer:
         assert "3. 수집 로그 내역" in html_out
         assert "4. 향후 조치 계획" in html_out
 
-        # 4. 차단 증빙 내역 테이블 검증
+        # 4. 차단 증빙 내역 테이블 및 P2 미측정 기본값 표기 검증
         assert "격리 보안 그룹 교체" in html_out
         assert "차단 목록(IPSet) 영구 등록" in html_out
         assert "차단 완료" in html_out
+        assert "측정 정보 없음" in html_out  # processing_times 미전달 시 하드코딩 배제
 
         # 5. 수집 로그 대조표 검증
         assert "Failed password for root" in html_out
@@ -91,6 +95,25 @@ class TestExecutiveHtmlReportRenderer:
         assert "@media print" in html_out
         assert "size: A4 portrait;" in html_out
         assert "page-break-inside: avoid;" in html_out
+
+    def test_render_with_processing_times(
+        self,
+        sample_incident_report: IncidentReport,
+    ) -> None:
+        """P2 권장 사항: 실측 처리 시간 전달 시 테이블 정상 렌더링 검증."""
+        times = {
+            "network": 0.82,
+            "waf": 0.45,
+            "auth": 0.12,
+        }
+        html_out = render_executive_html_report(
+            sample_incident_report,
+            processing_times=times,
+        )
+
+        assert "0.82초" in html_out
+        assert "0.45초" in html_out
+        assert "0.12초" in html_out
 
     def test_xss_prevention_escaping(
         self,
@@ -110,7 +133,7 @@ class TestExecutiveHtmlReportRenderer:
         assert "&lt;img src=x onerror=alert(1)&gt;" in html_out
 
     def test_risk_level_color_mapping(self) -> None:
-        """MEDIUM 및 LOW 위험도에 대한 텍스트 스타일 매핑 검증."""
+        """MEDIUM 및 LOW 위험도에 대한 텍스트 스타일 매핑 및 영단어 배제 검증."""
         med_report = IncidentReport(
             incident_id="INC-20261029-002",
             attack_type="Port Scanning",
@@ -125,7 +148,8 @@ class TestExecutiveHtmlReportRenderer:
         )
         html_med = render_executive_html_report(med_report)
         assert 'class="risk-medium"' in html_med
-        assert "보통 (MEDIUM)" in html_med
+        assert "보통" in html_med
+        assert "(MEDIUM)" not in html_med
 
         low_report = IncidentReport(
             incident_id="INC-20261029-003",
@@ -141,7 +165,8 @@ class TestExecutiveHtmlReportRenderer:
         )
         html_low = render_executive_html_report(low_report)
         assert 'class="risk-low"' in html_low
-        assert "낮음 (LOW)" in html_low
+        assert "낮음" in html_low
+        assert "(LOW)" not in html_low
 
 
 class TestS3ReportUploader:
@@ -179,6 +204,29 @@ class TestS3ReportUploader:
         assert content == dummy_html
         assert resp["ContentType"] == "text/html; charset=utf-8"
 
+    def test_s3_client_timeout_config(self) -> None:
+        """P1 필수 검증: 기본 S3 클라이언트 생성 시 타임아웃 상한(2초/5초, 재시도 1회) 강제 검증."""
+        with patch("boto3.client") as mock_boto_client:
+            mock_inst = MagicMock()
+            mock_inst.generate_presigned_url.return_value = "https://s3.example.com/purl"
+            mock_boto_client.return_value = mock_inst
+
+            upload_report_and_generate_presigned_url(
+                report_html="<html></html>",
+                incident_id="INC-001",
+                bucket_name="my-bucket",
+                s3_client=None,
+            )
+
+            mock_boto_client.assert_called_once()
+            service_name, kwargs = mock_boto_client.call_args
+            assert service_name[0] == "s3"
+            client_config = kwargs.get("config")
+            assert client_config is not None
+            assert client_config.connect_timeout == S3_CONNECT_TIMEOUT_SECONDS
+            assert client_config.read_timeout == S3_READ_TIMEOUT_SECONDS
+            assert client_config.retries["total_max_attempts"] == 1
+
     def test_validation_errors(self) -> None:
         """버킷명 또는 사건 ID 누락 시 ValueError 발생 검증."""
         with pytest.raises(ValueError, match="bucket_name은 비어 있을 수 없습니다"):
@@ -211,6 +259,7 @@ class TestLlmWorkerReportIntegration:
             "detail": {
                 **sample_incident_report.model_dump(),
                 "raw_logs": ["Sample syslog line 1", "Sample syslog line 2"],
+                "processing_times": {"network": 0.77, "waf": 0.33, "auth": 0.09},
             },
         }
 
@@ -233,11 +282,12 @@ class TestLlmWorkerReportIntegration:
             _, kwargs = mock_send_slack.call_args
             assert kwargs.get("report_url") == res["report_url"]
 
-    def test_worker_s3_failure_isolation(
+    def test_worker_s3_timeout_delay_isolation(
         self,
         sample_incident_report: IncidentReport,
     ) -> None:
-        """S3 업로드 예외 발생 시 워커 크래시 없이 격리되고 Slack 기본 알림이 발송되는지 검증."""
+        """P1 필수 검증: S3 지연/타임아웃 발생 시에도
+        Lambda가 중단되지 않고 Slack 기본 알림이 발송되는지 검증."""
         event = {
             "source": "cloudshield.security",
             "detail-type": "ThreatRemediated",
@@ -246,7 +296,8 @@ class TestLlmWorkerReportIntegration:
         }
 
         mock_s3 = MagicMock()
-        mock_s3.put_object.side_effect = RuntimeError("S3 Network Connection Timeout")
+        # S3 연결 시간 초과 모의
+        mock_s3.put_object.side_effect = TimeoutError("S3 Socket Connect Timeout (exceeded 2.0s)")
         mock_bedrock = MagicMock()
 
         with (
@@ -259,10 +310,9 @@ class TestLlmWorkerReportIntegration:
             res = llm_analysis_handler(event, bedrock_client=mock_bedrock, s3_client=mock_s3)
 
             assert res["status"] == "accepted"
-            assert res["report_url"] is None  # 실패 시 None으로 안전 격리
-            assert res["slack_notified"] is True  # Slack 알림은 중단 없이 정상 발송
+            assert res["report_url"] is None  # 지연 장애 시 안전 격리
+            assert res["slack_notified"] is True  # Slack 알림은 정상 발송
 
-            # Slack 함수에는 report_url=None이 전달됨
             mock_send_slack.assert_called_once()
             _, kwargs = mock_send_slack.call_args
             assert kwargs.get("report_url") is None

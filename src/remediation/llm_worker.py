@@ -327,9 +327,13 @@ def llm_analysis_handler(
                 upload_report_and_generate_presigned_url,
             )
 
+            processing_times = None
+            if isinstance(detail, dict):
+                processing_times = detail.get("processing_times") or detail.get("remediation_times")
             report_html = render_executive_html_report(
                 report=analyzed_report,
                 raw_logs=raw_logs,
+                processing_times=processing_times,
             )
             report_url = upload_report_and_generate_presigned_url(
                 report_html=report_html,

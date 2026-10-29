@@ -34,11 +34,15 @@ logger = logging.getLogger(__name__)
 
 # 기본 Presigned URL 유효 기간: 1시간 (3600초)
 DEFAULT_URL_EXPIRATION_SECONDS = 3600
+# S3 클라이언트 타임아웃 상한: Lambda 30초 데드라인 침범 방지 (연결 2초, 읽기 5초, 재시도 1회)
+S3_CONNECT_TIMEOUT_SECONDS = 2
+S3_READ_TIMEOUT_SECONDS = 5
 
 
 def render_executive_html_report(
     report: IncidentReport,
     raw_logs: list[str] | None = None,
+    processing_times: dict[str, str | float] | None = None,
 ) -> str:
     """IncidentReport 데이터 및 원문 로그를 관공서 표준 공문서 HTML 양식으로 렌더링.
 
@@ -64,15 +68,30 @@ def render_executive_html_report(
     else:
         safe_accounts = "지정 계정 없음 (단일 호스트 또는 웹 엔드포인트 전역 스캔)"
 
-    # 위험도 등급에 따른 텍스트 색상 클래스 지정 (배경색 배지 배제)
+    # 위험도 등급에 따른 텍스트 색상 클래스 지정 (불필요한 영단어 병기 배제)
     risk_class = "risk-high"
-    risk_label = "높음 (HIGH)"
+    risk_label = "높음"
     if report.risk_level == "MEDIUM":
         risk_class = "risk-medium"
-        risk_label = "보통 (MEDIUM)"
+        risk_label = "보통"
     elif report.risk_level == "LOW":
         risk_class = "risk-low"
-        risk_label = "낮음 (LOW)"
+        risk_label = "낮음"
+
+    # 처리 시간 포맷팅 헬퍼 (실측값 우선 적용, 미측정 시 정직한 '측정 정보 없음' 표기)
+    times = processing_times or {}
+
+    def _format_time(val: str | float | None) -> str:
+        if val is None or val == "":
+            return "측정 정보 없음"
+        if isinstance(val, (int, float)):
+            return f"{val:.2f}초"
+        return str(val)
+
+    time_network = _format_time(times.get("network"))
+    time_waf = _format_time(times.get("waf"))
+    time_iam = _format_time(times.get("iam"))
+    time_auth = _format_time(times.get("auth"))
 
     # 긴급 차단 조치 내역 테이블 행 생성
     remediation_rows: list[str] = []
@@ -85,7 +104,7 @@ def render_executive_html_report(
           <td><code>{safe_target_id}</code></td>
           <td>격리 보안 그룹 교체 (모든 외부 인입 차단)</td>
           <td class="center">차단 완료</td>
-          <td class="center">10초 이내</td>
+          <td class="center">{time_network}</td>
         </tr>"""
         )
 
@@ -97,30 +116,30 @@ def render_executive_html_report(
           <td><code>{safe_source_ip}/32</code></td>
           <td>차단 목록(IPSet) 영구 등록</td>
           <td class="center">차단 완료</td>
-          <td class="center">10초 이내</td>
+          <td class="center">{time_waf}</td>
         </tr>"""
         )
 
     # 3. 인증/세션 조치
     if report.action_required == "REVOKE_IAM_SESSION":
         remediation_rows.append(
-            """        <tr>
+            f"""        <tr>
           <td class="center">인증 권한</td>
           <td>IAM 세션 토큰</td>
           <td>발급된 임시 자격증명 및 세션 즉시 만료</td>
           <td class="center">만료 완료</td>
-          <td class="center">10초 이내</td>
+          <td class="center">{time_iam}</td>
         </tr>"""
         )
 
     # 4. 공통 상태 관리 행
     remediation_rows.append(
-        """        <tr>
+        f"""        <tr>
           <td class="center">상태 관리</td>
           <td>인증 상태 저장소</td>
           <td>차단 이력 영속 기록 및 중복 차단 방지 적용</td>
           <td class="center">기록 완료</td>
-          <td class="center">0.2초 이내</td>
+          <td class="center">{time_auth}</td>
         </tr>"""
     )
 
@@ -482,8 +501,16 @@ def upload_report_and_generate_presigned_url(
     client = s3_client
     if client is None:
         import boto3
+        from botocore.config import Config
 
-        client = boto3.client("s3")
+        client = boto3.client(
+            "s3",
+            config=Config(
+                connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=S3_READ_TIMEOUT_SECONDS,
+                retries={"mode": "standard", "total_max_attempts": 1},
+            ),
+        )
 
     object_key = f"reports/{incident_id}.html"
     body_bytes = report_html.encode("utf-8")
