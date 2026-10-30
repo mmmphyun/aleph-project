@@ -1,0 +1,1475 @@
+{
+  "dataset_version": 1,
+  "provenance": "All cases are synthetic; no AWS calls or real attack observations.",
+  "cases": [
+    {
+      "case_id": "ssh-0",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-SSH-0",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\n\n[2. 관측 로그 근거]\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\n\n[3. 영향도 및 침해 판정]\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.",
+        "recommendations": [
+          "[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조",
+          "[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인",
+          "[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.50",
+          "summary_fragment": "198.51.100.50"
+        },
+        {
+          "source_fragment": "audit_0",
+          "summary_fragment": "audit_0"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:01",
+          "summary_fragment": "Oct 30 08:00:01"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:05",
+          "summary_fragment": "Oct 30 08:00:05"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "5건"
+        }
+      ]
+    },
+    {
+      "case_id": "ssh-1",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-SSH-1",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.51",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_1"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.51에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_1이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.51/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_1 from 198.51.100.51 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_1 from 198.51.100.51 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_1 from 198.51.100.51 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_1 from 198.51.100.51 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_1 from 198.51.100.51 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.51의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_1 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_1의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.51의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\n\n[2. 관측 로그 근거]\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_1 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\n\n[3. 영향도 및 침해 판정]\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.",
+        "recommendations": [
+          "[즉시 조치] audit_1의 실패 시각 인접 성공 인증과 세션 로그를 대조",
+          "[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인",
+          "[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.51",
+          "summary_fragment": "198.51.100.51"
+        },
+        {
+          "source_fragment": "audit_1",
+          "summary_fragment": "audit_1"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:01",
+          "summary_fragment": "Oct 30 08:00:01"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:05",
+          "summary_fragment": "Oct 30 08:00:05"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "5건"
+        }
+      ]
+    },
+    {
+      "case_id": "ssh-2",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-SSH-2",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.52",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_2"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.52에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_2이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.52/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_2 from 198.51.100.52 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_2 from 198.51.100.52 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_2 from 198.51.100.52 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_2 from 198.51.100.52 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_2 from 198.51.100.52 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.52의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_2 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_2의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.52의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\n\n[2. 관측 로그 근거]\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_2 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\n\n[3. 영향도 및 침해 판정]\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.",
+        "recommendations": [
+          "[즉시 조치] audit_2의 실패 시각 인접 성공 인증과 세션 로그를 대조",
+          "[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인",
+          "[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.52",
+          "summary_fragment": "198.51.100.52"
+        },
+        {
+          "source_fragment": "audit_2",
+          "summary_fragment": "audit_2"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:01",
+          "summary_fragment": "Oct 30 08:00:01"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:05",
+          "summary_fragment": "Oct 30 08:00:05"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "5건"
+        }
+      ]
+    },
+    {
+      "case_id": "ssh-3",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-SSH-3",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.53",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_3"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.53에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_3이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.53/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_3 from 198.51.100.53 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_3 from 198.51.100.53 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_3 from 198.51.100.53 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_3 from 198.51.100.53 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_3 from 198.51.100.53 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.53의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_3 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_3의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.53의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\n\n[2. 관측 로그 근거]\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_3 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\n\n[3. 영향도 및 침해 판정]\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.",
+        "recommendations": [
+          "[즉시 조치] audit_3의 실패 시각 인접 성공 인증과 세션 로그를 대조",
+          "[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인",
+          "[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.53",
+          "summary_fragment": "198.51.100.53"
+        },
+        {
+          "source_fragment": "audit_3",
+          "summary_fragment": "audit_3"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:01",
+          "summary_fragment": "Oct 30 08:00:01"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:05",
+          "summary_fragment": "Oct 30 08:00:05"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "5건"
+        }
+      ]
+    },
+    {
+      "case_id": "ssh-4",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-SSH-4",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.54",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_4"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.54에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_4이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.54/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_4 from 198.51.100.54 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_4 from 198.51.100.54 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_4 from 198.51.100.54 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_4 from 198.51.100.54 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_4 from 198.51.100.54 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.54의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_4 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_4의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.54의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\n\n[2. 관측 로그 근거]\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_4 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\n\n[3. 영향도 및 침해 판정]\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.",
+        "recommendations": [
+          "[즉시 조치] audit_4의 실패 시각 인접 성공 인증과 세션 로그를 대조",
+          "[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인",
+          "[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.54",
+          "summary_fragment": "198.51.100.54"
+        },
+        {
+          "source_fragment": "audit_4",
+          "summary_fragment": "audit_4"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:01",
+          "summary_fragment": "Oct 30 08:00:01"
+        },
+        {
+          "source_fragment": "Oct 30 08:00:05",
+          "summary_fragment": "Oct 30 08:00:05"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "5건"
+        }
+      ]
+    },
+    {
+      "case_id": "web-0",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-WEB-0",
+        "attack_type": "Web Directory Scanning",
+        "mitre_id": "T1595.003",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [],
+        "summary_ko": "관측 출발지 IP 198.51.100.50에서 웹 디렉터리 열거 정황이 감지되었습니다. WAF IP 차단을 요청하며, 실제 차단 결과와 자원 노출 여부는 별도 확인이 필요합니다.",
+        "action_required": "BLOCK_WAF",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32를 WAF IPSet에 등록하여 HTTP·HTTPS 접근 차단",
+          "Nginx 원문 로그와 WAF 차단 결과를 확인하고 민감 자원 노출 여부 점검",
+          "공유 출구 IP의 정상 사용자 영향 및 오탐 여부 확인"
+        ]
+      },
+      "raw_logs": [
+        "198.51.100.50 - - [30/Oct/2026:08:01:01 +0000] \"GET /admin HTTP/1.1\" 401 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.50 - - [30/Oct/2026:08:01:02 +0000] \"GET /backup HTTP/1.1\" 404 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.50 - - [30/Oct/2026:08:01:03 +0000] \"GET /config HTTP/1.1\" 403 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.50 - - [30/Oct/2026:08:01:04 +0000] \"GET /debug HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.50 - - [30/Oct/2026:08:01:05 +0000] \"GET /metrics HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\""
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\\n\\n[2. 관측 로그 근거]\\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\\n\\n[3. 영향도 및 침해 판정]\\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.\", \"recommendations\": [\"[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조\", \"[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인\", \"[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.50의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\n\n[2. 관측 로그 근거]\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\n\n[3. 영향도 및 침해 판정]\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.",
+        "recommendations": [
+          "[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조",
+          "[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인",
+          "[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.50",
+          "summary_fragment": "198.51.100.50"
+        },
+        {
+          "source_fragment": "30/Oct/2026:08:01:01",
+          "summary_fragment": "30/Oct/2026:08:01:01"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "경로 5개"
+        },
+        {
+          "source_fragment": "GET /admin HTTP/1.1\" 401",
+          "summary_fragment": "/admin"
+        },
+        {
+          "source_fragment": "GET /backup HTTP/1.1\" 404",
+          "summary_fragment": "/backup"
+        },
+        {
+          "source_fragment": "GET /config HTTP/1.1\" 403",
+          "summary_fragment": "/config"
+        },
+        {
+          "source_fragment": "GET /debug HTTP/1.1\" 200",
+          "summary_fragment": "/debug"
+        },
+        {
+          "source_fragment": "GET /metrics HTTP/1.1\" 200",
+          "summary_fragment": "/metrics"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 401",
+          "summary_fragment": "401"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 404",
+          "summary_fragment": "404"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 403",
+          "summary_fragment": "403"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 200",
+          "summary_fragment": "200"
+        }
+      ]
+    },
+    {
+      "case_id": "web-1",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-WEB-1",
+        "attack_type": "Web Directory Scanning",
+        "mitre_id": "T1595.003",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.51",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [],
+        "summary_ko": "관측 출발지 IP 198.51.100.51에서 웹 디렉터리 열거 정황이 감지되었습니다. WAF IP 차단을 요청하며, 실제 차단 결과와 자원 노출 여부는 별도 확인이 필요합니다.",
+        "action_required": "BLOCK_WAF",
+        "recommendations": [
+          "출발지 IP 198.51.100.51/32를 WAF IPSet에 등록하여 HTTP·HTTPS 접근 차단",
+          "Nginx 원문 로그와 WAF 차단 결과를 확인하고 민감 자원 노출 여부 점검",
+          "공유 출구 IP의 정상 사용자 영향 및 오탐 여부 확인"
+        ]
+      },
+      "raw_logs": [
+        "198.51.100.51 - - [30/Oct/2026:08:01:01 +0000] \"GET /admin HTTP/1.1\" 401 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.51 - - [30/Oct/2026:08:01:02 +0000] \"GET /backup HTTP/1.1\" 404 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.51 - - [30/Oct/2026:08:01:03 +0000] \"GET /config HTTP/1.1\" 403 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.51 - - [30/Oct/2026:08:01:04 +0000] \"GET /debug HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.51 - - [30/Oct/2026:08:01:05 +0000] \"GET /metrics HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\""
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.51의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\\n\\n[2. 관측 로그 근거]\\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\\n\\n[3. 영향도 및 침해 판정]\\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.\", \"recommendations\": [\"[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조\", \"[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인\", \"[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.51의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\n\n[2. 관측 로그 근거]\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\n\n[3. 영향도 및 침해 판정]\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.",
+        "recommendations": [
+          "[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조",
+          "[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인",
+          "[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.51",
+          "summary_fragment": "198.51.100.51"
+        },
+        {
+          "source_fragment": "30/Oct/2026:08:01:01",
+          "summary_fragment": "30/Oct/2026:08:01:01"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "경로 5개"
+        },
+        {
+          "source_fragment": "GET /admin HTTP/1.1\" 401",
+          "summary_fragment": "/admin"
+        },
+        {
+          "source_fragment": "GET /backup HTTP/1.1\" 404",
+          "summary_fragment": "/backup"
+        },
+        {
+          "source_fragment": "GET /config HTTP/1.1\" 403",
+          "summary_fragment": "/config"
+        },
+        {
+          "source_fragment": "GET /debug HTTP/1.1\" 200",
+          "summary_fragment": "/debug"
+        },
+        {
+          "source_fragment": "GET /metrics HTTP/1.1\" 200",
+          "summary_fragment": "/metrics"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 401",
+          "summary_fragment": "401"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 404",
+          "summary_fragment": "404"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 403",
+          "summary_fragment": "403"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 200",
+          "summary_fragment": "200"
+        }
+      ]
+    },
+    {
+      "case_id": "web-2",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-WEB-2",
+        "attack_type": "Web Directory Scanning",
+        "mitre_id": "T1595.003",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.52",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [],
+        "summary_ko": "관측 출발지 IP 198.51.100.52에서 웹 디렉터리 열거 정황이 감지되었습니다. WAF IP 차단을 요청하며, 실제 차단 결과와 자원 노출 여부는 별도 확인이 필요합니다.",
+        "action_required": "BLOCK_WAF",
+        "recommendations": [
+          "출발지 IP 198.51.100.52/32를 WAF IPSet에 등록하여 HTTP·HTTPS 접근 차단",
+          "Nginx 원문 로그와 WAF 차단 결과를 확인하고 민감 자원 노출 여부 점검",
+          "공유 출구 IP의 정상 사용자 영향 및 오탐 여부 확인"
+        ]
+      },
+      "raw_logs": [
+        "198.51.100.52 - - [30/Oct/2026:08:01:01 +0000] \"GET /admin HTTP/1.1\" 401 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.52 - - [30/Oct/2026:08:01:02 +0000] \"GET /backup HTTP/1.1\" 404 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.52 - - [30/Oct/2026:08:01:03 +0000] \"GET /config HTTP/1.1\" 403 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.52 - - [30/Oct/2026:08:01:04 +0000] \"GET /debug HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.52 - - [30/Oct/2026:08:01:05 +0000] \"GET /metrics HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\""
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.52의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\\n\\n[2. 관측 로그 근거]\\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\\n\\n[3. 영향도 및 침해 판정]\\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.\", \"recommendations\": [\"[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조\", \"[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인\", \"[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.52의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\n\n[2. 관측 로그 근거]\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\n\n[3. 영향도 및 침해 판정]\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.",
+        "recommendations": [
+          "[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조",
+          "[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인",
+          "[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.52",
+          "summary_fragment": "198.51.100.52"
+        },
+        {
+          "source_fragment": "30/Oct/2026:08:01:01",
+          "summary_fragment": "30/Oct/2026:08:01:01"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "경로 5개"
+        },
+        {
+          "source_fragment": "GET /admin HTTP/1.1\" 401",
+          "summary_fragment": "/admin"
+        },
+        {
+          "source_fragment": "GET /backup HTTP/1.1\" 404",
+          "summary_fragment": "/backup"
+        },
+        {
+          "source_fragment": "GET /config HTTP/1.1\" 403",
+          "summary_fragment": "/config"
+        },
+        {
+          "source_fragment": "GET /debug HTTP/1.1\" 200",
+          "summary_fragment": "/debug"
+        },
+        {
+          "source_fragment": "GET /metrics HTTP/1.1\" 200",
+          "summary_fragment": "/metrics"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 401",
+          "summary_fragment": "401"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 404",
+          "summary_fragment": "404"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 403",
+          "summary_fragment": "403"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 200",
+          "summary_fragment": "200"
+        }
+      ]
+    },
+    {
+      "case_id": "web-3",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-WEB-3",
+        "attack_type": "Web Directory Scanning",
+        "mitre_id": "T1595.003",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.53",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [],
+        "summary_ko": "관측 출발지 IP 198.51.100.53에서 웹 디렉터리 열거 정황이 감지되었습니다. WAF IP 차단을 요청하며, 실제 차단 결과와 자원 노출 여부는 별도 확인이 필요합니다.",
+        "action_required": "BLOCK_WAF",
+        "recommendations": [
+          "출발지 IP 198.51.100.53/32를 WAF IPSet에 등록하여 HTTP·HTTPS 접근 차단",
+          "Nginx 원문 로그와 WAF 차단 결과를 확인하고 민감 자원 노출 여부 점검",
+          "공유 출구 IP의 정상 사용자 영향 및 오탐 여부 확인"
+        ]
+      },
+      "raw_logs": [
+        "198.51.100.53 - - [30/Oct/2026:08:01:01 +0000] \"GET /admin HTTP/1.1\" 401 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.53 - - [30/Oct/2026:08:01:02 +0000] \"GET /backup HTTP/1.1\" 404 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.53 - - [30/Oct/2026:08:01:03 +0000] \"GET /config HTTP/1.1\" 403 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.53 - - [30/Oct/2026:08:01:04 +0000] \"GET /debug HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.53 - - [30/Oct/2026:08:01:05 +0000] \"GET /metrics HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\""
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.53의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\\n\\n[2. 관측 로그 근거]\\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\\n\\n[3. 영향도 및 침해 판정]\\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.\", \"recommendations\": [\"[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조\", \"[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인\", \"[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.53의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\n\n[2. 관측 로그 근거]\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\n\n[3. 영향도 및 침해 판정]\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.",
+        "recommendations": [
+          "[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조",
+          "[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인",
+          "[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.53",
+          "summary_fragment": "198.51.100.53"
+        },
+        {
+          "source_fragment": "30/Oct/2026:08:01:01",
+          "summary_fragment": "30/Oct/2026:08:01:01"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "경로 5개"
+        },
+        {
+          "source_fragment": "GET /admin HTTP/1.1\" 401",
+          "summary_fragment": "/admin"
+        },
+        {
+          "source_fragment": "GET /backup HTTP/1.1\" 404",
+          "summary_fragment": "/backup"
+        },
+        {
+          "source_fragment": "GET /config HTTP/1.1\" 403",
+          "summary_fragment": "/config"
+        },
+        {
+          "source_fragment": "GET /debug HTTP/1.1\" 200",
+          "summary_fragment": "/debug"
+        },
+        {
+          "source_fragment": "GET /metrics HTTP/1.1\" 200",
+          "summary_fragment": "/metrics"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 401",
+          "summary_fragment": "401"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 404",
+          "summary_fragment": "404"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 403",
+          "summary_fragment": "403"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 200",
+          "summary_fragment": "200"
+        }
+      ]
+    },
+    {
+      "case_id": "web-4",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-WEB-4",
+        "attack_type": "Web Directory Scanning",
+        "mitre_id": "T1595.003",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.54",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [],
+        "summary_ko": "관측 출발지 IP 198.51.100.54에서 웹 디렉터리 열거 정황이 감지되었습니다. WAF IP 차단을 요청하며, 실제 차단 결과와 자원 노출 여부는 별도 확인이 필요합니다.",
+        "action_required": "BLOCK_WAF",
+        "recommendations": [
+          "출발지 IP 198.51.100.54/32를 WAF IPSet에 등록하여 HTTP·HTTPS 접근 차단",
+          "Nginx 원문 로그와 WAF 차단 결과를 확인하고 민감 자원 노출 여부 점검",
+          "공유 출구 IP의 정상 사용자 영향 및 오탐 여부 확인"
+        ]
+      },
+      "raw_logs": [
+        "198.51.100.54 - - [30/Oct/2026:08:01:01 +0000] \"GET /admin HTTP/1.1\" 401 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.54 - - [30/Oct/2026:08:01:02 +0000] \"GET /backup HTTP/1.1\" 404 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.54 - - [30/Oct/2026:08:01:03 +0000] \"GET /config HTTP/1.1\" 403 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.54 - - [30/Oct/2026:08:01:04 +0000] \"GET /debug HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\"",
+        "198.51.100.54 - - [30/Oct/2026:08:01:05 +0000] \"GET /metrics HTTP/1.1\" 200 150 \"-\" \"curl/8.0\" 0.002 \"-\""
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.54의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\\n\\n[2. 관측 로그 근거]\\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\\n\\n[3. 영향도 및 침해 판정]\\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.\", \"recommendations\": [\"[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조\", \"[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인\", \"[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "enhanced",
+      "expected_analysis": {
+        "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.54의 Web 경로 열거가 관측됐습니다. 표본은 서로 다른 경로 5개입니다.\n\n[2. 관측 로그 근거]\n30/Oct/2026:08:01:01의 /admin 응답은 401이며 /backup·/config는 404·403입니다. /debug·/metrics는 200으로 응답했습니다.\n\n[3. 영향도 및 침해 판정]\nHTTP 200만으로 민감 정보 노출을 확정할 수 없습니다. HTTP 403만으로 WAF 차단을 단정할 수 없어 응답 본문과 WAF 집행 근거를 추가 확인해야 합니다.",
+        "recommendations": [
+          "[즉시 조치] URI·시각·출발지 IP를 WAF ALLOW/BLOCK 원문과 대조",
+          "[설정 점검] /debug·/metrics 응답 본문과 접근 정책·정상 사용자 영향을 확인",
+          "[재발 방지] 불필요한 진단 경로를 정리하고 승인된 재점검으로 노출 여부를 확인"
+        ]
+      },
+      "evidence_assertions": [
+        {
+          "source_fragment": "198.51.100.54",
+          "summary_fragment": "198.51.100.54"
+        },
+        {
+          "source_fragment": "30/Oct/2026:08:01:01",
+          "summary_fragment": "30/Oct/2026:08:01:01"
+        },
+        {
+          "line_count": 5,
+          "summary_fragment": "경로 5개"
+        },
+        {
+          "source_fragment": "GET /admin HTTP/1.1\" 401",
+          "summary_fragment": "/admin"
+        },
+        {
+          "source_fragment": "GET /backup HTTP/1.1\" 404",
+          "summary_fragment": "/backup"
+        },
+        {
+          "source_fragment": "GET /config HTTP/1.1\" 403",
+          "summary_fragment": "/config"
+        },
+        {
+          "source_fragment": "GET /debug HTTP/1.1\" 200",
+          "summary_fragment": "/debug"
+        },
+        {
+          "source_fragment": "GET /metrics HTTP/1.1\" 200",
+          "summary_fragment": "/metrics"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 401",
+          "summary_fragment": "401"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 404",
+          "summary_fragment": "404"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 403",
+          "summary_fragment": "403"
+        },
+        {
+          "source_fragment": "HTTP/1.1\" 200",
+          "summary_fragment": "200"
+        }
+      ]
+    },
+    {
+      "case_id": "max-tokens-complete",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-max-tokens-complete",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "max_tokens",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "max-tokens-truncated",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-max-tokens-truncated",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "max_tokens",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\":\"미완성\","
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "stop-sequence",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-stop-sequence",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "stop_sequence",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "tool-use",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-tool-use",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "tool_use",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "guardrail",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-guardrail",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "guardrail_intervened",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "content-filtered",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-content-filtered",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "content_filtered",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "unknown-stop",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-unknown-stop",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "PRIVATE-UNKNOWN-STOP",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "missing-stop",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-missing-stop",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "invalid-json",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-invalid-json",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\":\"미완성\","
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "protected-source-ip",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-protected-source-ip",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"], \"source_ip\": \"127.0.0.1\"}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "protected-action",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-protected-action",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"], \"action_required\": \"NONE\"}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "tool-content",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-tool-content",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n출발지 IP 198.51.100.50의 SSH 인증 실패가 반복됐습니다. 제공된 표본은 단일 계정을 대상으로 합니다.\\n\\n[2. 관측 로그 근거]\\nOct 30 08:00:01부터 Oct 30 08:00:05까지 audit_0 계정의 Failed password가 5건 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\\n\\n[3. 영향도 및 침해 판정]\\n침해 성공과 실제 격리 결과는 미확인입니다. 영향 범위는 제공된 실패 표본으로 한정하며 원본 매퍼 판정을 유지합니다.\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              },
+              {
+                "toolUse": {
+                  "name": "unexpected"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "section-overflow",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-section-overflow",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": {
+        "stopReason": "end_turn",
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "{\"summary_ko\": \"[1. 침해 개요]\\n가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가\\n\\n[2. 관측 로그 근거]\\n근거\\n\\n[3. 영향도 및 침해 판정]\\n미확인\", \"recommendations\": [\"[즉시 조치] audit_0의 실패 시각 인접 성공 인증과 세션 로그를 대조\", \"[설정 점검] TCP 차단·EC2 격리 집행 근거와 정상 관리자 접속 영향을 확인\", \"[재발 방지] 비밀번호 인증 정책을 검토하고 승인된 재검증 후 재발 여부를 관측\"]}"
+              }
+            ]
+          }
+        }
+      },
+      "expected_status": "parse_failed",
+      "evidence_assertions": []
+    },
+    {
+      "case_id": "sdk-timeout",
+      "provenance": "synthetic_injected_response_not_live_bedrock",
+      "base_report": {
+        "incident_id": "P5-3-SYNTHETIC-sdk-timeout",
+        "attack_type": "SSH Brute Force",
+        "mitre_id": "T1110.001",
+        "risk_level": "HIGH",
+        "source_ip": "198.51.100.50",
+        "target_identifier": "i-0123456789abcdef0",
+        "target_accounts": [
+          "audit_0"
+        ],
+        "summary_ko": "출발지 IP 198.51.100.50에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 audit_0이며 MITRE ATT&CK T1110.001로 분류됩니다.",
+        "action_required": "BLOCK_AND_QUARANTINE",
+        "recommendations": [
+          "출발지 IP 198.51.100.50/32의 SSH 접근을 차단하는 네트워크 정책 적용",
+          "비밀번호 기반 SSH 접속 비활성화 및 키 기반 인증 강제",
+          "타깃 EC2 인스턴스(i-0123456789abcdef0)를 Quarantine 보안 그룹으로 격리"
+        ]
+      },
+      "raw_logs": [
+        "Oct 30 08:00:01 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50001 ssh2",
+        "Oct 30 08:00:02 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50002 ssh2",
+        "Oct 30 08:00:03 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50003 ssh2",
+        "Oct 30 08:00:04 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50004 ssh2",
+        "Oct 30 08:00:05 target sshd[1201]: Failed password for audit_0 from 198.51.100.50 port 50005 ssh2"
+      ],
+      "response": null,
+      "expected_status": "call_failed",
+      "evidence_assertions": [],
+      "exception": "TimeoutError"
+    }
+  ]
+}

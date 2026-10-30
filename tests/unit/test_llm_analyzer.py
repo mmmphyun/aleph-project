@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
+import runpy
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
@@ -18,6 +21,7 @@ from botocore.stub import Stubber
 
 from contracts.incident import IncidentReport
 from detection.llm_deep_analyzer import (
+    BEDROCK_MAX_OUTPUT_TOKENS,
     EXECUTIVE_RECOMMENDATION_LABELS,
     EXECUTIVE_SECTION_LABELS,
     MAX_BASE_REPORT_BYTES,
@@ -32,6 +36,7 @@ from detection.llm_deep_analyzer import (
     MAX_RECOMMENDATION_CHARS,
     MAX_RECOMMENDATIONS,
     MAX_SUMMARY_CHARS,
+    _converse_response_text,
     analyze_incident_with_bedrock,
     build_bedrock_analysis_prompt,
     parse_bedrock_response_to_incident,
@@ -143,7 +148,8 @@ def test_prompt_examples_enrich_only_analysis_fields_from_raw_log_evidence(
     assert len(matching) == 1
     example = matching[0]
     base = IncidentReport.model_validate(example["input"]["base_report"])
-    output = IncidentReport.model_validate(example["output"])
+    assert set(example["output"]) == {"summary_ko", "recommendations"}
+    output = IncidentReport.model_validate(base.model_dump(mode="json") | example["output"])
 
     assert output.summary_ko != base.summary_ko
     assert output.recommendations != base.recommendations
@@ -562,7 +568,7 @@ def test_bedrock_adapter_uses_the_official_converse_schema_and_preserves_decisio
                             ],
                         }
                     ],
-                    "inferenceConfig": {"maxTokens": 2048, "temperature": 0},
+                    "inferenceConfig": {"maxTokens": 4096, "temperature": 0},
                 },
             )
             result = analyze_incident_with_bedrock(
@@ -1066,7 +1072,12 @@ def test_structured_status_logging_excludes_evidence_and_sdk_details(
         result = analyze_incident_with_bedrock(
             sample_incident_report, [private], bedrock_client=client
         )
-    events = [json.loads(r.getMessage()) for r in caplog.records if r.getMessage().startswith("{")]
+    events = [
+        event
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+        and (event := json.loads(record.getMessage())).get("event") == "cloudshield.llm_analysis"
+    ]
     assert len(events) == 1
     assert events[0]["event"] == "cloudshield.llm_analysis"
     assert events[0]["status"] == expected
@@ -1088,3 +1099,161 @@ def test_structured_status_bounds_oversized_incident_identifiers(
     )
     assert "incident_id" not in event and len(event["incident_ref"]) == 64
     assert "PRIVATE-ID" not in caplog.text
+
+
+def test_prompt_requests_compact_multisentence_analysis_and_preserves_the_contract(
+    sample_incident_report: IncidentReport,
+) -> None:
+    """복사할 보호 필드를 줄이되 최종 보고서는 원본 계약과 같은 필드 집합을 유지한다."""
+    prompt = build_bedrock_analysis_prompt(sample_incident_report, [])
+    assert "2~3문장" in prompt and "한 문장으로 작성" not in prompt
+    assert "두 키만 있는 JSON 객체" in prompt
+    examples = next(value for value in _json_values(prompt) if isinstance(value, list))
+    for example in examples:
+        assert set(example["output"]) == {"summary_ko", "recommendations"}
+        base = IncidentReport.model_validate(example["input"]["base_report"])
+        result = parse_bedrock_response_to_incident(
+            json.dumps(example["output"], ensure_ascii=False),
+            base,
+            require_executive_format=True,
+        )
+        assert result is not base
+        assert set(result.model_dump()) == set(IncidentReport.model_fields)
+        assert all(
+            2 <= len(re.findall(r"[.!?](?:\s|$)", section.split("\n", 1)[1])) <= 3
+            for section in result.summary_ko.split("\n\n")
+        )
+    assert BEDROCK_MAX_OUTPUT_TOKENS == 4096
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["max_tokens", "stop_sequence", "tool_use", "guardrail_intervened", "content_filtered"],
+)
+def test_stop_reason_does_not_promote_complete_looking_json_to_success(
+    sample_incident_report: IncidentReport,
+    caplog: pytest.LogCaptureFixture,
+    reason: str,
+) -> None:
+    """유효해 보이는 본문도 잘림·도구 호출·필터링 상태를 숨긴 채 정상 보강하지 않는다."""
+    response = _converse_response(stopReason=reason)
+    with caplog.at_level(logging.INFO, logger="detection.llm_deep_analyzer"):
+        result = analyze_incident_with_bedrock(
+            sample_incident_report, [], bedrock_client=_converse_client(response)
+        )
+    assert result is sample_incident_report
+    events = [json.loads(r.getMessage()) for r in caplog.records if r.getMessage().startswith("{")]
+    diagnostics = [event for event in events if event["event"] == "cloudshield.bedrock_response"]
+    states = [event for event in events if event["event"] == "cloudshield.llm_analysis"]
+    assert diagnostics == [
+        {
+            "event": "cloudshield.bedrock_response",
+            "stop_reason": reason,
+            "inputTokens": 1,
+            "outputTokens": 1,
+            "totalTokens": 2,
+        }
+    ]
+    assert len(states) == 1 and states[0]["status"] == "parse_failed"
+
+
+@pytest.mark.parametrize("reason", [None, [], {}, "PRIVATE-STOP-REASON\nforged-log"])
+def test_converse_diagnostics_do_not_log_arbitrary_stop_reasons_or_usage(
+    caplog: pytest.LogCaptureFixture, reason: Any
+) -> None:
+    response = _converse_response(
+        "PRIVATE-MODEL-RESPONSE",
+        stopReason=reason,
+        usage={"inputTokens": True, "outputTokens": -1, "totalTokens": "PRIVATE-USAGE"},
+    )
+    with caplog.at_level(logging.INFO, logger="detection.llm_deep_analyzer"):
+        with pytest.raises(ValueError):
+            _converse_response_text(response)
+    assert json.loads(caplog.records[0].getMessage()) == {
+        "event": "cloudshield.bedrock_response",
+        "stop_reason": "unknown",
+    }
+    assert "PRIVATE" not in caplog.text and "forged-log" not in caplog.text
+
+
+def test_success_diagnostics_preserve_valid_usage_without_accepting_oversized_counters(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    response = _converse_response(
+        usage={"inputTokens": 0, "outputTokens": 4096, "totalTokens": 1_000_000_001}
+    )
+    with caplog.at_level(logging.INFO, logger="detection.llm_deep_analyzer"):
+        assert _converse_response_text(response) == _analysis_json()
+    assert json.loads(caplog.records[0].getMessage()) == {
+        "event": "cloudshield.bedrock_response",
+        "stop_reason": "end_turn",
+        "inputTokens": 0,
+        "outputTokens": 4096,
+    }
+
+
+_SECURITY_DOCS = Path(__file__).resolve().parents[2] / "docs" / "roles" / "security"
+_P5_DATASET = json.loads(
+    (_SECURITY_DOCS / "evidence" / "p5-3-2026-10-30" / "golden-set.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+@pytest.mark.parametrize("case", _P5_DATASET["cases"], ids=lambda case: case["case_id"])
+def test_p5_3_fixed_replay_preserves_decisions_and_declared_evidence(case: dict[str, Any]) -> None:
+    """고정된 입력·출력·기대 근거를 비교하며 모델 실행이나 실사건으로 간주하지 않는다."""
+    evaluator = runpy.run_path(str(_SECURITY_DOCS / "evaluate_p5_3.py"))
+    result = evaluator["evaluate_case"](case)
+    assert result["contract_valid"] and result["protected_fields_preserved"]
+    assert result["enhanced"] is result["expected_enhanced"]
+    assert result["expected_analysis_matches"]
+    assert result["evidence_matches"] == result["evidence_assertions"]
+    assert result["two_or_three_sentence_sections"] == result["accepted_sections"]
+
+
+def test_p5_3_evidence_evaluation_detects_an_invented_account() -> None:
+    """응답 형식 통과를 사실성 통과로 오인하지 않도록 알려진 근거 불일치를 잡는다."""
+    case = json.loads(json.dumps(_P5_DATASET["cases"][0]))
+    content = case["response"]["output"]["message"]["content"][0]
+    content["text"] = content["text"].replace("audit_0", "invented_account")
+    evaluator = runpy.run_path(str(_SECURITY_DOCS / "evaluate_p5_3.py"))
+    result = evaluator["evaluate_case"](case)
+    assert result["enhanced"] and result["contract_valid"]
+    assert not result["expected_analysis_matches"]
+    assert result["evidence_matches"] < result["evidence_assertions"]
+
+
+def test_p5_3_quality_evaluation_detects_a_single_sentence_section() -> None:
+    case = json.loads(json.dumps(_P5_DATASET["cases"][0]))
+    content = case["response"]["output"]["message"]["content"][0]
+    data = json.loads(content["text"])
+    data["summary_ko"] = data["summary_ko"].replace(
+        " 제공된 표본은 단일 계정을 대상으로 합니다.", ""
+    )
+    content["text"] = json.dumps(data, ensure_ascii=False)
+    evaluator = runpy.run_path(str(_SECURITY_DOCS / "evaluate_p5_3.py"))
+    result = evaluator["evaluate_case"](case)
+    assert result["enhanced"]
+    assert result["two_or_three_sentence_sections"] == 2
+    assert result["accepted_sections"] == 3
+
+
+@pytest.mark.parametrize("case", [_P5_DATASET["cases"][0], _P5_DATASET["cases"][5]])
+def test_p5_3_compact_response_passes_existing_worker_and_html_renderer(
+    case: dict[str, Any],
+) -> None:
+    """두 보강 키가 플랫폼 호출부와 HTML 소비 경로까지 손실 없이 연결되는지 확인한다."""
+    from remediation.llm_worker import execute_bedrock_analysis
+    from remediation.report_renderer import render_executive_html_report
+
+    base = IncidentReport.model_validate(case["base_report"])
+    result, enhanced = execute_bedrock_analysis(
+        base, case["raw_logs"], bedrock_client=_converse_client(case["response"])
+    )
+    assert enhanced and result.summary_ko == case["expected_analysis"]["summary_ko"]
+    assert result.recommendations == tuple(case["expected_analysis"]["recommendations"])
+    rendered = render_executive_html_report(result, raw_logs=case["raw_logs"])
+    assert html.escape(result.summary_ko) in rendered
+    assert all(html.escape(item) in rendered for item in result.recommendations)
+    assert all(html.escape(line) in rendered for line in case["raw_logs"])

@@ -1,0 +1,334 @@
+{
+  "dataset_version": 1,
+  "scope": "synthetic_replay_only_not_live_bedrock_or_real_attack_evidence",
+  "final_contract_compliance": {
+    "passed": 24,
+    "total": 24,
+    "rate": 1.0
+  },
+  "normal_enhancement": {
+    "passed": 10,
+    "total": 10,
+    "rate": 1.0
+  },
+  "accepted_analysis_contract_compliance": {
+    "passed": 10,
+    "total": 10,
+    "rate": 1.0
+  },
+  "fallback_isolation": {
+    "passed": 14,
+    "total": 14,
+    "rate": 1.0
+  },
+  "protected_field_integrity": {
+    "passed": 24,
+    "total": 24,
+    "rate": 1.0
+  },
+  "expected_analysis_match": {
+    "passed": 24,
+    "total": 24,
+    "rate": 1.0
+  },
+  "declared_evidence_match": {
+    "passed": 85,
+    "total": 85,
+    "rate": 1.0
+  },
+  "two_or_three_sentence_sections": {
+    "passed": 30,
+    "total": 30,
+    "rate": 1.0
+  },
+  "cases": [
+    {
+      "case_id": "ssh-0",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 5,
+      "evidence_assertions": 5,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "ssh-1",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 5,
+      "evidence_assertions": 5,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "ssh-2",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 5,
+      "evidence_assertions": 5,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "ssh-3",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 5,
+      "evidence_assertions": 5,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "ssh-4",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 5,
+      "evidence_assertions": 5,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "web-0",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 12,
+      "evidence_assertions": 12,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "web-1",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 12,
+      "evidence_assertions": 12,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "web-2",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 12,
+      "evidence_assertions": 12,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "web-3",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 12,
+      "evidence_assertions": 12,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "web-4",
+      "expected_enhanced": true,
+      "enhanced": true,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 12,
+      "evidence_assertions": 12,
+      "two_or_three_sentence_sections": 3,
+      "accepted_sections": 3
+    },
+    {
+      "case_id": "max-tokens-complete",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "max-tokens-truncated",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "stop-sequence",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "tool-use",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "guardrail",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "content-filtered",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "unknown-stop",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "missing-stop",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "invalid-json",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "protected-source-ip",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "protected-action",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "tool-content",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "section-overflow",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    },
+    {
+      "case_id": "sdk-timeout",
+      "expected_enhanced": false,
+      "enhanced": false,
+      "contract_valid": true,
+      "protected_fields_preserved": true,
+      "expected_analysis_matches": true,
+      "evidence_matches": 0,
+      "evidence_assertions": 0,
+      "two_or_three_sentence_sections": 0,
+      "accepted_sections": 0
+    }
+  ]
+}
