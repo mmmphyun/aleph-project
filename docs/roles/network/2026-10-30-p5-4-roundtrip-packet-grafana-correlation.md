@@ -1,5 +1,7 @@
 # P5-4 SSH·Web 왕복 패킷과 Grafana 서버 로그 대조
 
+> 최신 실측 시도: SSH TCP 22 기준선 timeout으로 Hydra 시작 전 중단. Web·Slack 미실행, Baseline SG/WAF 정상 구성 확인. [실측 시도 결과와 A 확인 요청](2026-10-30-p5-4-live-attempt.md). 아래 준비 내용은 실행 전 이력이다.
+
 - 담당: 네트워크 `@RockCandy444`
 - [Notion Task](https://notion.so/40504d37c225810e9698ded0d11acc77) · [Issue #242](https://github.com/mmmphyun/aleph-project/issues/242)
 - 브랜치: `docs/network-p5-4-roundtrip-packet-grafana-correlation`
