@@ -1,0 +1,296 @@
+[
+  {
+    "panel": 1,
+    "ref": "A",
+    "queryId": "212799ca-36f1-4612-9f0b-aad261727317",
+    "response": {
+      "queryLanguage": "CWLI",
+      "results": [],
+      "statistics": {
+        "recordsMatched": 0.0,
+        "recordsScanned": 0.0,
+        "estimatedRecordsSkipped": 0.0,
+        "bytesScanned": 0.0,
+        "estimatedBytesSkipped": 0.0,
+        "logGroupsScanned": 1.0,
+        "resultCount": 0.0
+      },
+      "status": "Complete"
+    }
+  },
+  {
+    "panel": 1,
+    "ref": "B",
+    "queryId": "f9c5ba5f-a456-40d8-91cd-c7d18f64015a",
+    "response": {
+      "queryLanguage": "CWLI",
+      "results": [],
+      "statistics": {
+        "recordsMatched": 0.0,
+        "recordsScanned": 3.0,
+        "estimatedRecordsSkipped": 0.0,
+        "bytesScanned": 415.0,
+        "estimatedBytesSkipped": 0.0,
+        "logGroupsScanned": 1.0,
+        "resultCount": 0.0
+      },
+      "status": "Complete"
+    }
+  },
+  {
+    "panel": 2,
+    "ref": "A",
+    "queryId": "5b684879-b9dc-4144-a470-71a9cd2b2480",
+    "response": {
+      "queryLanguage": "CWLI",
+      "results": [
+        [
+          {
+            "field": "bin(1m)",
+            "value": "2026-10-30 01:16:00.000"
+          },
+          {
+            "field": "max_response_seconds",
+            "value": "2.7042"
+          },
+          {
+            "field": "p95_response_seconds",
+            "value": "2.7042"
+          }
+        ]
+      ],
+      "statistics": {
+        "recordsMatched": 1.0,
+        "recordsScanned": 22.0,
+        "estimatedRecordsSkipped": 0.0,
+        "bytesScanned": 4768.0,
+        "estimatedBytesSkipped": 0.0,
+        "logGroupsScanned": 2.0,
+        "resultCount": 1.0
+      },
+      "status": "Complete"
+    }
+  },
+  {
+    "panel": 3,
+    "ref": "A",
+    "queryId": "0b53993d-c0be-490d-9443-c0e71d70300d",
+    "response": {
+      "queryLanguage": "CWLI",
+      "results": [
+        [
+          {
+            "field": "outcome",
+            "value": "enhanced"
+          },
+          {
+            "field": "incidents",
+            "value": "1"
+          }
+        ]
+      ],
+      "statistics": {
+        "recordsMatched": 1.0,
+        "recordsScanned": 9.0,
+        "estimatedRecordsSkipped": 0.0,
+        "bytesScanned": 1769.0,
+        "estimatedBytesSkipped": 0.0,
+        "logGroupsScanned": 1.0,
+        "resultCount": 1.0
+      },
+      "status": "Complete"
+    }
+  },
+  {
+    "panel": 4,
+    "ref": "A",
+    "queryId": "de8f4088-3b35-4a0e-9e6c-b73d72145a73",
+    "response": {
+      "queryLanguage": "CWLI",
+      "results": [
+        [
+          {
+            "field": "@timestamp",
+            "value": "2026-10-30 01:16:35.394"
+          },
+          {
+            "field": "@log",
+            "value": "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer"
+          },
+          {
+            "field": "@logStream",
+            "value": "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7"
+          },
+          {
+            "field": "@message",
+            "value": "[INFO]\t2026-10-30T01:16:35.394Z\tbd06b56e-7d88-44dc-aebc-451ac06f760b\t2�� LLM ���� �м� Slack �˸� ���� ����: INC-1793322987-0090 (�õ�: 1)\n"
+          },
+          {
+            "field": "incident_id",
+            "value": "INC-1793322987-0090"
+          }
+        ],
+        [
+          {
+            "field": "@timestamp",
+            "value": "2026-10-30 01:16:34.981"
+          },
+          {
+            "field": "@log",
+            "value": "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer"
+          },
+          {
+            "field": "@logStream",
+            "value": "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7"
+          },
+          {
+            "field": "@message",
+            "value": "[INFO]\t2026-10-30T01:16:34.981Z\tbd06b56e-7d88-44dc-aebc-451ac06f760b\tS3 ������ Presigned URL �߱� �Ϸ�: bucket=cloudshield-secops-reports-dev, key=reports/INC-1793322987-0090.html\n"
+          },
+          {
+            "field": "incident_id",
+            "value": "INC-1793322987-0090"
+          }
+        ],
+        [
+          {
+            "field": "@timestamp",
+            "value": "2026-10-30 01:16:34.828"
+          },
+          {
+            "field": "@log",
+            "value": "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer"
+          },
+          {
+            "field": "@logStream",
+            "value": "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7"
+          },
+          {
+            "field": "@message",
+            "value": "[INFO]\t2026-10-30T01:16:34.828Z\tbd06b56e-7d88-44dc-aebc-451ac06f760b\tS3 ������ ���ε� ����: bucket=cloudshield-secops-reports-dev, key=reports/INC-1793322987-0090.html\n"
+          },
+          {
+            "field": "incident_id",
+            "value": "INC-1793322987-0090"
+          }
+        ],
+        [
+          {
+            "field": "@timestamp",
+            "value": "2026-10-30 01:16:34.516"
+          },
+          {
+            "field": "@log",
+            "value": "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer"
+          },
+          {
+            "field": "@logStream",
+            "value": "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7"
+          },
+          {
+            "field": "@message",
+            "value": "[INFO]\t2026-10-30T01:16:34.516Z\tbd06b56e-7d88-44dc-aebc-451ac06f760b\t{\"event\":\"cloudshield.llm_analysis\",\"status\":\"enhanced\",\"reason\":\"validated_response\",\"incident_id\":\"INC-1793322987-0090\"}\n"
+          },
+          {
+            "field": "incident_id",
+            "value": "INC-1793322987-0090"
+          }
+        ],
+        [
+          {
+            "field": "@timestamp",
+            "value": "2026-10-30 01:16:31.359"
+          },
+          {
+            "field": "@log",
+            "value": "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator"
+          },
+          {
+            "field": "@logStream",
+            "value": "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895"
+          },
+          {
+            "field": "@message",
+            "value": "[INFO]\t2026-10-30T01:16:31.359Z\t1da6c1bd-1a88-40a7-bae0-bb0349927372\tEventBridge ThreatRemediated ���� ����: incident_id=INC-1793322987-0090, source_ip=198.51.100.90, count=5\n"
+          },
+          {
+            "field": "incident_id",
+            "value": "INC-1793322987-0090"
+          }
+        ],
+        [
+          {
+            "field": "@timestamp",
+            "value": "2026-10-30 01:16:30.815"
+          },
+          {
+            "field": "@log",
+            "value": "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator"
+          },
+          {
+            "field": "@logStream",
+            "value": "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895"
+          },
+          {
+            "field": "@message",
+            "value": "[INFO]\t2026-10-30T01:16:30.815Z\t1da6c1bd-1a88-40a7-bae0-bb0349927372\tSlack �˸� ���� ����: INC-1793322987-0090 (�õ�: 1)\n"
+          },
+          {
+            "field": "incident_id",
+            "value": "INC-1793322987-0090"
+          }
+        ],
+        [
+          {
+            "field": "@timestamp",
+            "value": "2026-10-30 01:16:30.430"
+          },
+          {
+            "field": "@log",
+            "value": "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator"
+          },
+          {
+            "field": "@logStream",
+            "value": "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895"
+          },
+          {
+            "field": "@message",
+            "value": "[INFO]\t2026-10-30T01:16:30.430Z\t1da6c1bd-1a88-40a7-bae0-bb0349927372\t���� ���� �Ϸ� �� �ݸ� ��ŷ ����: SSH_BRUTE_FORCE -> 198.51.100.90 (���: {'waf_blocked': True, 'quarantine_applied': True, 'iam_revoked': False})\n"
+          }
+        ],
+        [
+          {
+            "field": "@timestamp",
+            "value": "2026-10-30 01:16:30.414"
+          },
+          {
+            "field": "@log",
+            "value": "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator"
+          },
+          {
+            "field": "@logStream",
+            "value": "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895"
+          },
+          {
+            "field": "@message",
+            "value": "[INFO]\t2026-10-30T01:16:30.414Z\t1da6c1bd-1a88-40a7-bae0-bb0349927372\t{\"event_type\": \"ThreatRemediatedMetric\", \"incident_id\": \"INC-1793322987-0090\", \"rule_name\": \"SSH_BRUTE_FORCE\", \"source_ip\": \"198.51.100.90\", \"action_required\": \"BLOCK_AND_QUARANTINE\", \"remediation_success\": true, \"duration_seconds\": 2.7042, \"pipeline_timestamps\": {\"detected_epoch\": 1793322987.7100394, \"remediated_epoch\": 1793322990.4142377, \"duration_seconds\": 2.7042}}\n"
+          },
+          {
+            "field": "incident_id",
+            "value": "INC-1793322987-0090"
+          }
+        ]
+      ],
+      "statistics": {
+        "recordsMatched": 8.0,
+        "recordsScanned": 22.0,
+        "estimatedRecordsSkipped": 0.0,
+        "bytesScanned": 4768.0,
+        "estimatedBytesSkipped": 0.0,
+        "logGroupsScanned": 2.0,
+        "resultCount": 8.0
+      },
+      "status": "Complete"
+    }
+  }
+]
