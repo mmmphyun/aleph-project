@@ -1,0 +1,23 @@
+{
+  "baseline_revision": "9c498ea87367689ad31594292975c8e3cf31bdd4",
+  "scope": "static_UTF8_byte_comparison_not_token_count_or_live_model_performance",
+  "security_adapter_before_max_tokens": 2048,
+  "security_adapter_after_max_tokens": 2048,
+  "platform_worker_max_tokens_unchanged": 2048,
+  "cases": [
+    {
+      "case_id": "ssh-0",
+      "before_prompt_utf8_bytes": 10459,
+      "after_prompt_utf8_bytes": 9889,
+      "before_output_example_fields": 10,
+      "after_output_example_fields": 2
+    },
+    {
+      "case_id": "web-0",
+      "before_prompt_utf8_bytes": 10535,
+      "after_prompt_utf8_bytes": 9965,
+      "before_output_example_fields": 10,
+      "after_output_example_fields": 2
+    }
+  ]
+}

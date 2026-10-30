@@ -131,7 +131,12 @@ def test_executive_report_golden_set(case: int, caplog: pytest.LogCaptureFixture
     else:
         assert result is report
         assert result.model_dump(mode="json") == before
-    events = [json.loads(r.getMessage()) for r in caplog.records if r.getMessage().startswith("{")]
+    events = [
+        event
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+        and (event := json.loads(record.getMessage())).get("event") == "cloudshield.llm_analysis"
+    ]
     assert len(events) == 1
     assert events[0]["status"] == (
         "enhanced" if case < 10 else "call_failed" if case == 14 else "parse_failed"

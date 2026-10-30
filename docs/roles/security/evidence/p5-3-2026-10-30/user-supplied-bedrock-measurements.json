@@ -1,0 +1,62 @@
+{
+  "provenance": "User-supplied actual AWS Bedrock measurement summary in this chat; not independently executed or fetched by this agent",
+  "received_date_kst": "2026-10-30",
+  "model_id": "apac.amazon.nova-micro-v1:0",
+  "region": "ap-southeast-2",
+  "comparison_output_token_limit": 2048,
+  "execution_metadata": {
+    "exact_measured_at": null,
+    "request_ids": null,
+    "input_logs": null,
+    "raw_model_responses": null,
+    "actual_inference_config": null,
+    "measured_revisions": null,
+    "application_enhanced_flags": null,
+    "s3_html_artifacts": null
+  },
+  "observations": [
+    {
+      "variant": "PR 241",
+      "scenario": "SSH",
+      "prompt_bytes": 9905,
+      "stop_reason": "end_turn",
+      "input_tokens": 4650,
+      "output_tokens": 469,
+      "headroom_tokens_against_2048": 1579
+    },
+    {
+      "variant": "PR 241",
+      "scenario": "Web",
+      "prompt_bytes": 9689,
+      "stop_reason": "end_turn",
+      "input_tokens": 4630,
+      "output_tokens": 455,
+      "headroom_tokens_against_2048": 1593
+    },
+    {
+      "variant": "existing main control",
+      "scenario": "SSH",
+      "prompt_bytes": 10475,
+      "stop_reason": "end_turn",
+      "input_tokens": 4872,
+      "output_tokens": 521,
+      "headroom_tokens_against_2048": 1527
+    },
+    {
+      "variant": "existing main control",
+      "scenario": "Web",
+      "prompt_bytes": 10259,
+      "stop_reason": "content_filtered",
+      "input_tokens": 4852,
+      "output_tokens": 0,
+      "headroom_tokens_against_2048": null
+    }
+  ],
+  "decision": "Keep the security adapter and existing platform worker at 2048 output tokens. No platform worker token increase is required for these measured samples.",
+  "limits": [
+    "Two PR 241 observations ended normally at the model level; end_turn alone does not establish application enhanced=True, factual accuracy, or S3 rendering quality.",
+    "The main Web control observed content_filtered. It does not identify an explicit Bedrock Guardrail or prove the root cause of all historical fallback incidents.",
+    "The byte counts are the user's measured inputs; local synthetic fixture byte counts are recorded separately in prompt-comparison.json.",
+    "The inference request configurations, exact timestamps, request IDs, raw responses, and measured revisions were not included in the supplied summary."
+  ]
+}

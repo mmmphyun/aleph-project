@@ -1,0 +1,11 @@
+{
+  "incident_id": "INC-1793322987-0090",
+  "bucket": "cloudshield-secops-reports-dev",
+  "key": "reports/INC-1793322987-0090.html",
+  "checked_at_utc": "2026-10-30T03:18:18.118394+00:00",
+  "url_expires_at_utc": "2026-10-30T02:16:34+00:00",
+  "signed_url_saved": false,
+  "http_status": 403,
+  "s3_error_code": "AccessDenied",
+  "s3_error_message": "Request has expired"
+}

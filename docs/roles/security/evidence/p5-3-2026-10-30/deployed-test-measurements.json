@@ -1,0 +1,74 @@
+{
+  "provenance": "User-supplied deployment and actual AWS test-environment measurements in this chat; model metrics and Slack delivery were not independently fetched by this agent",
+  "reported_date_kst": "2026-10-30",
+  "model_id": "apac.amazon.nova-micro-v1:0",
+  "region": "ap-southeast-2",
+  "deployment": "User reports PR 241 bundle deployed to the actual AWS test environment for simulated SSH and Web threats",
+  "max_output_tokens": 2048,
+  "incidents": [
+    {
+      "incident_id": "INC-1793331935-0051",
+      "scenario": "SSH",
+      "status": "enhanced",
+      "stop_reason": "end_turn",
+      "input_tokens": 4700,
+      "output_tokens": 495,
+      "latency_seconds": 2.08,
+      "s3_key": "reports/INC-1793331935-0051.html",
+      "output_headroom_tokens": 1553,
+      "output_headroom_percent": 75.83
+    },
+    {
+      "incident_id": "INC-1793337609-0088",
+      "scenario": "Web",
+      "status": "enhanced",
+      "stop_reason": "end_turn",
+      "input_tokens": 4823,
+      "output_tokens": 482,
+      "latency_seconds": 1.84,
+      "s3_key": "reports/INC-1793337609-0088.html",
+      "output_headroom_tokens": 1566,
+      "output_headroom_percent": 76.46
+    }
+  ],
+  "sample_metrics": {
+    "enhanced_incidents": 2,
+    "total_incidents": 2,
+    "fallback_incidents": 0,
+    "fallback_rate": 0.0
+  },
+  "source_logs": {
+    "web": {
+      "reported_as": "CloudWatch Nginx originals",
+      "provided_complete_lines": [
+        "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /admin HTTP/1.1\" 401 150 \"-\" \"curl/7.81.0\" 0.002 \"-\"",
+        "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /backup HTTP/1.1\" 404 153 \"-\" \"curl/7.81.0\" 0.002 \"-\"",
+        "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /config HTTP/1.1\" 403 162 \"-\" \"curl/7.81.0\" 0.002 \"-\"",
+        "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /debug HTTP/1.1\" 200 2048 \"-\" \"curl/7.81.0\" 0.002 \"-\"",
+        "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /metrics HTTP/1.1\" 200 4096 \"-\" \"curl/7.81.0\" 0.002 \"-\""
+      ],
+      "line_count": 5
+    },
+    "ssh": {
+      "reported_as": "CloudWatch Auth originals",
+      "provided_complete_lines": [
+        "Oct 14 09:40:01 target sshd[9991]: Failed password for invalid user cloudshield_test from 198.51.100.51 port 40001 ssh2",
+        "Oct 14 09:40:02 target sshd[9992]: Failed password for invalid user cloudshield_test from 198.51.100.51 port 40002 ssh2"
+      ],
+      "reported_total_line_count": 5,
+      "remaining_lines_provided_as": "ellipsis and total count; complete five lines retained in the previously reviewed SSH HTML evidence"
+    }
+  },
+  "css": {
+    "reported_by_user": "Cloud A redeployed .summary-text-box with white-space: pre-line",
+    "independently_observed_web_white_space": "pre-line",
+    "ssh_after_redeployment_reopened": false
+  },
+  "slack_delivery": "User reports second-stage summary cards and S3 links delivered to the monitoring channel",
+  "limits": [
+    "Results are for these two actual AWS test-environment simulated-threat samples, not a general operational success rate.",
+    "Output headroom in these samples does not guarantee that all future requests finish under 2048 tokens.",
+    "Model inference latency is not the total attack-to-remediation SLA.",
+    "Full first-stage JSON, deployment digest and raw API envelopes were not independently retrieved."
+  ]
+}
