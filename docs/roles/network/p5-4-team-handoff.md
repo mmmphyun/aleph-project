@@ -1,6 +1,6 @@
 # P5-4 준비 결과와 팀원에게 남은 요청
 
-> 최신 실측 시도: SSH TCP 22 기준선 timeout으로 Hydra 시작 전 중단. Web·Slack 미실행, Baseline SG/WAF 정상 구성 확인. [실측 시도 결과와 A 확인 요청](2026-10-30-p5-4-live-attempt.md). 아래 준비 내용은 실행 전 이력이다.
+> 최신 재실측: SSH 공격·차단·복구·TCP 회복·3차 Slack 완료. Web은 ALB TCP 80 기준선 timeout으로 스캔 전 중단. [최신 실측 결과와 ALB 허용 요청](2026-10-30-p5-4-live-retry.md). 아래 준비 내용은 실행 전 이력이다.
 
 - [Notion Task](https://notion.so/40504d37c225810e9698ded0d11acc77) · [Issue #242](https://github.com/mmmphyun/aleph-project/issues/242) · [Draft PR #243](https://github.com/mmmphyun/aleph-project/pull/243)
 - [보고서](2026-10-30-p5-4-roundtrip-packet-grafana-correlation.md) · [단일 컨트롤러 안내](demo-controller.md)

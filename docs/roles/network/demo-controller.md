@@ -1,6 +1,6 @@
 # 로컬 단일 데모 컨트롤러
 
-> 최신 실측 시도: SSH TCP 22 기준선 timeout으로 Hydra 시작 전 중단. Web·Slack 미실행, Baseline SG/WAF 정상 구성 확인. [실측 시도 결과와 A 확인 요청](2026-10-30-p5-4-live-attempt.md). 아래 준비 내용은 실행 전 이력이다.
+> 최신 재실측: SSH 공격·차단·복구·TCP 회복·3차 Slack 완료. Web은 ALB TCP 80 기준선 timeout으로 스캔 전 중단. [최신 실측 결과와 ALB 허용 요청](2026-10-30-p5-4-live-retry.md). 아래 준비 내용은 실행 전 이력이다.
 
 `network/demo_controller.py`는 로컬 PC에서 기존 공격 도구, A의 복구 함수, B의 Slack 함수와 대시보드를 연결한다. 기본 명령은 plan이다. AWS 자격증명과 웹훅은 로컬에만 남기며, 공격 노드에는 승인 대상과 실행 자료만 보낸다.
 
