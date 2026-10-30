@@ -91,3 +91,12 @@ Grafana 경유 응답은 `evidence/p5-2-2026-10-30/grafana-datasource-results.js
 
 이번 판정은 고정 로그 기반 실환경 통합 실증의 패널 표시 확인이다.
 실제 공격 트래픽 실측·전체 공격 시작 기준 10초 SLA 검증으로 확대하지 않는다.
+
+## PR 제출 전 최종 품질 게이트
+
+최신 main `d2f87a5`를 작업 브랜치에 통합한 뒤 `scripts/check.ps1`을 재실행했다.
+R&R·테스트 경로·Ruff lint/format·전체 pytest가 종료 코드 0으로 통과했다.
+결과: **1516 passed, 4 skipped, 1 warning**, 180.32초.
+명령은 `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\check.ps1`이며
+공백 없는 허용 임시 경로를 사용했다. 검증 우회 옵션은 사용하지 않았다.
+전체 출력은 저장소 외부 `../p5-2-pr-check.log`에 보존했다.
