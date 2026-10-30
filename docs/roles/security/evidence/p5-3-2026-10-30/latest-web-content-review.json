@@ -1,0 +1,62 @@
+{
+  "incident_id": "INC-1793337609-0088",
+  "reviewed_date_kst": "2026-10-30",
+  "source": {
+    "bucket": "cloudshield-secops-reports-dev",
+    "key": "reports/INC-1793337609-0088.html",
+    "method": "User-provided HTTPS S3 URL opened directly; DOM and full-page screenshot inspected",
+    "signed_url_saved": false,
+    "raw_object_downloaded": false
+  },
+  "attack_type": "Web Directory Scanning",
+  "expected_mapper_action": "BLOCK_WAF",
+  "rendered_mitre_id": "T1595.003",
+  "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.88의 Web 경로 열거가 관측됐습니다. 제공된 표본은 서로 다른 경로 5개입니다.\n\n[2. 관측 로그 근거]\n30/Oct/2026:05:20:07에 5개 경로 중 /admin·/backup·/config 응답은 401·404·403입니다. /debug·/metrics는 200으로 응답했습니다.\n\n[3. 영향도 및 침해 판정]\n200만으로 민감 자원 노출을, 403만으로 WAF 집행을 확정할 수 없어 원본 매퍼 판정을 유지합니다. 응답 본문과 WAF 집행 근거는 미확인입니다.",
+  "recommendations": [
+    "[즉시 조치] 5개 URI·시각·IP를 WAF ALLOW/BLOCK 원본과 대조",
+    "[설정 점검] /debug·/metrics의 응답 본문·접근 정책과 정상 사용자 영향을 점검",
+    "[재발 방지] 불필요한 진단 경로를 정리하고 승인된 보안 점검으로 정책을 재검증"
+  ],
+  "embedded_log_lines": [
+    "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /admin HTTP/1.1\" 401 150 \"-\" \"curl/7.81.0\" 0.002 \"-\"",
+    "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /backup HTTP/1.1\" 404 153 \"-\" \"curl/7.81.0\" 0.002 \"-\"",
+    "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /config HTTP/1.1\" 403 162 \"-\" \"curl/7.81.0\" 0.002 \"-\"",
+    "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /debug HTTP/1.1\" 200 2048 \"-\" \"curl/7.81.0\" 0.002 \"-\"",
+    "198.51.100.88 - - [30/Oct/2026:05:20:07 +0000] \"GET /metrics HTTP/1.1\" 200 4096 \"-\" \"curl/7.81.0\" 0.002 \"-\""
+  ],
+  "cloudwatch_log_provenance": "The user supplied the same five lines as CloudWatch Nginx originals; no direct CloudWatch API retrieval was performed.",
+  "content_checks": {
+    "section_sentence_counts": [
+      2,
+      2,
+      2
+    ],
+    "section_character_counts": [
+      75,
+      117,
+      101
+    ],
+    "total_summary_characters": 297,
+    "ip_timestamp_path_count_and_all_http_statuses_match": true,
+    "sensitive_data_exposure_and_waf_execution_not_assumed": true,
+    "three_recommendation_stages_present": true,
+    "strict_current_parser_accepts_reconstructed_analysis": true,
+    "reconstructed_mapper_protected_fields_preserved": true,
+    "original_first_stage_json_independently_compared": false,
+    "content_review_passed": true
+  },
+  "browser": {
+    "viewport_width": 1265,
+    "viewport_height": 1595,
+    "document_scroll_width": 1265,
+    "summary_client_width": 726,
+    "summary_scroll_width": 726,
+    "summary_client_height": 249,
+    "summary_scroll_height": 249,
+    "visible_clipping_observed": false,
+    "computed_white_space": "pre-line",
+    "paragraph_breaks_preserved_on_screen": true,
+    "print_reviewed": false
+  },
+  "decision": "Web content review passed; combined with the existing SSH content review, both requested attack scenarios have been reviewed. The two-incident production-test metrics are separately user-supplied."
+}

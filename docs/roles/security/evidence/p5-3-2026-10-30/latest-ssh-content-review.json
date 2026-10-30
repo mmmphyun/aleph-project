@@ -64,11 +64,15 @@
     "use_as_latest_evidence": false
   },
   "limits": [
-    "This is an SSH report; no new Web report has been provided.",
-    "Evidence comparison uses embedded HTML logs, not independently retrieved CloudWatch events.",
-    "The original first-stage report, deployment revision, model stopReason, usage and application enhanced flag for this incident were not provided.",
+    "Original browser review used the embedded HTML logs. Later user-provided CloudWatch Auth excerpts cover the first two complete lines and report five total failures; the remaining three complete lines are retained from HTML.",
+    "Follow-up deployment and enhanced/end_turn metrics are user-supplied; raw API envelopes and original first-stage JSON were not independently retrieved.",
     "The local parser check reconstructs a mapper report from visible identifiers and validates the captured two analysis fields; it is not an actual Bedrock call or a full original protected-field comparison.",
     "The rendered remediation table is not independent proof of successful actions."
   ],
-  "decision": "Accept this latest SSH report for content quality; defer newline display changes per user instruction; keep full P5-3 completion pending the remaining Web and original-source evidence."
+  "decision": "SSH content review passed. The separately recorded Web review also passed. New Web HTML displays pre-line; the original SSH browser observation remains normal, and no platform source was changed by this agent.",
+  "followup_evidence": {
+    "metrics_and_cloudwatch_excerpts": "deployed-test-measurements.json",
+    "web_content_review": "latest-web-content-review.json",
+    "effect": "User subsequently supplied enhanced/end_turn metrics, CloudWatch Auth excerpts and the Web report. Original browser observations below remain unchanged."
+  }
 }
