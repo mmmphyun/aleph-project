@@ -1,0 +1,74 @@
+{
+  "incident_id": "INC-1793331935-0051",
+  "reviewed_date_kst": "2026-10-30",
+  "user_confirmed_latest": true,
+  "supersedes_report_for_current_review": "INC-1793331859-0050",
+  "source": {
+    "bucket": "cloudshield-secops-reports-dev",
+    "key": "reports/INC-1793331935-0051.html",
+    "method": "Direct user-provided HTTPS S3 URL in in-app browser; DOM and full-page screenshot inspection",
+    "signed_url_saved": false,
+    "raw_object_downloaded": false,
+    "raw_object_sha256": null
+  },
+  "attack_type": "SSH Brute Force",
+  "summary_ko": "[1. 침해 개요]\n출발지 IP 198.51.100.51에서 단일 계정 대상 SSH 비밀번호 추측 공격이 감지되었습니다. 대상 계정은 cloudshield_test이며 MITRE ATT&CK T1110.001으로 분류됩니다.\n\n[2. 관측 로그 근거]\nOct 14 09:40:01~05에 cloudshield_test 계정으로 Failed password 로그 5건이 관측됐습니다. 성공 인증 로그는 제공되지 않았습니다.\n\n[3. 영향도 및 침해 판정]\n성공 인증·실제 EC2 격리 결과는 미확인으로 원본 매퍼 판정을 유지합니다. 영향 범위는 제공된 실패 표본으로 한정합니다.",
+  "recommendations": [
+    "[즉시 조치] cloudshield_test의 실패 구간과 인접 성공 인증·세션 로그를 대조",
+    "[설정 점검] TCP 차단·EC2 격리 집행 증거와 정상 관리 접속 영향을 확인",
+    "[재발 방지] 계정 접근 권한과 인증 정책을 검토하고 변경 후 재발 여부를 관측"
+  ],
+  "embedded_log_lines": [
+    "Oct 14 09:40:01 target sshd[9991]: Failed password for invalid user cloudshield_test from 198.51.100.51 port 40001 ssh2",
+    "Oct 14 09:40:02 target sshd[9992]: Failed password for invalid user cloudshield_test from 198.51.100.51 port 40002 ssh2",
+    "Oct 14 09:40:03 target sshd[9993]: Failed password for invalid user cloudshield_test from 198.51.100.51 port 40003 ssh2",
+    "Oct 14 09:40:04 target sshd[9994]: Failed password for invalid user cloudshield_test from 198.51.100.51 port 40004 ssh2",
+    "Oct 14 09:40:05 target sshd[9995]: Failed password for invalid user cloudshield_test from 198.51.100.51 port 40005 ssh2"
+  ],
+  "content_checks": {
+    "section_sentence_counts": [
+      2,
+      2,
+      2
+    ],
+    "section_character_counts": [
+      125,
+      108,
+      85
+    ],
+    "total_summary_characters": 322,
+    "three_labeled_sections_present": true,
+    "three_recommendation_stages_present": true,
+    "ip_account_time_range_and_count_match_embedded_logs": true,
+    "successful_authentication_and_ec2_isolation_marked_unverified": true,
+    "strict_current_parser_accepts_reconstructed_analysis": true,
+    "content_review_passed": true
+  },
+  "browser": {
+    "viewport_width": 1280,
+    "viewport_height": 720,
+    "document_scroll_width": 1265,
+    "summary_client_width": 726,
+    "summary_scroll_width": 726,
+    "summary_client_height": 134,
+    "summary_scroll_height": 134,
+    "visible_clipping_observed": false,
+    "computed_white_space": "normal",
+    "line_break_display_change_deferred_by_user": true,
+    "print_reviewed": false
+  },
+  "prior_report_observation": {
+    "incident_id": "INC-1793331859-0050",
+    "summary_matches_current_deterministic_mapper": true,
+    "llm_fallback_reason_confirmed": false,
+    "use_as_latest_evidence": false
+  },
+  "limits": [
+    "This is an SSH report; no new Web report has been provided.",
+    "Evidence comparison uses embedded HTML logs, not independently retrieved CloudWatch events.",
+    "The original first-stage report, deployment revision, model stopReason, usage and application enhanced flag for this incident were not provided.",
+    "The local parser check reconstructs a mapper report from visible identifiers and validates the captured two analysis fields; it is not an actual Bedrock call or a full original protected-field comparison.",
+    "The rendered remediation table is not independent proof of successful actions."
+  ],
+  "decision": "Accept this latest SSH report for content quality; defer newline display changes per user instruction; keep full P5-3 completion pending the remaining Web and original-source evidence."
+}
