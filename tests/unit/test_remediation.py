@@ -4618,3 +4618,109 @@ def test_grafana_provisioning_and_iam_policy_specs() -> None:
     assert "logs:DescribeLogGroups" in tf_content
     assert "logs:StartQuery" in tf_content
     assert "cloudwatch:GetMetricData" in tf_content
+
+
+def test_threat_orchestrator_logs_threat_remediated_metric(
+    mocked_ec2_target: MockEc2Target,
+    mocked_waf_ipset: MockWafTarget,
+    mocked_dynamodb_table: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[P5-2] 위협 차단 집행 후 CloudWatch Logs 정형 메트릭(ThreatRemediatedMetric) 출력 검증.
+
+    Why:
+        클라우드 B의 Grafana 대시보드(4사분면 CloudWatch Logs Insights 쿼리)에서
+        대응 시간 및 차단 성공 여부를 실시간 집계할 수 있도록 정형 JSON 단일 라인으로 로깅함.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from remediation.auth_window import AuthFailureWindow
+    from remediation.orchestrator import threat_orchestrator_handler
+
+    ec2_client = boto3.client("ec2", region_name="us-east-1")
+    waf_client = boto3.client("wafv2", region_name="us-east-1")
+    auth_window = AuthFailureWindow(
+        table_name="CloudShield-AuthFailure-Window",
+        window_seconds=300,
+    )
+    mock_events = MagicMock()
+    mock_events.put_events.return_value = {
+        "FailedEntryCount": 0,
+        "Entries": [{"EventId": "ev-metric-test"}],
+    }
+
+    attacker_ip = "198.51.100.77"
+    messages = [
+        (
+            f"Sep 04 15:01:0{i} target-ec2 sshd[3330{i}]: Failed password for "
+            f"admin from {attacker_ip} port 5330{i} ssh2"
+        )
+        for i in range(1, 6)
+    ]
+    event = _make_cw_auth_event(messages, instance_id=mocked_ec2_target.instance_id)
+
+    with (
+        caplog.at_level("INFO"),
+        patch("remediation.orchestrator.send_slack_alert", return_value=True),
+    ):
+        res = threat_orchestrator_handler(
+            event=event,
+            auth_window=auth_window,
+            ec2_client=ec2_client,
+            waf_client=waf_client,
+            events_client=mock_events,
+        )
+
+    assert res["processed_events"] == 5
+    assert len(res["threats_detected"]) == 1
+
+    # caplog에서 ThreatRemediatedMetric 로그 라인 파싱 및 검증
+    metric_logs = []
+    for line in caplog.text.splitlines():
+        if "ThreatRemediatedMetric" in line:
+            brace_idx = line.find("{")
+            if brace_idx != -1:
+                try:
+                    data = json.loads(line[brace_idx:])
+                    if data.get("event_type") == "ThreatRemediatedMetric":
+                        metric_logs.append(data)
+                except Exception:
+                    pass
+
+    assert len(metric_logs) >= 1, "ThreatRemediatedMetric 정형 JSON 로그가 출력되어야 함"
+    metric = metric_logs[0]
+    assert metric["event_type"] == "ThreatRemediatedMetric"
+    assert metric["rule_name"] == "SSH_BRUTE_FORCE"
+    assert metric["source_ip"] == "198.51.100.77"
+    assert metric["remediation_success"] is True
+    assert "incident_id" in metric
+    assert "pipeline_timestamps" in metric
+    assert "detected_epoch" in metric["pipeline_timestamps"]
+    assert "remediated_epoch" in metric["pipeline_timestamps"]
+    assert metric["duration_seconds"] >= 0.0
+
+
+def test_orchestrator_syncs_root_logger_level(monkeypatch):
+    """Why: Lambda 루트 로거 기본값을 LOG_LEVEL 환경변수로 동기화 검증."""
+    import logging
+
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    logging.getLogger().setLevel(logging.WARNING)
+
+    threat_orchestrator_handler({})
+
+    assert logging.getLogger().level == logging.DEBUG
+
+
+def test_llm_worker_syncs_root_logger_level(monkeypatch):
+    """Why: LLM Worker 진입 시 루트 로거 레벨이 환경변수로 동기화되는지 검증."""
+    import logging
+
+    from remediation.llm_worker import llm_analysis_handler
+
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    logging.getLogger().setLevel(logging.WARNING)
+
+    llm_analysis_handler({"source": "test"})
+
+    assert logging.getLogger().level == logging.INFO

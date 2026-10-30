@@ -271,6 +271,10 @@ def llm_analysis_handler(
     if not isinstance(event, dict):
         raise ValueError("이벤트 페이로드는 딕셔너리(dict) 형식이어야 합니다.")
 
+    # AWS Lambda Python 3.12 런타임의 루트 로거 기본 레벨(WARNING)을 환경 변수와 동기화
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.getLogger().setLevel(getattr(logging, log_level, logging.INFO))
+
     source = event.get("source", "")
     detail_type = event.get("detail-type", "")
     event_id = event.get("id", "")

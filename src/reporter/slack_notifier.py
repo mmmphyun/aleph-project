@@ -1291,3 +1291,124 @@ def send_llm_slack_alert(
         max_retries + 1,
     )
     return False
+
+
+def send_recovery_slack_alert(
+    report: IncidentReport,
+    recovery_result: Mapping[str, Any],
+    webhook_url: str | None = None,
+    timeout: float = 3.0,
+    max_retries: int = 1,
+    retry_delay: float = 0.5,
+) -> bool:
+    """복구 엔진(Rollback) 결과를 3차 Slack Block Kit 카드로 렌더링하여 Webhook 발송.
+
+    Why:
+        L4 격리 해제 및 L7 WAF 차단 해제 집행 결과를 동일 incident_id 기반의
+        3차 카드로 관제 채널에 즉시 전파함.
+        Slack API 장애(네트워크 단절, 5xx, 타임아웃) 발생 시에도 복구 트랜잭션과
+        상위 프로세스가 중단되지 않도록 완전한 예외 격리(Fault Isolation) 보장.
+
+    Constraints:
+        - report: 유효성이 검증된 IncidentReport 객체.
+        - recovery_result: 복구 엔진이 반환한 Mapping 결과 객체.
+        - webhook_url: Slack Incoming Webhook HTTPS 엔드포인트 URL 문자열.
+        - timeout: 네트워크 요청 제한 시간 (초, 기본값 3.0초).
+    """
+    target_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+    if not target_url:
+        logger.warning(
+            "Slack Webhook URL이 설정되지 않아 3차 복구 알림 전송을 건너뜁니다 (id=%s)",
+            report.incident_id,
+        )
+        return False
+
+    try:
+        parsed = urllib.parse.urlparse(target_url)
+        if not (parsed.scheme == "https" and parsed.netloc):
+            logger.warning(
+                "유효하지 않은 Slack Webhook HTTPS URL입니다: %s",
+                _mask_webhook_url(target_url),
+            )
+            return False
+    except Exception as exc:
+        logger.warning("유효하지 않은 Slack Webhook URL 형식입니다: %s", type(exc).__name__)
+        return False
+
+    try:
+        payload = build_recovery_slack_payload(report, recovery_result)
+        encoded_data = json.dumps(payload).encode("utf-8")
+    except Exception as exc:
+        logger.error("3차 복구 Slack Block Kit 페이로드 직렬화 실패: %s", exc)
+        return False
+
+    start_time = time.monotonic()
+    for attempt in range(max_retries + 1):
+        elapsed = time.monotonic() - start_time
+        remaining_budget = timeout - elapsed
+        if remaining_budget <= 0:
+            logger.error(
+                "3차 복구 Slack Webhook 시간 예산 소진으로 전송 중단 (시도: %d)",
+                attempt + 1,
+            )
+            return False
+
+        req_timeout = timeout if (attempt == 0 and elapsed < 0.05) else remaining_budget
+        try:
+            req = urllib.request.Request(
+                url=target_url,
+                data=encoded_data,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=req_timeout) as response:
+                status_code = getattr(response, "status", None) or response.getcode()
+                if status_code == 200:
+                    logger.info(
+                        "3차 복구 Slack 알림 전송 성공: %s (시도: %d)",
+                        report.incident_id,
+                        attempt + 1,
+                    )
+                    return True
+                logger.warning(
+                    "3차 복구 Slack Webhook 비정상 응답 코드: %s (시도: %d)",
+                    status_code,
+                    attempt + 1,
+                )
+                if status_code < 500:
+                    return False
+        except urllib.error.HTTPError as exc:
+            logger.error(
+                "3차 복구 Slack Webhook HTTP 오류 (코드: %s, 유형: %s, 시도: %d)",
+                exc.code,
+                type(exc).__name__,
+                attempt + 1,
+            )
+            if exc.code < 500:
+                return False
+        except TimeoutError:
+            logger.error("3차 복구 Slack Webhook 요청 시간 초과 (timeout=%.2f초)", req_timeout)
+            return False
+        except urllib.error.URLError as exc:
+            logger.error(
+                "3차 복구 Slack Webhook 연결 실패 (유형: %s, 시도: %d)",
+                type(getattr(exc, "reason", exc)).__name__,
+                attempt + 1,
+            )
+        except Exception as exc:
+            # InvalidURL 등 일반 예외 시 URL/토큰이 포함될 수 있는 exc 원문 노출 차단
+            logger.error(
+                "3차 복구 Slack Webhook 전송 중 오류 발생 (유형: %s, 시도: %d)",
+                type(exc).__name__,
+                attempt + 1,
+            )
+            return False
+
+        if attempt < max_retries:
+            remaining_before_sleep = timeout - (time.monotonic() - start_time)
+            if remaining_before_sleep <= 0:
+                return False
+            time.sleep(min(retry_delay, remaining_before_sleep))
+
+    logger.error("3차 복구 Slack Webhook 최대 재시도 초과로 최종 실패 격리")
+    return False
