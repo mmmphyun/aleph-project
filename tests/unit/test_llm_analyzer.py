@@ -568,7 +568,7 @@ def test_bedrock_adapter_uses_the_official_converse_schema_and_preserves_decisio
                             ],
                         }
                     ],
-                    "inferenceConfig": {"maxTokens": 4096, "temperature": 0},
+                    "inferenceConfig": {"maxTokens": 2048, "temperature": 0},
                 },
             )
             result = analyze_incident_with_bedrock(
@@ -1123,7 +1123,7 @@ def test_prompt_requests_compact_multisentence_analysis_and_preserves_the_contra
             2 <= len(re.findall(r"[.!?](?:\s|$)", section.split("\n", 1)[1])) <= 3
             for section in result.summary_ko.split("\n\n")
         )
-    assert BEDROCK_MAX_OUTPUT_TOKENS == 4096
+    assert BEDROCK_MAX_OUTPUT_TOKENS == 2048
 
 
 @pytest.mark.parametrize(
@@ -1248,8 +1248,13 @@ def test_p5_3_compact_response_passes_existing_worker_and_html_renderer(
     from remediation.report_renderer import render_executive_html_report
 
     base = IncidentReport.model_validate(case["base_report"])
-    result, enhanced = execute_bedrock_analysis(
-        base, case["raw_logs"], bedrock_client=_converse_client(case["response"])
+    client = _converse_client(case["response"])
+    result, enhanced = execute_bedrock_analysis(base, case["raw_logs"], bedrock_client=client)
+    # 실제 워커 호출 예산과 보안 어댑터의 예산을 함께 고정해 불필요한 토큰 증설을 막는다.
+    assert (
+        client.converse.call_args.kwargs["inferenceConfig"]["maxTokens"]
+        == (BEDROCK_MAX_OUTPUT_TOKENS)
+        == 2048
     )
     assert enhanced and result.summary_ko == case["expected_analysis"]["summary_ko"]
     assert result.recommendations == tuple(case["expected_analysis"]["recommendations"])

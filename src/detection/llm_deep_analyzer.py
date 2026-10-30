@@ -40,9 +40,9 @@ MAX_RECOMMENDATION_CHARS = 500
 DEFAULT_BEDROCK_MODEL_ID = "apac.amazon.nova-micro-v1:0"
 BEDROCK_CONNECT_TIMEOUT_SECONDS = 2
 BEDROCK_READ_TIMEOUT_SECONDS = 20
-# 3단 분석과 세 가지 권고를 한국어로 완결할 여유를 주되 응답 32KiB 제한은 별도로 유지한다.
-# 플랫폼 워커가 자체 호출하는 경로의 토큰 설정은 해당 소유자가 별도 정합화해야 한다.
-BEDROCK_MAX_OUTPUT_TOKENS = 4096
+# 제공된 Nova Micro 실측 표본은 SSH 469/Web 455토큰으로 완료돼 운영 워커와 같은 상한을 쓴다.
+# 표본 밖 응답의 완결은 보장하지 않으며 max_tokens 거부와 응답 32KiB 제한은 별도로 유지한다.
+BEDROCK_MAX_OUTPUT_TOKENS = 2048
 MAX_BEDROCK_CONTENT_BLOCKS = 32
 _KNOWN_STOP_REASONS = frozenset(
     {
@@ -443,7 +443,7 @@ def analyze_incident_with_bedrock(
     """결정론적 보고서를 기준으로 Bedrock 사후 설명을 요청하고 실패 시 원본을 보존한다.
 
     Why: 선택적 LLM 분석 장애가 기존 차단 판단과 사고 보고서 전달을 중단시키면 안 된다.
-    Constraints: 기존 프롬프트·파서를 재사용하고 Converse 1회·출력 4096토큰으로 제한한다.
+    Constraints: 기존 프롬프트·파서를 재사용하고 Converse 1회·출력 2048토큰으로 제한한다.
         기본 SDK 연결/읽기는 2/20초, 총 시도 1회다. 이는 함수 전체의 절대 마감이 아니며
         주입 클라이언트의 타임아웃·재시도 설정은 호출부 책임이다. 입력 오류는 호출 전 전파한다.
         새 어댑터는 상사 보고 양식을 기본 강제하며 기존 호출자는 False로 호환 모드를 선택한다.
