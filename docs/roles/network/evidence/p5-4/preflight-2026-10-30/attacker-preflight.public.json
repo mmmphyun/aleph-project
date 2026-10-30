@@ -1,0 +1,109 @@
+{
+  "kind": "read_only_preflight_selected_evidence",
+  "provenance": "Selected from JSON returned over SSH by transient read-only commands on the approved attacker. Not an attack run, AWS Describe response, or signed identity verification.",
+  "source_commit": "822fdc1c8ea0be75d921a989302dc5e6b240e9f9",
+  "attacker_alias": "attacker-p5-4",
+  "target_alias": "target-p5-4",
+  "identity": {
+    "instance_id_matches_user_input": true,
+    "region": "ap-southeast-2",
+    "attacker_vpc_count": 1,
+    "target_vpc_matches": null
+  },
+  "ssh": {
+    "initial_attempt_exit_code": 255,
+    "initial_failure": "OpenSSH rejected UTF-16 private-key encoding; client diagnostic observed in tool output, not a retained raw SSH log.",
+    "subsequent_attempt_exit_code": 0,
+    "key_transform": "Decoded a separate UTF-16-to-ASCII/LF private copy outside Git; original key unchanged; key material excluded.",
+    "host_key_verification": "First observed host key recorded in a dedicated private known_hosts; subsequent connections required the same key; no independent out-of-band fingerprint attestation."
+  },
+  "tools_present": {
+    "python3": true,
+    "hydra": true,
+    "tcpdump": true,
+    "tshark": true,
+    "curl": true,
+    "aws": false,
+    "sudo": true
+  },
+  "tool_versions": {
+    "tcpdump": {
+      "exit_code": 0,
+      "first_line": "tcpdump version 4.99.1"
+    },
+    "tshark": {
+      "exit_code": 0,
+      "first_line": "TShark (Wireshark) 3.6.2 (Git v3.6.2 packaged as 3.6.2-2)"
+    },
+    "curl": {
+      "exit_code": 0,
+      "first_line": "curl 7.81.0 (x86_64-pc-linux-gnu) libcurl/7.81.0 OpenSSL/3.0.2 zlib/1.2.11 brotli/1.0.9 zstd/1.4.8 libidn2/2.3.2 libpsl/0.21.0 (+libidn2/2.3.2) libssh/0.9.6/openssl/zlib nghttp2/1.43.0 librtmp/2.3 OpenLDAP/2.5.20"
+    },
+    "python3": {
+      "exit_code": 0,
+      "first_line": "Python 3.10.12"
+    }
+  },
+  "sudo_noninteractive": true,
+  "aws": {
+    "profile_files_present": {
+      ".aws/config": false,
+      ".aws/credentials": false
+    },
+    "profile_names": {},
+    "session_environment_present": false,
+    "boto3_present": false,
+    "iam_info_http_status": 404,
+    "cloudwatch_queried": false
+  },
+  "runtime": {
+    "documented_runner_minimum": "3.12",
+    "default_python": "3.10.12",
+    "alternative_python_or_uv_paths": {
+      "python3.12": null,
+      "python3.13": null,
+      "python3.14": null,
+      "uv": null
+    },
+    "curl_rate_supported": false,
+    "runner_executed": false
+  },
+  "live_measurement": {
+    "attack_executed": false,
+    "target_probe_executed": false,
+    "packet_capture_executed": false,
+    "recovery_executed": false,
+    "run_id": null,
+    "incident_id": null,
+    "sla_seconds": null
+  },
+  "source_files": [
+    {
+      "evidence_id": "1",
+      "private_filename": "attacker-preflight.private.json",
+      "sha256": "a502c06cb88ed517c7fcdb09197938952d9e5f3138f28a987f0270f1afe7db6c",
+      "bytes": 1047
+    },
+    {
+      "evidence_id": "2",
+      "private_filename": "attacker-metadata.private.json",
+      "sha256": "d37065e69b4dbeb4eb9c875578053264cc108bf8c04ae7f997b7962b83c67062",
+      "bytes": 707
+    },
+    {
+      "evidence_id": "3",
+      "private_filename": "attacker-runtime.private.json",
+      "sha256": "2d91ff42e8c665475da64c637ef25fd11ce48994e50f1fd28ff91c7b5912d9e1",
+      "bytes": 194
+    }
+  ],
+  "selection_and_masking": [
+    "Removed AWS account ID, instance IDs, IP addresses, VPC IDs, hostname/route details and local private paths.",
+    "Retained region, exact tool versions, boolean readiness results, HTTP status, source byte counts and hashes.",
+    "No credentials or private-key bytes are included; key files are excluded from the evidence hash list."
+  ],
+  "limits": [
+    "These hashes identify retained file bytes; they do not authenticate AWS origin or extraction completeness.",
+    "No cross-host clock error measurement or attack timeline exists."
+  ]
+}
