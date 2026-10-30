@@ -213,6 +213,10 @@ def threat_orchestrator_handler(
         - Slack Webhook 호출 실패(HTTPError, Timeout, 미설정) 시에도 L4/L7 차단 및
           DynamoDB 격리 마킹 상태는 롤백되지 않고 유지되며 slack_notified=False를 반환함.
     """
+    # AWS Lambda Python 3.12 런타임의 루트 로거 기본 레벨(WARNING)을 환경 변수와 동기화
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.getLogger().setLevel(getattr(logging, log_level, logging.INFO))
+
     response: dict[str, Any] = {
         "processed_events": 0,
         "threats_detected": [],

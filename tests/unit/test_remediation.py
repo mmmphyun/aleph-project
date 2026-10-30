@@ -4698,3 +4698,29 @@ def test_threat_orchestrator_logs_threat_remediated_metric(
     assert "detected_epoch" in metric["pipeline_timestamps"]
     assert "remediated_epoch" in metric["pipeline_timestamps"]
     assert metric["duration_seconds"] >= 0.0
+
+
+def test_orchestrator_syncs_root_logger_level(monkeypatch):
+    """Why: Lambda 루트 로거 기본값을 LOG_LEVEL 환경변수로 동기화 검증."""
+    import logging
+
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    logging.getLogger().setLevel(logging.WARNING)
+
+    threat_orchestrator_handler({})
+
+    assert logging.getLogger().level == logging.DEBUG
+
+
+def test_llm_worker_syncs_root_logger_level(monkeypatch):
+    """Why: LLM Worker 진입 시 루트 로거 레벨이 환경변수로 동기화되는지 검증."""
+    import logging
+
+    from remediation.llm_worker import llm_analysis_handler
+
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    logging.getLogger().setLevel(logging.WARNING)
+
+    llm_analysis_handler({"source": "test"})
+
+    assert logging.getLogger().level == logging.INFO
