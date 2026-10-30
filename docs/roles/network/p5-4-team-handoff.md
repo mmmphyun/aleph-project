@@ -1,6 +1,6 @@
 # P5-4 준비 결과와 팀원에게 남은 요청
 
-> 최신 재실측: SSH 공격·차단·복구·TCP 회복·3차 Slack 완료. Web은 ALB TCP 80 기준선 timeout으로 스캔 전 중단. [최신 실측 결과와 ALB 허용 요청](2026-10-30-p5-4-live-retry.md). 아래 준비 내용은 실행 전 이력이다.
+> 최신 결과: SSH·Web 각각 공격→차단 후보→기존 복구→통신 회복→3차 알림 완료. Web 첫 GET→루트 403은 21.291308초로 10초 SLA 미충족. [최종 실측 기록](2026-10-30-p5-4-live-results.md). 아래 준비 내용은 실행 전 이력이다.
 
 - [Notion Task](https://notion.so/40504d37c225810e9698ded0d11acc77) · [Issue #242](https://github.com/mmmphyun/aleph-project/issues/242) · [Draft PR #243](https://github.com/mmmphyun/aleph-project/pull/243)
 - [보고서](2026-10-30-p5-4-roundtrip-packet-grafana-correlation.md) · [단일 컨트롤러 안내](demo-controller.md)

@@ -1,0 +1,241 @@
+{
+  "kind": "web_live_success_selected_evidence",
+  "controller_run_id": "20261030T092101Z-c02776f3a46d",
+  "started_at": "2026-10-30T09:21:01.173865+00:00",
+  "ended_at": "2026-10-30T09:22:53.561484+00:00",
+  "scenario": "web",
+  "workflow_complete": true,
+  "incident_id": "INC-1793352077-8223",
+  "http_recovery_verified": true,
+  "third_slack_sender_success": true,
+  "slack_original_ts": null,
+  "server_detected_to_api_return_seconds": "0.4463",
+  "server_remediation_success": true,
+  "packet_measurement": {
+    "packet_endpoints": {
+      "first_get": {
+        "capture": "capture-0.pcap",
+        "frame": "14",
+        "epoch": "1793352070.710004000",
+        "stream": "1",
+        "method": "GET",
+        "uri": "/admin",
+        "status": "",
+        "backing": "http-csv-0",
+        "resolution_seconds": "0.000001"
+      },
+      "baseline_200": {
+        "capture": "capture-0.pcap",
+        "frame": "6",
+        "epoch": "1793352070.683451000",
+        "stream": "0",
+        "method": "",
+        "uri": "",
+        "status": "200",
+        "backing": "http-csv-0",
+        "resolution_seconds": "0.000001",
+        "request_method": "HEAD",
+        "request_uri": "/"
+      },
+      "first_root_403": {
+        "capture": "capture-0.pcap",
+        "frame": "226",
+        "epoch": "1793352092.001312000",
+        "stream": "22",
+        "method": "",
+        "uri": "",
+        "status": "403",
+        "backing": "http-csv-0",
+        "resolution_seconds": "0.000001",
+        "request_method": "HEAD",
+        "request_uri": "/"
+      },
+      "recovered_root_200": {
+        "capture": "capture-0.pcap",
+        "frame": "236",
+        "epoch": "1793352108.110343000",
+        "stream": "23",
+        "method": "",
+        "uri": "",
+        "status": "200",
+        "backing": "http-csv-0",
+        "resolution_seconds": "0.000001",
+        "request_method": "HEAD",
+        "request_uri": "/"
+      }
+    },
+    "packet_first_get_to_first_root_403_seconds": "21.291308000",
+    "durations": {
+      "block_observation": {
+        "seconds": "21.291308000",
+        "reason": null,
+        "start_event_id": "http-packet-events:first_get",
+        "end_event_id": "http-packet-events:pcap_first403",
+        "basis": "same_clock_wall_time",
+        "clock_error_bound_seconds": null,
+        "accuracy": "clock_error_unknown",
+        "endpoint_resolution_seconds": [
+          "0.000001",
+          "0.000001"
+        ]
+      },
+      "block_hold_observation": {
+        "seconds": "16.109031000",
+        "reason": null,
+        "start_event_id": "http-packet-events:pcap_first403",
+        "end_event_id": "http-packet-events:pcap_recovery200",
+        "basis": "same_clock_wall_time",
+        "clock_error_bound_seconds": null,
+        "accuracy": "clock_error_unknown",
+        "endpoint_resolution_seconds": [
+          "0.000001",
+          "0.000001"
+        ]
+      },
+      "recovery_processing_observation": {
+        "seconds": "10.911565000",
+        "reason": null,
+        "start_event_id": "control:recovery_started",
+        "end_event_id": "http-packet-events:pcap_recovery200",
+        "basis": "cross_device_wall_time",
+        "clock_error_bound_seconds": null,
+        "accuracy": "clock_error_unknown",
+        "endpoint_resolution_seconds": [
+          "0.000001",
+          "0.000001"
+        ]
+      }
+    },
+    "clock_error_bound_seconds": null,
+    "packet_timestamp_resolution_seconds": "0.000001"
+  },
+  "latency_segments": {
+    "first_get_to_detected_seconds": "6.745574600",
+    "detected_to_api_return_seconds": "0.4463",
+    "api_return_to_first_root_403_seconds": "14.099472700"
+  },
+  "first_get_to_root_403_under_10_seconds_observed": false,
+  "e2e_10_second_sla_verified": false,
+  "waf_raw_block_log_verified": true,
+  "grafana_query_status": "Complete",
+  "remote_originals": 15,
+  "remote_hashes_match": true,
+  "final_baseline_sg_verified": true,
+  "final_waf_source_clear": true,
+  "sources": [
+    {
+      "private_alias": "controller-result.private.json",
+      "bytes": 1882,
+      "sha256": "d418bb77886cf93d97c653312873d278b7d8157bb4dfbd247825ecffb622c15c"
+    },
+    {
+      "private_alias": "final-state.private.json",
+      "bytes": 281,
+      "sha256": "c2c69dc670e430573a5334fc8cf76c7158a3b492dbf49e252955846be0400667"
+    },
+    {
+      "private_alias": "web/scenario-result.private.json",
+      "bytes": 1388,
+      "sha256": "2229a1d6e9bbde06a42bfff6d65477118f608eb8a8e2eb858160e40ac6388d8e"
+    },
+    {
+      "private_alias": "web/server-evidence.private.json",
+      "bytes": 12670,
+      "sha256": "716a7600300c824e474a02a5f2a8583d691d9e1b9535e8c3e700aee9184b2269"
+    },
+    {
+      "private_alias": "web/restore.private.json",
+      "bytes": 1098,
+      "sha256": "b614d93702a04592ee6c63fec9614482cae9229a2d9b91f796f7850cb28101be"
+    },
+    {
+      "private_alias": "web/recovery-probes.private.json",
+      "bytes": 365,
+      "sha256": "abafd16783b4b9927b1504b471992c7256a40ee8a04eee634b6a58a047d66be6"
+    },
+    {
+      "private_alias": "web/slack-recovery.private.json",
+      "bytes": 1666,
+      "sha256": "e3a6e7ad9dd1f5e7c64be2121ffdf65d5c4bea5c1d5a41f29dac01bb26508765"
+    },
+    {
+      "private_alias": "web/remote-manifest.private.json",
+      "bytes": 2349,
+      "sha256": "6d0d25bff321bcb09d4ca7146966ddd0036f5af598cbf12e366c718d27f075df"
+    },
+    {
+      "private_alias": "web/grafana-results.private.json",
+      "bytes": 14933,
+      "sha256": "f98d08f8b097ac8eafe672dde251703c8310d0ff4b905a4858886d0fb46478f4"
+    },
+    {
+      "private_alias": "web/packet-http-summary.private.json",
+      "bytes": 2847,
+      "sha256": "610a4aa974f50dc3dcd74c625f8f00e428a8418caf84cf2d24888378d8382a36"
+    },
+    {
+      "private_alias": "web/timeline-pcap-summary.private.json",
+      "bytes": 39588,
+      "sha256": "151a1a6093f8bf34fc285efc8ac873036c78f17a6ed099e93041219f4454a45f"
+    },
+    {
+      "private_alias": "web/packet-review-capture-0.private.csv",
+      "bytes": 17486,
+      "sha256": "bd8c70123cd97ad855e8ef25545560b581a7f52a52946ac2fb025d0542a39755"
+    },
+    {
+      "private_alias": "web/packet-review-capture-1.private.csv",
+      "bytes": 11822,
+      "sha256": "0db24cca9594a4b77e0f009f378ea781e8cf5bc40fccd53672946120cf05f2d5"
+    },
+    {
+      "private_alias": "web/remote/capture-0.pcap",
+      "bytes": 29754,
+      "sha256": "65945ae5eb6158365cd015b97daff033fbf3493de963fedc16a79ee907d8989f"
+    },
+    {
+      "private_alias": "web/remote/capture-1.pcap",
+      "bytes": 19791,
+      "sha256": "b75031e256d4ded21fed05ff57d8d4766464c4b3f6e6f8d4fb938d5cf0349562"
+    },
+    {
+      "private_alias": "waf-log-discovery.private.json",
+      "bytes": 54393,
+      "sha256": "96638c557a84742d879bc271ae065e28ef2742cf457d320fb36bbee63e9a11ba"
+    },
+    {
+      "private_alias": "waf-log-correlation.private.json",
+      "bytes": 17514,
+      "sha256": "964b35f093d35014fcc106aece1f90bb1a3dd810a140f56b4f9b97ff97b64c86"
+    }
+  ],
+  "selection": "Account/IP/resource identifiers removed; synthetic request URI and packet coordinates retained. Original files remain outside Git.",
+  "native_waf": {
+    "matching_approved_alb_source_and_account": true,
+    "basis": "same source IP, approved ALB identity/account, method/URI and bounded run window; native WAF has no incident_id and packet request IDs were not captured",
+    "allow_count": 38,
+    "block_count": 2,
+    "block_events": [
+      {
+        "waf_timestamp_ms": 1793352092001,
+        "action": "BLOCK",
+        "rule_id": "CloudShield-Block-IP",
+        "http_method": "HEAD",
+        "uri": "/",
+        "cloudwatch_event_id": "39993088054966149084303252754730804543728549686378496000",
+        "cloudwatch_ingestion_time": 1793352114279,
+        "request_id_sha256": "9154157c7f0a933768bfc7b146d9f92ac36843516889a73ca64ede00fa6e13fb"
+      },
+      {
+        "waf_timestamp_ms": 1793352103364,
+        "action": "BLOCK",
+        "rule_id": "CloudShield-Block-IP",
+        "http_method": "HEAD",
+        "uri": "/",
+        "cloudwatch_event_id": "39993088308369516775206723517739807675225245078472622080",
+        "cloudwatch_ingestion_time": 1793352119026,
+        "request_id_sha256": "6b5b12a19ad5c038a4a2c2db1c0253a5fc9d01e2c6ed7fd898a56fef1711e7f6"
+      }
+    ]
+  }
+}
