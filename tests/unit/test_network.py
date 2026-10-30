@@ -4562,3 +4562,500 @@ def test_demo_403_after_observation_deadline_is_not_candidate(demo_execution, mo
     ]
     assert any(row["stage"] == "late_probe" for row in rows)
     assert not any(row["stage"] == "first_block_candidate" for row in rows)
+
+
+@pytest.fixture
+def local_controller(monkeypatch):
+    """소켓 차단을 유지하며 새 로컬 조율기만 로드한다. 실제 AWS/SSH로 폴백하지 않는다."""
+    import importlib
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "network"))
+    return importlib.import_module("demo_controller")
+
+
+@pytest.fixture
+def controller_config(local_controller, tmp_path):
+    from demo_remote import ASSETS
+
+    root = tmp_path / "private"
+    root.mkdir()
+    cfg = {
+        "schema_version": local_controller.SCHEMA,
+        "aws_profile": "controller-test",
+        "account_id": "123456789012",
+        "principal_arn": "arn:aws:iam::123456789012:user/test",
+        "region": "ap-southeast-2",
+        "attacker_instance_id": "i-11111111111111111",
+        "source_ip": "8.8.8.8",
+        "target_instance_id": "i-22222222222222222",
+        "target_ip": "1.1.1.1",
+        "baseline_sg_id": "sg-11111111111111111",
+        "quarantine_sg_id": "sg-22222222222222222",
+        "waf_ipset_name": "test-ipset",
+        "waf_ipset_id": "11111111-1111-1111-1111-111111111111",
+        "web_origin": "http://" + local_controller.runner.approved_alb_host(),
+        "ssh_user": "ubuntu",
+        "ssh_key": str(root / "key"),
+        "known_hosts": str(root / "known_hosts"),
+        "remote_root": "/home/ubuntu/cloudshield-p5-4-prep-test",
+        "interface": "ens5",
+        "assets": {name: "a" * 64 for name in ASSETS},
+        "evidence_root": str(root / "runs"),
+        "approval_file": str(root / "approval.json"),
+        "slack_webhook_file": str(root / "webhook"),
+        "orchestrator_log_group": "/test/orchestrator",
+        "auth_log_group": "/test/auth",
+        "nginx_log_group": "/test/nginx",
+        "target_auth_user": "verify_user",
+        "target_auth_key": str(root / "target-key"),
+        "grafana_url": "http://127.0.0.1:3000",
+        "grafana_admin_file": str(root / "grafana-admin.env"),
+        "require_key_auth": True,
+    }
+    path = root / "config.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    return cfg, path
+
+
+@pytest.fixture
+def controller_fake(local_controller):
+    class Fake:
+        def __init__(self):
+            self.calls = []
+            self.failure = None
+
+        def preflight(self, scenario):
+            self.calls.append(("preflight", scenario))
+            return {"blockers": ["blocked"] if self.failure == "preflight" else []}
+
+        def start(self, run_id, scenario, approval, folder):
+            self.calls.append(("start", scenario))
+            if self.failure == "start":
+                raise OSError("capture preparation failed")
+
+        def attack(self, run_id, scenario, approval, folder):
+            self.calls.append(("attack", scenario))
+            if self.failure == "transport":
+                raise OSError("transport lost after remote start")
+            return {
+                "exit_code": 3 if self.failure == "attack" else 0,
+                "runner_run_id": "actual-remote-run",
+            }
+
+        def incident(self, attack, scenario, folder):
+            from types import SimpleNamespace
+
+            if self.failure == "incident":
+                raise ValueError("ambiguous event")
+            return SimpleNamespace(incident_id="INC-SYNTHETIC-" + scenario)
+
+        def quiesce(self, run_id, scenario):
+            self.calls.append(("quiesce", scenario))
+
+        def restore(self, scenario, folder):
+            self.calls.append(("restore", scenario))
+            return {
+                "quarantine_restored": self.failure != "partial",
+                "waf_unblocked": True,
+                "configuration_checked_at": "2026-10-30T00:00:00Z",
+            }
+
+        def probe(self, run_id, scenario):
+            self.calls.append(("probe", scenario))
+            if self.failure == "traffic":
+                return {"state": "timeout", "http_status": 403}
+            return {"state": "connected", "http_status": 200}
+
+        def sleep(self, seconds):
+            pass
+
+        def key_auth(self, folder):
+            return self.failure != "key_auth"
+
+        def notify(self, report, payload, folder):
+            self.calls.append(("notify", report.incident_id, dict(payload)))
+            return self.failure != "slack"
+
+        def stop(self, run_id, scenario):
+            self.calls.append(("stop", scenario))
+            return {"forced_kill_count": 0}
+
+        def collect(self, run_id, scenario, folder):
+            self.calls.append(("collect", scenario))
+            if self.failure == "collect":
+                raise OSError("disk failed")
+
+        def timeline(self, attack, report, folder, scenario):
+            self.calls.append(("timeline", scenario))
+
+    return Fake()
+
+
+def controller_test_approval(monkeypatch, local_controller):
+    # 구성/부작용 경계 테스트는 승인 parser의 기존 테스트를 복제하지 않는다.
+    monkeypatch.setattr(local_controller.runner, "parse_approval", lambda data, scenario: None)
+    return {"approval_id": "synthetic-one-use"}
+
+
+def test_controller_plan_and_missing_execute_do_not_construct_live_backend(
+    local_controller, controller_config, monkeypatch
+):
+    import demo_controller_aws
+
+    _, path = controller_config
+    monkeypatch.setattr(demo_controller_aws, "LiveBackend", lambda cfg: pytest.fail("live backend"))
+    assert local_controller.main(["plan", "--config", str(path)]) == 0
+    assert local_controller.main(["run", "--config", str(path)]) == 2
+    assert local_controller.main(["preflight", "--execute", "--config", str(path)]) == 2
+
+
+@pytest.mark.parametrize(
+    "change", ["same_target", "wrong_region", "secret", "bad_root", "bad_hash"]
+)
+def test_controller_rejects_scope_and_secret_configuration(
+    local_controller, controller_config, change
+):
+    cfg, path = controller_config
+    if change == "same_target":
+        cfg["target_instance_id"] = cfg["attacker_instance_id"]
+    elif change == "wrong_region":
+        cfg["region"] = "us-east-1"
+    elif change == "secret":
+        cfg["aws_secret_access_key"] = "never-accepted-in-config"
+    elif change == "bad_root":
+        cfg["remote_root"] = "/home/ubuntu/../../etc"
+    else:
+        cfg["assets"]["demo_attack_runner.py"] = "invalid"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    with pytest.raises(ValueError):
+        local_controller.load_config(path)
+
+
+def test_controller_complete_sequence_preserves_incident_and_flat_payload(
+    local_controller, controller_config, controller_fake, monkeypatch
+):
+    cfg, _ = controller_config
+    approval = controller_test_approval(monkeypatch, local_controller)
+    result = local_controller.run_demo(cfg, controller_fake, approval)
+    assert result["complete"] is True
+    assert result["e2e_sla_verified"] is False
+    calls = controller_fake.calls
+    assert [(c[0], c[1]) for c in calls if c[0] == "attack"] == [
+        ("attack", "ssh"),
+        ("attack", "web"),
+    ]
+    assert calls.index(("quiesce", "ssh")) < calls.index(("restore", "ssh"))
+    assert calls.index(("stop", "ssh")) < calls.index(("attack", "web"))
+    for call in [c for c in calls if c[0] == "notify"]:
+        assert call[1].startswith("INC-SYNTHETIC-")
+        assert call[2]["traffic_verified"] is True
+        assert call[2]["quarantine_restored"] is True
+        assert "components" not in call[2]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["transport", "attack", "incident", "partial", "traffic", "key_auth", "slack", "collect"],
+)
+def test_controller_failure_restores_and_never_starts_following_attack(
+    local_controller, controller_config, controller_fake, monkeypatch, failure
+):
+    cfg, _ = controller_config
+    approval = controller_test_approval(monkeypatch, local_controller)
+    controller_fake.failure = failure
+    result = local_controller.run_demo(cfg, controller_fake, approval)
+    assert result["complete"] is False
+    assert ("restore", "ssh") in controller_fake.calls
+    assert ("stop", "ssh") in controller_fake.calls
+    assert ("collect", "ssh") in controller_fake.calls
+    assert ("attack", "web") not in controller_fake.calls
+    if failure == "incident":
+        assert not any(c[0] == "notify" for c in controller_fake.calls)
+    if failure == "traffic":
+        assert sum(c == ("probe", "ssh") for c in controller_fake.calls) == 20
+        assert (
+            next(c for c in controller_fake.calls if c[0] == "notify")[2]["traffic_verified"]
+            is False
+        )
+    saved = list(Path(cfg["evidence_root"]).glob("*/controller-result.private.json"))
+    assert len(saved) == 1 and json.loads(saved[0].read_text())["complete"] is False
+
+
+def test_controller_capture_start_failure_has_no_attack_and_collects_partial_evidence(
+    local_controller, controller_config, controller_fake, monkeypatch
+):
+    cfg, _ = controller_config
+    approval = controller_test_approval(monkeypatch, local_controller)
+    controller_fake.failure = "start"
+    result = local_controller.run_demo(cfg, controller_fake, approval)
+    assert result["complete"] is False
+    assert ("attack", "ssh") not in controller_fake.calls
+    assert ("restore", "ssh") not in controller_fake.calls
+    assert ("collect", "ssh") in controller_fake.calls
+
+
+def test_controller_preflight_and_replayed_approval_cannot_start_attack(
+    local_controller, controller_config, controller_fake, monkeypatch
+):
+    cfg, _ = controller_config
+    approval = controller_test_approval(monkeypatch, local_controller)
+    controller_fake.failure = "preflight"
+    with pytest.raises(ValueError):
+        local_controller.run_demo(cfg, controller_fake, approval)
+    assert not Path(cfg["evidence_root"]).exists()
+    controller_fake.failure = None
+    local_controller.run_demo(cfg, controller_fake, approval, "web")
+    before = len(controller_fake.calls)
+    with pytest.raises(FileExistsError):
+        local_controller.run_demo(cfg, controller_fake, approval, "web")
+    assert not any(c[0] == "attack" for c in controller_fake.calls[before:])
+
+
+def test_controller_storage_failure_propagates_without_partial_or_overwrite(
+    local_controller, tmp_path, monkeypatch
+):
+    path = tmp_path / "result.json"
+    local_controller.save_json(path, {"original": True})
+    with pytest.raises(FileExistsError):
+        local_controller.save_json(path, {"replacement": True})
+    assert json.loads(path.read_text()) == {"original": True}
+    with pytest.raises(ValueError):
+        local_controller.save_json(tmp_path / "large.json", {"data": "x" * 1024**2})
+    monkeypatch.setattr(local_controller.os, "link", lambda *args: (_ for _ in ()).throw(OSError()))
+    with pytest.raises(OSError):
+        local_controller.save_json(tmp_path / "failed.json", {"data": 1})
+    assert not (tmp_path / "failed.json").exists()
+    assert not list(tmp_path.glob(".controller-*"))
+
+
+def test_controller_partial_l4_failure_does_not_skip_existing_a_waf_function(
+    local_controller, controller_config, tmp_path, monkeypatch
+):
+    from demo_controller_aws import LiveBackend
+    from scripts import restore_baseline_sg
+
+    from remediation import remediation
+
+    cfg, _ = controller_config
+    backend = LiveBackend.__new__(LiveBackend)
+    backend.cfg, backend.ec2, backend.waf = cfg, object(), object()
+    called = []
+
+    def l4(**kwargs):
+        raise RuntimeError("simulated EC2 failure")
+
+    def l7(**kwargs):
+        called.append(kwargs)
+        return True
+
+    monkeypatch.setattr(restore_baseline_sg, "restore_baseline_security_group", l4)
+    monkeypatch.setattr(remediation, "unblock_ip_wafv2", l7)
+    monkeypatch.setattr(backend, "_target", lambda: {"SecurityGroups": []})
+    monkeypatch.setattr(backend, "_ipset", lambda: {"Addresses": []})
+    result = backend.restore("ssh", tmp_path)
+    assert result["quarantine_restored"] is False and result["waf_unblocked"] is True
+    assert called[0]["ipset_id"] == cfg["waf_ipset_id"]
+    assert called[0]["source_ip"] == cfg["source_ip"]
+    assert called[0]["unblock_all"] is False
+
+
+def test_controller_real_metric_uses_existing_mapper_and_rejects_action_mutation(
+    local_controller, controller_config
+):
+    cfg, _ = controller_config
+    metric = {
+        "incident_id": "INC-SERVER-123",
+        "source_ip": cfg["source_ip"],
+        "rule_name": "SSH_BRUTE_FORCE",
+        "action_required": "BLOCK_AND_QUARANTINE",
+    }
+    events = [
+        {
+            "message": "Oct 30 10:00:00 target sshd[123]: Failed password for "
+            "cloudshield_test from 8.8.8.8 port 12345 ssh2"
+        }
+    ]
+    report = local_controller.make_report(metric, cfg, "ssh", events)
+    assert report.incident_id == metric["incident_id"]
+    assert report.target_accounts == ("cloudshield_test",)
+    with pytest.raises(ValueError):
+        local_controller.make_report({**metric, "action_required": "BLOCK_WAF"}, cfg, "ssh", events)
+    with pytest.raises(ValueError):
+        local_controller.make_report({**metric, "incident_id": ""}, cfg, "ssh", events)
+
+
+def test_controller_ssh_never_inherits_aws_or_slack_credentials(local_controller, monkeypatch):
+    from demo_controller_aws import LiveBackend
+
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic")
+    monkeypatch.setenv("AWS_PROFILE", "synthetic")
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "synthetic")
+    env = LiveBackend._ssh_env()
+    assert "AWS_SECRET_ACCESS_KEY" not in env and "AWS_PROFILE" not in env
+    assert "SLACK_WEBHOOK_URL" not in env
+
+
+def test_controller_metric_duplicates_and_malformed_values_fail_closed(local_controller):
+    from demo_controller_aws import LiveBackend
+
+    message = '[INFO]\t{"event_type":"ThreatRemediatedMetric","incident_id":"INC-A"}'
+    assert LiveBackend._metrics([{"message": message}])[0]["incident_id"] == "INC-A"
+    with pytest.raises(ValueError):
+        LiveBackend._metrics([{"message": '{"event_type":"ThreatRemediatedMetric","x":1,"x":2}'}])
+
+
+def test_controller_remote_refuses_secret_payload_and_unowned_pid(local_controller, monkeypatch):
+    import demo_remote
+
+    with pytest.raises(ValueError):
+        demo_remote.dispatch({"AWS_ACCESS_KEY_ID": "synthetic"})
+    monkeypatch.setattr(demo_remote, "process_ticks", lambda pid: "new-process")
+    monkeypatch.setattr(
+        demo_remote.os, "killpg", lambda *args: pytest.fail("unowned kill"), raising=False
+    )
+    assert demo_remote.stop_owned([{"pid": 42, "ticks": "old-process"}], Path("/test")) == []
+
+
+def test_controller_tcp_only_mode_does_not_claim_key_authentication(
+    local_controller, controller_config, controller_fake, monkeypatch
+):
+    cfg, _ = controller_config
+    cfg["require_key_auth"] = False
+    controller_fake.key_auth = lambda folder: pytest.fail("unrequested key login")
+    result = local_controller.run_demo(
+        cfg, controller_fake, controller_test_approval(monkeypatch, local_controller), "ssh"
+    )
+    assert result["complete"] is True
+    state = result["scenarios"][0]
+    assert state["ssh_key_auth_verified"] is None
+    assert state["unverified_requirements"] == ["ssh_key_auth"]
+    assert result["e2e_sla_verified"] is False
+
+
+def test_controller_moto_restores_only_approved_sg_and_source_ip(
+    local_controller, controller_config, tmp_path, monkeypatch
+):
+    import boto3
+    from demo_controller_aws import LiveBackend
+    from moto import mock_aws
+
+    cfg, _ = controller_config
+    with mock_aws():
+        ec2 = boto3.client("ec2", region_name=cfg["region"])
+        vpc = ec2.create_vpc(CidrBlock="10.99.0.0/16")["Vpc"]["VpcId"]
+        groups = [
+            ec2.create_security_group(GroupName=n, Description=n, VpcId=vpc)["GroupId"]
+            for n in ["baseline", "quarantine"]
+        ]
+        subnet = ec2.create_subnet(VpcId=vpc, CidrBlock="10.99.1.0/24")["Subnet"]["SubnetId"]
+        instance = ec2.run_instances(
+            ImageId="ami-12345678",
+            MinCount=1,
+            MaxCount=1,
+            NetworkInterfaces=[
+                {
+                    "DeviceIndex": 0,
+                    "SubnetId": subnet,
+                    "Groups": [groups[1]],
+                    "AssociatePublicIpAddress": True,
+                }
+            ],
+        )["Instances"][0]
+        target = ec2.describe_instances(InstanceIds=[instance["InstanceId"]])["Reservations"][0][
+            "Instances"
+        ][0]
+        cfg.update(
+            target_instance_id=target["InstanceId"],
+            target_ip=target["PublicIpAddress"],
+            baseline_sg_id=groups[0],
+            quarantine_sg_id=groups[1],
+        )
+        waf = boto3.client("wafv2", region_name=cfg["region"])
+        cfg["waf_ipset_id"] = waf.create_ip_set(
+            Name=cfg["waf_ipset_name"],
+            Scope="REGIONAL",
+            IPAddressVersion="IPV4",
+            Addresses=[cfg["source_ip"] + "/32", "9.9.9.9/32"],
+        )["Summary"]["Id"]
+        monkeypatch.setattr(waf, "list_ip_sets", lambda **kwargs: pytest.fail("no discovery grant"))
+        backend = LiveBackend.__new__(LiveBackend)
+        backend.cfg, backend.ec2, backend.waf = cfg, ec2, waf
+        result = backend.restore("ssh", tmp_path)
+        assert result["quarantine_restored"] is True and result["waf_unblocked"] is True
+        assert {g["GroupId"] for g in backend._target()["SecurityGroups"]} == {groups[0]}
+        assert backend._ipset()["Addresses"] == ["9.9.9.9/32"]
+
+
+@pytest.mark.parametrize("path", ["../escape", "/escape", "C:/escape", "a\\escape"])
+def test_controller_rejects_untrusted_remote_artifact_paths(
+    local_controller, controller_config, tmp_path, monkeypatch, path
+):
+    from demo_controller_aws import LiveBackend
+
+    cfg, _ = controller_config
+    backend = LiveBackend.__new__(LiveBackend)
+    backend.cfg = cfg
+    monkeypatch.setattr(
+        backend,
+        "_remote",
+        lambda *args, **kwargs: {"files": [{"path": path, "bytes": 1, "sha256": "a" * 64}]},
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("artifact transfer"))
+    with pytest.raises(ValueError):
+        backend.collect("run", "ssh", tmp_path)
+
+
+def test_controller_timeline_reuses_real_reporter_and_leaves_first_attack_unknown(
+    local_controller, controller_config, tmp_path
+):
+    from demo_controller_aws import LiveBackend
+
+    cfg, _ = controller_config
+    backend = LiveBackend.__new__(LiveBackend)
+    backend.cfg = cfg
+    run_id = "actual-reporter-run"
+    remote = tmp_path / "remote" / "runner" / run_id
+    remote.mkdir(parents=True)
+    reporter = local_controller.runner.Reporter(remote)
+    reporter.emit("ssh", "start", "synthetic local fixture", details={"run_id": run_id})
+    for stage, stamp, state in [
+        ("baseline", "2026-10-30T00:00:00.000Z", "connected"),
+        ("probe", "2026-10-30T00:00:02.000Z", "timeout"),
+    ]:
+        reporter.emit(
+            "ssh",
+            stage,
+            state,
+            stamp=stamp,
+            details={"started_at": stamp, "ended_at": stamp, "state": state},
+        )
+    reporter.emit("ssh", "end", "synthetic only", details={"exit_code": 0})
+    reporter.close()
+    local_controller.save_json(
+        tmp_path / "restore.private.json",
+        {
+            "requested_at": "2026-10-30T00:00:03.000Z",
+            "functions": {"l4": {"started_at": "2026-10-30T00:00:03.000Z"}},
+            "function_completed_at": "2026-10-30T00:00:03.500Z",
+            "configuration_checked_at": "2026-10-30T00:00:03.600Z",
+            "quarantine_restored": True,
+            "waf_unblocked": True,
+        },
+    )
+    local_controller.save_json(
+        tmp_path / "recovery-probes.private.json",
+        {
+            "probes": [
+                {
+                    "started_at": "2026-10-30T00:00:04.000Z",
+                    "ended_at": "2026-10-30T00:00:04.100Z",
+                    "state": "connected",
+                }
+            ]
+        },
+    )
+    backend.timeline({"runner_run_id": run_id}, None, tmp_path, "ssh")
+    result = json.loads((tmp_path / "timeline-summary.private.json").read_text())
+    assert result["durations"]["block_observation"]["seconds"] is None
+    assert result["durations"]["block_hold_observation"]["seconds"] == "2.100"
+    assert result["correlation"]["status"] == "unlinked"

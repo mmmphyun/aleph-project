@@ -1,0 +1,348 @@
+{
+  "kind": "live_retry_selected_evidence",
+  "controller_run_id": "20261030T091048Z-6e195892c0e1",
+  "started_at": "2026-10-30T09:10:48.326030+00:00",
+  "ended_at": "2026-10-30T09:15:40.226087+00:00",
+  "overall_complete": false,
+  "scenarios": {
+    "ssh": {
+      "complete": true,
+      "failures": [],
+      "incident_id": "INC-1793351476-8223",
+      "traffic_verified": true,
+      "slack_sent": true,
+      "remote_originals": 17,
+      "remote_hashes_verified": true,
+      "quarantine_restored": true,
+      "waf_unblocked": true,
+      "l4_function_status": "success",
+      "durations": {
+        "block_observation": {
+          "seconds": null,
+          "reason": "endpoint_not_observed",
+          "start_event_id": null,
+          "end_event_id": "runner:49"
+        },
+        "block_hold_observation": {
+          "seconds": "68.452",
+          "reason": null,
+          "start_event_id": "runner:49",
+          "end_event_id": "probe:recovery-probe-0",
+          "basis": "same_clock_wall_time",
+          "clock_error_bound_seconds": null,
+          "accuracy": "clock_error_unknown",
+          "endpoint_resolution_seconds": [
+            null,
+            "0.001"
+          ]
+        },
+        "recovery_processing_observation": {
+          "seconds": "8.054751",
+          "reason": null,
+          "start_event_id": "control:recovery_started",
+          "end_event_id": "probe:recovery-probe-0",
+          "basis": "cross_device_wall_time",
+          "clock_error_bound_seconds": null,
+          "accuracy": "clock_error_unknown",
+          "endpoint_resolution_seconds": [
+            "0.000001",
+            "0.001"
+          ]
+        }
+      },
+      "grafana_query_refs": [
+        "1A",
+        "1B",
+        "2A",
+        "3A",
+        "4A"
+      ],
+      "grafana_query_status": "Complete",
+      "server_detected_to_api_return_seconds": "2.7694",
+      "packet_phases": [
+        {
+          "phase": "baseline",
+          "state": "connected",
+          "started_at": "2026-10-30T09:10:58.208+00:00",
+          "ended_at": "2026-10-30T09:10:58.218+00:00",
+          "end_quantization_seconds": "0.001",
+          "tcp_stream": "0",
+          "first_frames": [
+            {
+              "frame_number": "1",
+              "epoch": "1793351458.217667000",
+              "direction": "to_target",
+              "syn": "1",
+              "ack": "0",
+              "rst": "0"
+            },
+            {
+              "frame_number": "2",
+              "epoch": "1793351458.217967000",
+              "direction": "from_target",
+              "syn": "1",
+              "ack": "1",
+              "rst": "0"
+            },
+            {
+              "frame_number": "3",
+              "epoch": "1793351458.217997000",
+              "direction": "to_target",
+              "syn": "0",
+              "ack": "1",
+              "rst": "0"
+            }
+          ]
+        },
+        {
+          "phase": "first_timeout_probe",
+          "state": "timeout",
+          "started_at": "2026-10-30T09:11:19.219+00:00",
+          "ended_at": "2026-10-30T09:11:20.020+00:00",
+          "end_quantization_seconds": "0.001",
+          "tcp_stream": "24",
+          "first_frames": [
+            {
+              "frame_number": "213",
+              "epoch": "1793351479.219655000",
+              "direction": "to_target",
+              "syn": "1",
+              "ack": "0",
+              "rst": "0"
+            }
+          ]
+        },
+        {
+          "phase": "recovered_connection",
+          "state": "connected",
+          "started_at": "2026-10-30T09:12:28.462+00:00",
+          "ended_at": "2026-10-30T09:12:28.472+00:00",
+          "end_quantization_seconds": "0.001",
+          "tcp_stream": "63",
+          "first_frames": [
+            {
+              "frame_number": "252",
+              "epoch": "1793351548.471543000",
+              "direction": "to_target",
+              "syn": "1",
+              "ack": "0",
+              "rst": "0"
+            },
+            {
+              "frame_number": "253",
+              "epoch": "1793351548.472294000",
+              "direction": "from_target",
+              "syn": "1",
+              "ack": "1",
+              "rst": "0"
+            },
+            {
+              "frame_number": "254",
+              "epoch": "1793351548.472315000",
+              "direction": "to_target",
+              "syn": "0",
+              "ack": "1",
+              "rst": "0"
+            }
+          ]
+        }
+      ]
+    },
+    "web": {
+      "complete": false,
+      "failures": [
+        "attack_or_block_not_completed",
+        "incident:ValueError",
+        "traffic_not_recovered"
+      ],
+      "incident_id": null,
+      "traffic_verified": false,
+      "slack_sent": false,
+      "remote_originals": 14,
+      "remote_hashes_verified": true,
+      "quarantine_restored": true,
+      "waf_unblocked": true,
+      "l4_function_status": "unchanged",
+      "durations": {
+        "block_observation": {
+          "seconds": null,
+          "reason": "endpoint_not_observed",
+          "start_event_id": null,
+          "end_event_id": null
+        },
+        "block_hold_observation": {
+          "seconds": null,
+          "reason": "endpoint_not_observed",
+          "start_event_id": null,
+          "end_event_id": null
+        },
+        "recovery_processing_observation": {
+          "seconds": null,
+          "reason": "endpoint_not_observed",
+          "start_event_id": "control:recovery_started",
+          "end_event_id": null
+        }
+      },
+      "grafana_query_refs": [
+        "1A",
+        "1B",
+        "2A",
+        "3A",
+        "4A"
+      ],
+      "grafana_query_status": "Complete"
+    }
+  },
+  "web_packet_observations": [
+    {
+      "capture_alias": "packet-review-capture-0",
+      "frames": 7,
+      "outbound_syn": 7,
+      "inbound_frames": 0,
+      "head_requests_on_wire": 0,
+      "http_responses": 0,
+      "csv_sha256": "c8d2d2532171cd55df296f92bce8a8e5a18618c3fa1f8140c1485babe349cdf1"
+    },
+    {
+      "capture_alias": "packet-review-capture-1",
+      "frames": 7,
+      "outbound_syn": 7,
+      "inbound_frames": 0,
+      "head_requests_on_wire": 0,
+      "http_responses": 0,
+      "csv_sha256": "9b1030189d8af006c0cd3b13e39d339beb9e426e914325541f2887dbb3592ae1"
+    }
+  ],
+  "diagnosis": {
+    "attacker_egress_allows_all": true,
+    "alb_named_sg_has_current_attacker_tcp80_cidr": false,
+    "alb_named_sg_contains_previous_test_origin_only": true,
+    "alb_sg_attachment_independently_verified": false,
+    "basis": "Read-only SG query in approved target VPC; actual ALB attachment must be confirmed by owner"
+  },
+  "e2e_sla_verified": false,
+  "clock_error_bound_seconds": null,
+  "source_ip_and_resource_ids": "masked",
+  "sources": [
+    {
+      "private_alias": "ssh/scenario-result.private.json",
+      "bytes": 1475,
+      "sha256": "4c7656eb626dcdf43073870392e8d06d7f0889b82fa458f4e55d973640fcc5f0"
+    },
+    {
+      "private_alias": "ssh/server-evidence.private.json",
+      "bytes": 20520,
+      "sha256": "62542561fbb5ca8314fca12f2743d7d7cc87904eb20140213ae6b4be369fc5e4"
+    },
+    {
+      "private_alias": "ssh/restore.private.json",
+      "bytes": 1097,
+      "sha256": "295634c046e8a349112eb66c5bfb77cf1158c625ce8bd57918c83aa745ea0f34"
+    },
+    {
+      "private_alias": "ssh/recovery-probes.private.json",
+      "bytes": 194,
+      "sha256": "59949dc163e1c8538125202096e939d38c86e1dcf3b9e9e98d84e53118536876"
+    },
+    {
+      "private_alias": "ssh/remote-manifest.private.json",
+      "bytes": 2998,
+      "sha256": "b2b515c83b99d788afe988f4fbccdad4152384cb00ac222383195ac7490bd331"
+    },
+    {
+      "private_alias": "ssh/timeline-summary.private.json",
+      "bytes": 66058,
+      "sha256": "a90e7dcde4a974be808e2579061757109d9ed2bf8b9ef7c264a203cad7ba8e84"
+    },
+    {
+      "private_alias": "ssh/grafana-results.private.json",
+      "bytes": 17021,
+      "sha256": "0a0400fb374af78dee6fa78cdbb4e37c9ff0e5d59517a0fd4e7918d746c96280"
+    },
+    {
+      "private_alias": "ssh/remote/capture-0.pcap",
+      "bytes": 29594,
+      "sha256": "6bdd2d29c3bd49f4199d84910a432165584b4cc06a3b20baf4ccbb32cd6a9517"
+    },
+    {
+      "private_alias": "ssh/remote/runner/20261030T091058Z-399aabdfec8b/ssh/20261030T091058Z-bf273442/capture.pcap",
+      "bytes": 28974,
+      "sha256": "dd82a1ca2d3ce6db9041d4a8ce079f39925891ebabdc3e448fc271a6a33e9cba"
+    },
+    {
+      "private_alias": "web/scenario-result.private.json",
+      "bytes": 1431,
+      "sha256": "f697b6a71d9a8e5c65ffde91b53d3f9e70d115f25146f4f3718b429e8a4b8aaa"
+    },
+    {
+      "private_alias": "web/server-evidence.private.json",
+      "bytes": 128,
+      "sha256": "13dee12ac62d30c9e1cd824acd2226b094d1ced6946408cda338ebf1aab87e3f"
+    },
+    {
+      "private_alias": "web/restore.private.json",
+      "bytes": 1081,
+      "sha256": "03bbb18b7f1db688c81f98eb0295a7762c177eb30a31eed11ef5e30af741c247"
+    },
+    {
+      "private_alias": "web/recovery-probes.private.json",
+      "bytes": 717,
+      "sha256": "7887ec655e1a14d9b61f5a8c04e4254e04b08371ef43a4d3b3ec5a506d3da40f"
+    },
+    {
+      "private_alias": "web/remote-manifest.private.json",
+      "bytes": 2158,
+      "sha256": "3a68d27e40379fa5943b903f980ae9ec4e9915563efaba4f610dcaee91f8b03d"
+    },
+    {
+      "private_alias": "web/timeline-summary.private.json",
+      "bytes": 9367,
+      "sha256": "5eb535cf5e9d08d3d89ab26f449f9a31b447b4e919f5eb4c1149e76badc47a70"
+    },
+    {
+      "private_alias": "web/grafana-results.private.json",
+      "bytes": 7958,
+      "sha256": "f3ed545ccaaeb2c69428b19768e0bd2899a255084c0daac3170c7cf1edc34b04"
+    },
+    {
+      "private_alias": "web/remote/capture-0.pcap",
+      "bytes": 654,
+      "sha256": "b5a9131de959c9340fe904d08d778ae28514077d0cdd0b6230f6341fe845035b"
+    },
+    {
+      "private_alias": "web/remote/capture-1.pcap",
+      "bytes": 654,
+      "sha256": "40c7d3f69444829becf2a15805f38fdcbfaca869a590c67f5b49ef6f4ba1ed19"
+    },
+    {
+      "private_alias": "ssh/slack-recovery.private.json",
+      "bytes": 1647,
+      "sha256": "c82794e9c4f3862c122bb8d81e5ce7a85c1c2d144a5ad753234d2216e6f2c665"
+    },
+    {
+      "private_alias": "ssh/incident-report.private.json",
+      "bytes": 808,
+      "sha256": "4e41d1ee678f70422416d489ef2069a0b074484cef1cea41ebea0b0f78ef23d8"
+    },
+    {
+      "private_alias": "ssh/packet-review-outer.private.csv",
+      "bytes": 18584,
+      "sha256": "c51d922817c8858e7075497a2ede0b2b1bd576c349a7d40fa905d1eeae6c2581"
+    },
+    {
+      "private_alias": "ssh/packet-phase-quantized.private.json",
+      "bytes": 2440,
+      "sha256": "a86d18504d547f55dc26d0feed7ae1ad47cd544951938aa438a105f21af4f8f5"
+    },
+    {
+      "private_alias": "alb-sg-diagnostic.private.json",
+      "bytes": 1751,
+      "sha256": "d2c445fc0100fd811e1dcadc15612251ff64c49e120751e9572cd88cb9604b80"
+    },
+    {
+      "private_alias": "attacker-sg-diagnostic.private.json",
+      "bytes": 1619,
+      "sha256": "7c4952944d4870b9efb2673b7937df352173b796b1750c6ba4aa1634048a5865"
+    }
+  ]
+}

@@ -1,0 +1,162 @@
+{
+  "kind": "slack_grafana_source_comparison",
+  "reviewed_at": "2026-10-30T09:45:28.563840+00:00",
+  "slack_channel_alias": "notification-channel",
+  "slack_acquisition": "Read-only Slack connector search and channel history, no new posts",
+  "slack_source_format": "Slack connector read_channel rendered card text plus original Slack ts; original Block Kit JSON not returned",
+  "slack_ts_are_post_times_not_client_receipt_times": true,
+  "checks": [
+    {
+      "scenario": "ssh",
+      "incident_id": "INC-1793351476-8223",
+      "stages_in_post_order": [
+        1,
+        2,
+        3
+      ],
+      "cards": [
+        {
+          "stage": 1,
+          "original_ts": "1793351479.883209",
+          "posted_at_kst": "2026-10-30 18:11:19.883209+09:00",
+          "content_sha256": "eb2e9774b2d29235d5be46dd4556c4d90bc2707301cff2bf543bab2777744b9c"
+        },
+        {
+          "stage": 2,
+          "original_ts": "1793351483.444219",
+          "posted_at_kst": "2026-10-30 18:11:23.444219+09:00",
+          "content_sha256": "91a174b6386dc13d76d3b75c5b8d0532b1e44e4d016bd1f4f16203950212b03d"
+        },
+        {
+          "stage": 3,
+          "original_ts": "1793351548.837439",
+          "posted_at_kst": "2026-10-30 18:12:28.837439+09:00",
+          "content_sha256": "edd973768e144bd2405c5c50cda78ac1c09c0ca9209da7c7238bc6f6e2425bdf"
+        }
+      ],
+      "same_incident_id_all_cards": true,
+      "third_card_reports_independent_traffic_recovery": true,
+      "llm_status_from_grafana_and_server_log": "call_failed",
+      "second_card_is_fallback": true,
+      "second_card_is_enhanced": false,
+      "third_card_present_in_current_grafana_timeline": false,
+      "grafana": {
+        "from_ms": 1793351340000,
+        "to_ms": 1793351640000,
+        "visible_duration_seconds": "2.7694",
+        "candidate_count": 5,
+        "candidate_series": "ssh_failures",
+        "llm_status": "call_failed",
+        "same_query_range_and_values_verified": true,
+        "screenshot_private": true,
+        "third_recovery_row_observed": false
+      },
+      "same_source_ip_all_cards_verified": true,
+      "target_id_tier1_and_tier2_verified": true
+    },
+    {
+      "scenario": "web",
+      "incident_id": "INC-1793352077-8223",
+      "stages_in_post_order": [
+        1,
+        2,
+        3
+      ],
+      "cards": [
+        {
+          "stage": 1,
+          "original_ts": "1793352078.509219",
+          "posted_at_kst": "2026-10-30 18:21:18.509219+09:00",
+          "content_sha256": "4eb0568b13fc6bf3b3011326b44080e957fee8988eb283e34f23164211a728fa"
+        },
+        {
+          "stage": 2,
+          "original_ts": "1793352082.444779",
+          "posted_at_kst": "2026-10-30 18:21:22.444779+09:00",
+          "content_sha256": "33a586ecadb4ee30d01c15905b60618af09a89b0691720007cf78dec93692c1f"
+        },
+        {
+          "stage": 3,
+          "original_ts": "1793352108.475439",
+          "posted_at_kst": "2026-10-30 18:21:48.475439+09:00",
+          "content_sha256": "bb8fa9dd83e9c70d6eff0a6b6185a01ba39777a0d4aa714535344eb4f782813e"
+        }
+      ],
+      "same_incident_id_all_cards": true,
+      "third_card_reports_independent_traffic_recovery": true,
+      "llm_status_from_grafana_and_server_log": "parse_failed",
+      "second_card_is_fallback": true,
+      "second_card_is_enhanced": false,
+      "third_card_present_in_current_grafana_timeline": false,
+      "grafana": {
+        "from_ms": 1793352000000,
+        "to_ms": 1793352180000,
+        "visible_duration_seconds": "0.4463",
+        "candidate_count": 14,
+        "candidate_series": "http_4xx",
+        "llm_status": "parse_failed",
+        "same_query_range_and_values_verified": true,
+        "screenshot_private": true,
+        "third_recovery_row_observed": false
+      },
+      "same_source_ip_all_cards_verified": true,
+      "target_id_tier1_and_tier2_verified": true
+    }
+  ],
+  "initial_web_query_complete_but_empty_preserved": true,
+  "web_followup_same_window_now_matches_ui": true,
+  "block_kit_native_json_returned": false,
+  "sources": [
+    {
+      "private_alias": "slack-connector-originals.private.json",
+      "bytes": 13301,
+      "sha256": "522edb11c23cff8dee4c53b0e5346315de74bf8941a5a483221f436eff7e9809"
+    },
+    {
+      "private_alias": "ssh-slack-card-text.private.txt",
+      "bytes": 3090,
+      "sha256": "2a337951db8024bc15d82ba24916ccabb6d6d704ad67c8a932a429cd0dfaa6e1"
+    },
+    {
+      "private_alias": "web-slack-card-text.private.txt",
+      "bytes": 3160,
+      "sha256": "15d538e9f2110f957152bb3b8c50a3f3dc9b969781b5883e7bce102aecb91b52"
+    },
+    {
+      "private_alias": "slack-grafana-correlation.private.json",
+      "bytes": 3403,
+      "sha256": "141533c5f71fb5a4615e4c275371f476a2a184f0ffaf776a1034335c0867de41"
+    },
+    {
+      "private_alias": "grafana-screen-comparison.private.json",
+      "bytes": 1448,
+      "sha256": "59b181c478e4924d10c5621c7b60289dd00a7fbaf577da7787347087d56aa942"
+    },
+    {
+      "private_alias": "ssh-grafana.private.png",
+      "bytes": 70174,
+      "sha256": "65cede040692e9064e8130ff8fba3aa3ca75aa511801f58831a978614dd198a7"
+    },
+    {
+      "private_alias": "ssh-grafana-ax.private.txt",
+      "bytes": 14361,
+      "sha256": "c4dd2f15b918af5e1cb3da169b818f9e74c4d46d03878dbe135698e3384161e3"
+    },
+    {
+      "private_alias": "web-grafana.private.png",
+      "bytes": 68144,
+      "sha256": "776bcb4d85cc705fc6099c3534426702081f57c89dbb309ad8dd4ef62e60376c"
+    },
+    {
+      "private_alias": "web-grafana-ax.private.txt",
+      "bytes": 14354,
+      "sha256": "3a33a891ee0db426811d2544fc84cdb947146eac65d4e980bbe46b2e8d64c12e"
+    },
+    {
+      "private_alias": "web-grafana-refreshed-same-window.private.json",
+      "bytes": 17656,
+      "sha256": "cf9288d11a1cf54242117903591de8339774f38516c2fd0f0e8e45d5d17ce32c"
+    }
+  ],
+  "selection": "Private account/IP/instance/Slack channel IDs and message links omitted. Card original ts, selected field verification and source hashes retained; screenshots kept outside Git."
+}
