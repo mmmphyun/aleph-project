@@ -5,7 +5,7 @@
 - 브랜치: `docs/network-p5-4-roundtrip-packet-grafana-correlation`
 - 기준 main: `822fdc1c8ea0be75d921a989302dc5e6b240e9f9`
 - 문서 기준일: 2026-10-30 KST. 실제 측정일은 아직 없음.
-- **상태: 공격 노드 읽기 전용 준비 점검 완료·실측 준비 대기. 현재 SSH·Web 공격·차단·복구 실측은 미실행이며 DoD 미충족.**
+- **상태: 실행 환경·인증 Grafana 준비 완료·A/B 실측 협조 대기. 현재 SSH·Web 공격·차단·복구 실측은 미실행이며 DoD 미충족.**
 
 ## 1. 범위와 착수 근거
 
@@ -58,11 +58,11 @@
 | 리전·배포 | 사용자가 ap-southeast-2 지정, 저장소는 #241 머지 기준 | 실제 함수 버전·코드 해시·배포 상태·기준 코드 대응 |
 | SSH 경로 | 지정된 키 파일은 없음. 사용자가 기존 PEM의 해당 인스턴스 사용을 확인했고, 인코딩 사본으로 ubuntu 접속 성공 | 최초 관측 host key의 독립 지문 확인 범위는 미확인. 이후 접속은 같은 지문을 강제 |
 | 공격 도구·권한 | Hydra·tcpdump·TShark·curl 존재, `sudo -n true` 성공 | 기존 러너의 실제 도구 호환성·캡처 준비·baseline 가드는 실행 전 별도 확인 |
-| Python 런타임 | 공격 노드는 Python 3.10.12. python3.12/3.13/3.14·uv는 PATH에서 미발견 | 문서상 최소 Python 3.12 준비. 기존 코드를 낮은 버전에 맞춰 수정하지 않음 |
+| Python 런타임 | 최초 3.10.12 제약을 확인한 후 사용자 전용 경로에 Python 3.12.16 준비·체크섬/실행 확인. 시스템 Python 보존 | 실제 실행 시 준비한 런타임의 절대 경로/PATH 사용 |
 | AWS 조회 | Windows·Kali·공격 노드에서 안내 프로필/세션을 찾지 못함. 공격 노드 IAM info는 IMDSv2 HTTP 404, AWS CLI·boto3 없음 | 실제 조회 프로필 호스트/경로 또는 A/B 담당자의 원본 제공 경로 |
 | A 복구 | 사용자가 준비 완료 선택 응답 | 담당자·시간대·실제 사건 ID 유지·L4/L7 복구·3차 알림 절차와 기록 |
 | B 수집 | 기존 로그 그룹·대시보드 JSON 확인 | 현재 CW Agent·구독·계정 상태, WAF 원문 및 동일 사건 Slack 조회 경로 |
-| Grafana | 사용자가 Docker 기동을 전달. 현재 localhost:3000/api/health는 응답하지 않음 | 현재 인증된 접속 경로·데이터소스. Docker 기동 전달만으로 Grafana 준비 완료를 선언하지 않음 |
+| Grafana | 후속 준비로 127.0.0.1:3000에 인증 활성화. 익명 대시보드 401·인증 API 200·기존 4개 패널 확인 | AWS 읽기 전용 인증 연결·실제 데이터 조회·화면 대조 |
 | Web 대상 | 사용자가 기존 허용 ALB와 HTTP 80을 지정 | 현재 DNS·WAF 연결·정상 HEAD·허용 origin 검증. 아직 요청하지 않음 |
 | SSH 키 인증 | 카드 DoD에 포함됨 | 공격용 오답 계정과 별도로 인증 확인용 계정·키·허용 명령·host key 확인 |
 | 승인 파일·증거 경로 | 기존 16KiB·최대 24시간 유효기간·소유권 가드 유지 | 현재 대상/출발지·승인자·유효시간·0700 원격 증거 루트 |
@@ -71,7 +71,23 @@
 
 최초 SSH 점검은 OpenSSH의 `invalid format`·`Permission denied (publickey)`와 종료 코드 255로 실패했다. 원인은 기존 PEM의 UTF-16 인코딩이었다. 원본 바이트를 보존하고 Git 밖 새 파일에서 UTF-16→ASCII/LF 변환 후 암호화 라이브러리로 파싱 가능함을 확인했다. 같은 키의 사본으로 접속은 성공했다. 키 원문·사본·키 해시는 공개 자료에서 제외한다. 호스트 키는 최초 관측값을 별도 비공개 known_hosts에 기록했고 후속 접속은 StrictHostKeyChecking=yes를 사용했다.
 
-읽기 전용 명령으로 도구 존재·버전, 로컬 라우팅 조회, 비대화형 sudo, IMDSv2 자기 인스턴스 식별/VPC/IAM 정보 상태만 확인했다. IAM 자격증명 엔드포인트는 조회하지 않았다. 타깃 SSH/HTTP 요청·Hydra·캡처·설치·복구·AWS 관리 API는 실행하지 않았다. Python 3.10은 기존 모듈의 `from datetime import UTC`도 지원하지 않아 러너 실행 전 런타임 준비가 필요하다. 이는 관측된 환경 제약이며 별도 코드 수정 사유로 범위를 넓히지 않는다.
+읽기 전용 명령으로 도구 존재·버전, 로컬 라우팅 조회, 비대화형 sudo, IMDSv2 자기 인스턴스 식별/VPC/IAM 정보 상태만 확인했다. IAM 자격증명 엔드포인트는 조회하지 않았다. 최초 점검에서는 타깃 SSH/HTTP 요청·Hydra 공격·캡처·설치·복구·AWS 관리 API를 실행하지 않았다. Python 3.10은 기존 모듈의 `from datetime import UTC`도 지원하지 않아 후속 준비에서 별도 Python 3.12를 설치했다. 이는 관측된 환경 제약이며 별도 코드 수정 사유로 범위를 넓히지 않는다.
+
+## 4.1 사용자 후속 요청에 따른 실행 환경 준비
+
+사용자가 “준비할 수 있는 것은 준비”하도록 요청한 뒤 다음 작업을 수행했다. 실제 공격·타깃 탐침·패킷 캡처·AWS 관리 API·복구는 실행하지 않았다.
+
+- [공식 Python 배포본](https://github.com/astral-sh/python-build-standalone/releases/tag/20261026)의 CPython 3.12.16 Linux x86_64 아카이브 34,505,639바이트를 새 사용자 경로에 설치했다. GitHub 공개 digest와 SHA-256 `ce4f6d0a6cfdb3bed6e44c2f9affd85943c76a42e25ad3a259002f31d6fb8a20` 일치를 확인했다. 다운로드 40MiB/120초·해제 512MiB/20,000항목 상한과 경로 이탈 방어를 적용했고 시스템 Python은 변경하지 않았다.
+- 기준 커밋 822fdc1의 네트워크 자산 8개를 Git blob 바이트 그대로 배치했다. 로컬 패키지와 원격의 SHA-256 `22d2ed0c0257469cc47b8711b8b10520886f8016426059dc2555f5c86a304750` 및 개별 파일 해시를 대조했다. 기존 코드·상수·승인 가드는 수정하지 않았다.
+- 셸 3개 문법 검사, 기존 check_hydra의 SSH 모듈/-K 확인, 통합 러너 all dry-run 및 roundtrip_timeline.py --help가 모두 종료 코드 0이었다. 실행 증거 디렉터리는 비어 있으며 승인 파일을 만들어 넣지 않았다.
+- 실제 캡처 시 sudo가 필요하므로 별도 root 소유 0700 증거/승인 디렉터리를 준비했다. root 실행 환경에서 기존 private_root·validate_evidence_root 검사를 통과했고 ens5 인터페이스를 목록으로 확인했다. 캡처를 시작한 결과는 아니다.
+- NTP=yes·NTPSynchronized=yes를 확인했다. 장비 간 최대 시계 오차는 미측정이므로 null을 유지한다. 원격 여유 공간 약 5.44GB와 3GiB 캡처 여유 기준을 확인했다.
+- 기존 지정 이미지 Grafana 11.2.0을 127.0.0.1:3000에 기동했다. A 프로비저닝·B 대시보드를 읽기 전용 마운트하고 익명 접근을 껐다. 임의 생성 관리자 비밀번호는 Git 밖 사용자 전용 파일에만 보존했다. AWS 자격증명은 마운트하지 않았고 EC2 metadata credential discovery도 비활성화했다.
+- Grafana health/database=ok, 익명 대시보드 401, 인증 후 기존 cloudshield-p5-2 대시보드·cloudshield-cloudwatch 데이터소스 API 200을 확인했다. 기존 패널 4개/쿼리 5개가 로드됐다. AWS 연결·실제 쿼리·브라우저 화면 렌더링은 미검증이다.
+
+[후속 공개 준비 증거](evidence/p5-4/preparation-2026-10-30/environment-preparation.public.json)에 원본 파일별 해시·선별/마스킹·준비 결과를 기록했다. 원격 원본 7개를 새 비공개 로컬 폴더로 회수해 전송 전후 바이트 수·SHA-256 일치를 확인했고, 별도 보존 manifest와 Grafana 검증 원본도 보존했다. 공개 JSON의 UTF-8/LF Git blob SHA-256은 `5310f572e8adb8fddc39f3104f56e2d3a36cfbd9f3d616ce276185b1fe5282db`다.
+
+팀원에게 필요한 사항은 [전달 요청문](p5-4-team-handoff.md)으로 정리했다. A의 현재 배포·허용/복구·동시 대기·실제 사건 3차 알림, B의 수집·AWS/Grafana 조회·SSH 키 인증 회복 경로·동일 사건 원본이 필요하다. 팀원에게 메시지를 발송하지 않았다. 준비한 Grafana/런타임을 현재 왕복 성공·10초 SLA로 집계하지 않는다.
 
 ## 5. 유한 실행 계획
 
@@ -170,6 +186,10 @@ Slack은 동일 사건의 원문·ts·실제 게시 순서를 확인한다. 2차
 - 잠금 파일 SHA-256: `c2fbbe69b15e457557dbcfe6a0354d7cdf34f87dac822e4d16d658ba0b51a7ca`.
 - 이후 준비 관측·게이트 결과·공개 선별 JSON만 문서에 반영했다. 최종 파일의 JSON 파싱·출처/해시·상대 링크·마스킹·R&R·diff를 별도 확인한다. 제품 코드·테스트·의존성은 그대로다.
 
+후속 환경 준비·전달문·공개 증거 4개를 같은 기준 커밋의 기존 검증 worktree에 적용하고 필수 명령을 재실행했다. 결과는 R&R·표준 경로·Ruff lint·format 173개 통과, **1555 passed, 4 skipped, 1 warning, 184.62초**, 종료 코드 0이다. 전체 출력은 Git 밖 `cloudshield-p5-4-prepared-check.log`에 보존했다. 기존 제품 코드·테스트·공통 의존성을 수정하지 않았다. 이후 이 검증 결과만 문서에 추가했다.
+
+기존 PR 커밋 d5900df의 [CI run 41015277970](https://github.com/mmmphyun/aleph-project/actions/runs/41015277970)은 Terraform mock 초기화를 포함해 **1559 passed, 1 warning**, 성공했다. 후속 준비 커밋의 최신 CI는 PR checks와 최종 안내에 별도로 기록한다.
+
 신규 런타임·DB·시간창을 구현하지 않으므로 제품 코드나 이를 위한 테스트를 추가하지 않는다. 기존 테스트·검증·의존성은 변경하지 않는다. 캐시 ACL·인코딩·도구·임시 경로 장애와 코드 결함은 구분한다.
 
 - [ ] 승인된 현재 대상·배포·수집·인증 환경과 A 복구 절차 확정
@@ -179,6 +199,6 @@ Slack은 동일 사건의 원문·ts·실제 게시 순서를 확인한다. 2차
 - [ ] 각 지연·첫 공격 기준 10초 SLA·시계 오차·복구 구성/통신/멱등성의 확인 범위 고정
 - [ ] 현재 실행 원본/공개 증거 목록·별도 해시·선별/마스킹 이력
 - [x] 동일 기준 커밋의 분리 환경에서 필수 품질 게이트 실행·결과 기록
-- [ ] PR CI 결과 기록
+- [x] 기존 PR 커밋의 CI 결과 기록; 후속 준비 커밋의 최신 상태는 PR checks 참조
 
 미확보 조건을 과거·합성 자료로 채우지 않는다. DoD 미충족 상태로 PR을 제출하면 Draft로 명시하고 리뷰어 `gkacksdnjs22-stack`을 지정한다. Notion 상태는 GitHub Actions가 전담하며 별도 요청 전 머지하지 않는다.
