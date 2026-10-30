@@ -1,0 +1,44 @@
+{
+  "incident_id": "INC-1793322987-0090",
+  "method": "Fixed log input via local helper; real infrastructure and LLM integration; not live attack traffic",
+  "region": "ap-southeast-2",
+  "query_window_utc": [
+    "2026-10-30T01:16:20Z",
+    "2026-10-30T01:16:45Z"
+  ],
+  "query_results_source": "Direct AWS Logs Insights execution of exported Grafana expressions",
+  "slack_evidence_source": "User supplied card bodies and original Slack ts; not independently fetched",
+  "slack_ts": [
+    "1793322990.698209",
+    "1793322995.271159",
+    "1793322995.964779"
+  ],
+  "slack_intervals_seconds": {
+    "1_to_2": "4.572950",
+    "2_to_3": "0.693620",
+    "1_to_3": "5.266570"
+  },
+  "detected_to_third_post_seconds": "8.2547396",
+  "remediation_seconds": "2.7042",
+  "llm_latest_status": "enhanced",
+  "observed_llm_incidents": 1,
+  "timeline_rows": 8,
+  "source_ssh_rows_scanned": 0.0,
+  "source_web_rows_scanned": 3.0,
+  "grafana_ui_verified": true,
+  "grafana_start_blocker": null,
+  "full_attack_sla_verified": false,
+  "grafana_authentication": "Anonymous disabled; unauthenticated dashboard API HTTP 401; temporary admin login",
+  "grafana_profile": "cloudshield-cloud-b; host AWS configuration mounted read-only",
+  "grafana_display_range_kst": [
+    "2026-10-30T10:16:00+09:00",
+    "2026-10-30T10:17:00+09:00"
+  ],
+  "grafana_query_refs_verified": [
+    "1A",
+    "1B",
+    "2A",
+    "3A",
+    "4A"
+  ]
+}

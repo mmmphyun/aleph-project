@@ -1,0 +1,401 @@
+{
+  "results": {
+    "1A": {
+      "status": 200,
+      "frames": [
+        {
+          "schema": {
+            "name": "CloudWatchLogsResponse",
+            "refId": "1A",
+            "meta": {
+              "typeVersion": [
+                0,
+                0
+              ],
+              "custom": {
+                "Status": "Complete"
+              },
+              "stats": [
+                {
+                  "displayName": "Bytes scanned",
+                  "value": 0
+                },
+                {
+                  "displayName": "Records scanned",
+                  "value": 0
+                },
+                {
+                  "displayName": "Records matched",
+                  "value": 0
+                }
+              ]
+            },
+            "fields": []
+          },
+          "data": {
+            "values": []
+          }
+        }
+      ]
+    },
+    "1B": {
+      "status": 200,
+      "frames": [
+        {
+          "schema": {
+            "name": "CloudWatchLogsResponse",
+            "refId": "1B",
+            "meta": {
+              "typeVersion": [
+                0,
+                0
+              ],
+              "custom": {
+                "Status": "Complete"
+              },
+              "stats": [
+                {
+                  "displayName": "Bytes scanned",
+                  "value": 969
+                },
+                {
+                  "displayName": "Records scanned",
+                  "value": 7
+                },
+                {
+                  "displayName": "Records matched",
+                  "value": 0
+                }
+              ]
+            },
+            "fields": []
+          },
+          "data": {
+            "values": []
+          }
+        }
+      ]
+    },
+    "2A": {
+      "status": 200,
+      "frames": [
+        {
+          "schema": {
+            "name": "CloudWatchLogsResponse",
+            "refId": "2A",
+            "meta": {
+              "typeVersion": [
+                0,
+                0
+              ],
+              "custom": {
+                "Status": "Complete"
+              },
+              "stats": [
+                {
+                  "displayName": "Bytes scanned",
+                  "value": 4768
+                },
+                {
+                  "displayName": "Records scanned",
+                  "value": 22
+                },
+                {
+                  "displayName": "Records matched",
+                  "value": 1
+                }
+              ]
+            },
+            "fields": [
+              {
+                "name": "bin(1m)",
+                "type": "time",
+                "typeInfo": {
+                  "frame": "time.Time",
+                  "nullable": true
+                }
+              },
+              {
+                "name": "max_response_seconds",
+                "type": "number",
+                "typeInfo": {
+                  "frame": "float64",
+                  "nullable": true
+                }
+              },
+              {
+                "name": "p95_response_seconds",
+                "type": "number",
+                "typeInfo": {
+                  "frame": "float64",
+                  "nullable": true
+                }
+              }
+            ]
+          },
+          "data": {
+            "values": [
+              [
+                1793322960000
+              ],
+              [
+                2.7042
+              ],
+              [
+                2.7042
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "3A": {
+      "status": 200,
+      "frames": [
+        {
+          "schema": {
+            "name": "CloudWatchLogsResponse",
+            "refId": "3A",
+            "meta": {
+              "typeVersion": [
+                0,
+                0
+              ],
+              "custom": {
+                "Status": "Complete"
+              },
+              "stats": [
+                {
+                  "displayName": "Bytes scanned",
+                  "value": 1769
+                },
+                {
+                  "displayName": "Records scanned",
+                  "value": 9
+                },
+                {
+                  "displayName": "Records matched",
+                  "value": 1
+                }
+              ]
+            },
+            "fields": [
+              {
+                "name": "outcome",
+                "type": "string",
+                "typeInfo": {
+                  "frame": "string",
+                  "nullable": true
+                }
+              },
+              {
+                "name": "incidents",
+                "type": "number",
+                "typeInfo": {
+                  "frame": "float64",
+                  "nullable": true
+                }
+              }
+            ]
+          },
+          "data": {
+            "values": [
+              [
+                "enhanced"
+              ],
+              [
+                1
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "4A": {
+      "status": 200,
+      "frames": [
+        {
+          "schema": {
+            "name": "CloudWatchLogsResponse",
+            "refId": "4A",
+            "meta": {
+              "typeVersion": [
+                0,
+                0
+              ],
+              "custom": {
+                "Status": "Complete"
+              },
+              "stats": [
+                {
+                  "displayName": "Bytes scanned",
+                  "value": 4768
+                },
+                {
+                  "displayName": "Records scanned",
+                  "value": 22
+                },
+                {
+                  "displayName": "Records matched",
+                  "value": 8
+                }
+              ]
+            },
+            "fields": [
+              {
+                "name": "@timestamp",
+                "type": "time",
+                "typeInfo": {
+                  "frame": "time.Time",
+                  "nullable": true
+                },
+                "config": {
+                  "displayName": "Time"
+                }
+              },
+              {
+                "name": "__log__grafana_internal__",
+                "type": "string",
+                "typeInfo": {
+                  "frame": "string",
+                  "nullable": true
+                },
+                "config": {
+                  "custom": {
+                    "hidden": true
+                  }
+                }
+              },
+              {
+                "name": "__logstream__grafana_internal__",
+                "type": "string",
+                "typeInfo": {
+                  "frame": "string",
+                  "nullable": true
+                },
+                "config": {
+                  "custom": {
+                    "hidden": true
+                  }
+                }
+              },
+              {
+                "name": "@log",
+                "type": "string",
+                "typeInfo": {
+                  "frame": "string",
+                  "nullable": true
+                }
+              },
+              {
+                "name": "@logStream",
+                "type": "string",
+                "typeInfo": {
+                  "frame": "string",
+                  "nullable": true
+                }
+              },
+              {
+                "name": "@message",
+                "type": "string",
+                "typeInfo": {
+                  "frame": "string",
+                  "nullable": true
+                }
+              },
+              {
+                "name": "incident_id",
+                "type": "string",
+                "typeInfo": {
+                  "frame": "string",
+                  "nullable": true
+                }
+              }
+            ]
+          },
+          "data": {
+            "values": [
+              [
+                1793322990414,
+                1793322990430,
+                1793322990815,
+                1793322991359,
+                1793322994516,
+                1793322994828,
+                1793322994981,
+                1793322995394
+              ],
+              [
+                "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator",
+                "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator",
+                "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator",
+                "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator",
+                "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer",
+                "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer",
+                "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer",
+                "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer"
+              ],
+              [
+                "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895",
+                "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895",
+                "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895",
+                "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895",
+                "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7",
+                "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7",
+                "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7",
+                "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7"
+              ],
+              [
+                "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator",
+                "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator",
+                "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator",
+                "ACCOUNT_REDACTED:/aws/lambda/CloudShield-Threat-Orchestrator",
+                "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer",
+                "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer",
+                "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer",
+                "ACCOUNT_REDACTED:/aws/lambda/cloudshield-llm-analyzer"
+              ],
+              [
+                "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895",
+                "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895",
+                "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895",
+                "2026/10/30/[$LATEST]d805085209304d7c9735fe9d1a5f5895",
+                "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7",
+                "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7",
+                "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7",
+                "2026/10/30/[$LATEST]85290732c7054482afcfd8c79c2756a7"
+              ],
+              [
+                "[INFO]\t2026-10-30T01:16:30.414Z\t1da6c1bd-1a88-40a7-bae0-bb0349927372\t{\"event_type\": \"ThreatRemediatedMetric\", \"incident_id\": \"INC-1793322987-0090\", \"rule_name\": \"SSH_BRUTE_FORCE\", \"source_ip\": \"198.51.100.90\", \"action_required\": \"BLOCK_AND_QUARANTINE\", \"remediation_success\": true, \"duration_seconds\": 2.7042, \"pipeline_timestamps\": {\"detected_epoch\": 1793322987.7100394, \"remediated_epoch\": 1793322990.4142377, \"duration_seconds\": 2.7042}}\n",
+                "[INFO]\t2026-10-30T01:16:30.430Z\t1da6c1bd-1a88-40a7-bae0-bb0349927372\t위협 대응 완료 및 격리 마킹 성공: SSH_BRUTE_FORCE -> 198.51.100.90 (결과: {'waf_blocked': True, 'quarantine_applied': True, 'iam_revoked': False})\n",
+                "[INFO]\t2026-10-30T01:16:30.815Z\t1da6c1bd-1a88-40a7-bae0-bb0349927372\tSlack 알림 전송 성공: INC-1793322987-0090 (시도: 1)\n",
+                "[INFO]\t2026-10-30T01:16:31.359Z\t1da6c1bd-1a88-40a7-bae0-bb0349927372\tEventBridge ThreatRemediated 발행 성공: incident_id=INC-1793322987-0090, source_ip=198.51.100.90, count=5\n",
+                "[INFO]\t2026-10-30T01:16:34.516Z\tbd06b56e-7d88-44dc-aebc-451ac06f760b\t{\"event\":\"cloudshield.llm_analysis\",\"status\":\"enhanced\",\"reason\":\"validated_response\",\"incident_id\":\"INC-1793322987-0090\"}\n",
+                "[INFO]\t2026-10-30T01:16:34.828Z\tbd06b56e-7d88-44dc-aebc-451ac06f760b\tS3 보고서 업로드 시작: bucket=cloudshield-secops-reports-dev, key=reports/INC-1793322987-0090.html\n",
+                "[INFO]\t2026-10-30T01:16:34.981Z\tbd06b56e-7d88-44dc-aebc-451ac06f760b\tS3 보고서 Presigned URL 발급 완료: bucket=cloudshield-secops-reports-dev, key=reports/INC-1793322987-0090.html\n",
+                "[INFO]\t2026-10-30T01:16:35.394Z\tbd06b56e-7d88-44dc-aebc-451ac06f760b\t2차 LLM 심층 분석 Slack 알림 전송 성공: INC-1793322987-0090 (시도: 1)\n"
+              ],
+              [
+                "INC-1793322987-0090",
+                null,
+                "INC-1793322987-0090",
+                "INC-1793322987-0090",
+                "INC-1793322987-0090",
+                "INC-1793322987-0090",
+                "INC-1793322987-0090",
+                "INC-1793322987-0090"
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "grafana_version": "11.2.0",
+  "dashboard_uid": "cloudshield-p5-2",
+  "anonymous_dashboard_http_status": 401,
+  "query_range_utc": [
+    "2026-10-30T01:16:00Z",
+    "2026-10-30T01:17:00Z"
+  ]
+}

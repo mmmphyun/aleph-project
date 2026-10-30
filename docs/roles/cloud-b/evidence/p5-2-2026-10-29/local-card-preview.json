@@ -1,0 +1,251 @@
+{
+  "evidence_kind": "local_render_only",
+  "slack_delivery_verified": false,
+  "infrastructure_recovery_verified": false,
+  "cards": [
+    {
+      "stage": 1,
+      "payload": {
+        "text": "[HIGH] CloudShield 보안 경보 - INC-P5-2-LOCAL-PREVIEW: SSH Brute Force",
+        "blocks": [
+          {
+            "type": "header",
+            "text": {
+              "type": "plain_text",
+              "text": "🚨 [CloudShield] 침해사고 긴급 탐지 및 자동 대응 알림",
+              "emoji": true
+            }
+          },
+          {
+            "type": "divider"
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*사고 요약:*\n[합성 로컬 예시] SSH 인증 실패를 관측했다. 실제 공격·차단·복구 또는 Bedrock 호출을 실행하지 않았다.\n분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보..."
+            }
+          },
+          {
+            "type": "section",
+            "fields": [
+              {
+                "type": "mrkdwn",
+                "text": "*사건 ID (incident_id):*\n`INC-P5-2-LOCAL-PREVIEW`"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*공격 유형 (rule_name):*\nSSH Brute Force"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*출발지 IP (source_ip):*\n`198.51.100.10`"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*위험도 (risk_level):*\n*HIGH*"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*타깃 식별자:*\n`i-0123456789abcdef0`"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*대응 조치 (remediation_action):*\n*BLOCK_AND_QUARANTINE*"
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*공격 대상 계정:*\ndemo_user"
+            }
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*인프라 원자적 차단 집행 현황:*\n• L4 EC2 네트워크 격리: ✅ 격리 성공 (SG 전면 차단)\n• L7 WAFv2 IP 차단: ✅ IPSet 차단 완료 (/32)\n• Identity IAM 세션 무효화: ℹ️ 미대상 (SSH 시나리오 제외)"
+            }
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*SecOps 권고 조치:*\n1. 실제 관측 로그와 집행 결과를 대조한다.\n2. 통신 회복은 별도 증거로 확인한다."
+            }
+          },
+          {
+            "type": "divider"
+          },
+          {
+            "type": "context",
+            "elements": [
+              {
+                "type": "mrkdwn",
+                "text": "MITRE ATT&CK: `T1110.001` | CloudShield 10-Second Auto-Remediation Pipeline"
+              }
+            ]
+          }
+        ],
+        "incident_id": "INC-P5-2-LOCAL-PREVIEW",
+        "rule_name": "SSH Brute Force",
+        "source_ip": "198.51.100.10",
+        "remediation_action": "BLOCK_AND_QUARANTINE",
+        "remediation_result": {
+          "waf_blocked": true,
+          "quarantine_applied": true,
+          "iam_revoked": false
+        }
+      }
+    },
+    {
+      "stage": 2,
+      "payload": {
+        "text": "[2차 LLM 심층 분석][HIGH] INC-P5-2-LOCAL-PREVIEW: SSH Brute Force",
+        "blocks": [
+          {
+            "type": "header",
+            "text": {
+              "type": "plain_text",
+              "text": "CloudShield 2차 LLM 심층 분석"
+            }
+          },
+          {
+            "type": "section",
+            "fields": [
+              {
+                "type": "mrkdwn",
+                "text": "*사건 ID:*\nINC-P5-2-LOCAL-PREVIEW"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*공격 유형:*\nSSH Brute Force"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*출발지 IP:*\n198.51.100.10"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*분석 위험도:*\nHIGH"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*대상 인스턴스:*\ni-0123456789abcdef0"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*MITRE ATT&CK:*\nT1110.001"
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*LLM 분석 요약:*\n[합성 로컬 예시] SSH 인증 실패를 관측했다. 실제 공격·차단·복구 또는 Bedrock 호출을 실행하지 않았다.\n분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 "
+            }
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. 분석 전문 보존 확인. "
+            }
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*공격 대상 계정/엔드포인트:*\ndemo_user"
+            }
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*후속 권고 조치:*\n1. 실제 관측 로그와 집행 결과를 대조한다.\n2. 통신 회복은 별도 증거로 확인한다."
+            }
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*분석 권고 액션 (집행 결과 아님):*\nBLOCK_AND_QUARANTINE"
+            }
+          }
+        ],
+        "incident_id": "INC-P5-2-LOCAL-PREVIEW",
+        "rule_name": "SSH Brute Force",
+        "source_ip": "198.51.100.10",
+        "remediation_action": "BLOCK_AND_QUARANTINE",
+        "is_llm_card": true
+      }
+    },
+    {
+      "stage": 3,
+      "payload": {
+        "text": "[3차 복구 결과][설정 복구 확인] INC-P5-2-LOCAL-PREVIEW: SSH Brute Force",
+        "blocks": [
+          {
+            "type": "header",
+            "text": {
+              "type": "plain_text",
+              "text": "CloudShield 3차 복구 결과 알림"
+            }
+          },
+          {
+            "type": "section",
+            "fields": [
+              {
+                "type": "mrkdwn",
+                "text": "*사건 ID:*\n`INC-P5-2-LOCAL-PREVIEW`"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*복구 상태:*\n설정 복구 확인"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*출발지 IP:*\n`198.51.100.10`"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*엔진 보고 시각:*\n미확인"
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*계층별 복구 결과:*\n• L4 EC2 Baseline SG: 설정 복구 확인\n• L7 WAF IP 차단 해제: 설정 복구 확인\n• Identity IAM: 미대상"
+            }
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*복구 검증 결과:*\n엔진 검증: 미확인\n실제 통신 회복: 미확인"
+            }
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*복구 상세:*\n합성 입력값으로 렌더링했으며 실제 복구 증거가 아니다."
+            }
+          }
+        ],
+        "incident_id": "INC-P5-2-LOCAL-PREVIEW",
+        "rule_name": "SSH Brute Force",
+        "source_ip": "198.51.100.10",
+        "remediation_action": "BLOCK_AND_QUARANTINE",
+        "recovery_status": "설정 복구 확인",
+        "is_recovery_card": true
+      }
+    }
+  ]
+}

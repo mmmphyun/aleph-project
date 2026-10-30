@@ -1,0 +1,217 @@
+{
+  "id": null,
+  "uid": "cloudshield-p5-2",
+  "title": "CloudShield P5-2 SecOps",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "Asia/Seoul",
+  "refresh": "",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "tags": [
+    "cloudshield",
+    "cloud-b",
+    "p5-2"
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "공격 후보 로그 인입 · SSH 실패 / HTTP 4xx",
+      "type": "timeseries",
+      "description": "SSH 인증 실패와 HTTP 4xx 원시 로그 건수. 재시도·정상 오타·404도 포함하므로 시그니처가 확정한 공격 사건 수와 구분한다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudshield-cloudwatch"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "id": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudshield-cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-southeast-2",
+          "expression": "filter @message like /Failed password/\n| stats count(*) as ssh_failures by bin(1m)",
+          "logGroupNames": [
+            "/cloudshield/target/auth-log"
+          ]
+        },
+        {
+          "refId": "B",
+          "id": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudshield-cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-southeast-2",
+          "expression": "parse @message /\"[^\"]*\" (?<http_status>[0-9]{3}) /\n| filter http_status >= 400 and http_status < 500\n| stats count(*) as http_4xx by bin(1m)",
+          "logGroupNames": [
+            "/cloudshield/target/nginx-access-log"
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "미관측"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 2,
+      "title": "탐지→대응 반환 지연 · 전체 10초 SLA 미평가",
+      "type": "timeseries",
+      "description": "기존 pipeline_timestamps의 remediated_epoch - detected_epoch(초). ThreatRemediatedMetric INFO JSON 로그의 시간 필드를 사용하며 누락 구간은 No data다. 분 집계점이 보이도록 조회 범위에 분 경계를 포함한다. 대응 API 반환까지의 구간이며 조치 성공·공격 시작·물리적 차단 시각을 보장하지 않는다. Lambda Duration으로 대체하지 않는다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudshield-cloudwatch"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "id": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudshield-cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-southeast-2",
+          "expression": "parse @message /(?<json_payload>\\{.*\\})/\n| fields jsonParse(json_payload) as envelope\n| fields coalesce(envelope.message, json_payload) as body\n| fields jsonParse(body) as record\n| fields record.pipeline_timestamps.detected_epoch as detected, record.pipeline_timestamps.remediated_epoch as remediated\n| filter ispresent(detected) and ispresent(remediated) and remediated >= detected\n| fields (remediated - detected) as response_seconds\n| stats max(response_seconds) as max_response_seconds, pct(response_seconds, 95) as p95_response_seconds by bin(1m)",
+          "logGroupNames": [
+            "/aws/lambda/CloudShield-Threat-Orchestrator",
+            "/aws/lambda/cloudshield-llm-analyzer"
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "미관측",
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 3,
+      "title": "LLM 정상 / Fallback · 사건별 최종 관측 상태",
+      "type": "piechart",
+      "description": "enhanced=검증된 분석, parse_failed/call_failed=Fallback. 동일 사건의 재시도는 latest로 마지막 관측 상태 한 건만 집계한다. 상태 로그가 없는 미호출·임포트/프롬프트 실패는 분모에서 제외된다. 전체 호출 성공률로 해석하지 않는다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudshield-cloudwatch"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "id": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudshield-cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-southeast-2",
+          "expression": "parse @message /(?<json_payload>\\{.*\\})/\n| fields jsonParse(json_payload) as envelope\n| fields coalesce(envelope.message, json_payload) as body\n| fields jsonParse(body) as record\n| filter record.event = \"cloudshield.llm_analysis\"\n| fields coalesce(record.incident_id, record.incident_ref) as incident, record.status as analysis_status\n| filter ispresent(incident) and analysis_status in [\"enhanced\", \"parse_failed\", \"call_failed\"]\n| stats latest(analysis_status) as outcome by incident\n| stats count(*) as incidents by outcome",
+          "logGroupNames": [
+            "/aws/lambda/cloudshield-llm-analyzer"
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "미관측"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": "/^incidents$/"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "values": [
+            "percent"
+          ]
+        },
+        "displayLabels": [
+          "name",
+          "percent"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "title": "사건 처리 타임라인 · 최신 200건",
+      "type": "table",
+      "description": "기존 플랫폼·LLM·Slack 로그의 관측 타임라인. incident_id 없는 행은 시간대만으로 특정 사건과 결합하지 않는다. 모든 실행 단계가 로깅된다는 보장은 없다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudshield-cloudwatch"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "id": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudshield-cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-southeast-2",
+          "expression": "fields @timestamp, @log, @logStream, @message\n| filter @message like /INC-|위협 대응|Slack|복구|cloudshield.llm_analysis/\n| parse @message /(?<incident_id>INC-[A-Za-z0-9-]+)/\n| sort @timestamp desc\n| limit 200",
+          "logGroupNames": [
+            "/aws/lambda/CloudShield-Threat-Orchestrator",
+            "/aws/lambda/cloudshield-llm-analyzer"
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "미관측"
+        },
+        "overrides": []
+      },
+      "options": {}
+    }
+  ]
+}

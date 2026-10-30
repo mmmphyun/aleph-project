@@ -15,12 +15,15 @@ import json
 import threading
 import time
 import urllib.error
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from contracts.incident import IncidentReport
+from reporter.card_preview import build_three_stage_preview
+from reporter.grafana_dashboard import build_dashboard
 from reporter.slack_notifier import (
     MAX_FIELD_LENGTH,
     MAX_HEADER_LENGTH,
@@ -36,6 +39,78 @@ from reporter.slack_notifier import (
     send_slack_alert,
     truncate_text,
 )
+
+
+@pytest.mark.parametrize(
+    ("recovery", "expected"),
+    [
+        ({"quarantine_restored": True, "waf_unblocked": True}, "설정 복구 확인"),
+        ({"quarantine_restored": True, "waf_unblocked": False}, "복구 실패 / 일부 미완료"),
+        ({"quarantine_restored": "true", "waf_unblocked": True}, "복구 결과 미확인"),
+        ({}, "복구 결과 미확인"),
+    ],
+)
+def test_three_stage_preview_keeps_incident_and_recovery_evidence(
+    sample_incident_report: IncidentReport, recovery: dict[str, Any], expected: str
+) -> None:
+    """동일 사건 3단계에서 긴 전문·부분 실패를 보존하고 전송을 주장하지 않는다."""
+    report = sample_incident_report.model_copy(
+        update={"summary_ko": "<분석>&" * 200, "action_required": "BLOCK_AND_QUARANTINE"}
+    )
+    before = report.model_dump()
+    preview = build_three_stage_preview(report, {"waf_blocked": True}, recovery)
+    assert preview["slack_delivery_verified"] is False
+    assert preview["infrastructure_recovery_verified"] is False
+    assert [card["stage"] for card in preview["cards"]] == [1, 2, 3]
+    for card in preview["cards"]:
+        payload = card["payload"]
+        assert payload["incident_id"] == report.incident_id
+        assert payload["source_ip"] == report.source_ip
+        assert payload["rule_name"] == report.attack_type
+        assert payload["remediation_action"] == report.action_required
+        assert len(payload["blocks"]) <= 50
+        for block in payload["blocks"]:
+            if block["type"] == "section":
+                for field in block.get("fields", []):
+                    assert len(field["text"]) <= 500
+                if "text" in block:
+                    assert len(block["text"]["text"]) <= 500
+    llm_sections = "".join(
+        block.get("text", {}).get("text", "") for block in preview["cards"][1]["payload"]["blocks"]
+    )
+    assert llm_sections.count("&lt;분석&gt;&amp;") == 200
+    recovery_payload = preview["cards"][2]["payload"]
+    assert recovery_payload["recovery_status"] == expected
+    assert "실제 통신 회복: 미확인" in json.dumps(recovery_payload, ensure_ascii=False)
+    assert report.model_dump() == before
+
+
+def test_p5_2_dashboard_export_matches_source_and_query_limits() -> None:
+    """가져오기 파일의 재현성·조회 범위와 미관측 SLA의 표시 규칙을 확인한다."""
+    dashboard = build_dashboard()
+    exported = Path(__file__).resolve().parents[2] / "docs/roles/cloud-b/grafana/p5-2.json"
+    assert json.loads(exported.read_text(encoding="utf-8")) == dashboard
+    panels = dashboard["panels"]
+    assert len(panels) == 4
+    assert {(p["gridPos"]["x"], p["gridPos"]["y"]) for p in panels} == {
+        (0, 0),
+        (12, 0),
+        (0, 10),
+        (12, 10),
+    }
+    for panel in panels:
+        for target in panel["targets"]:
+            assert target["queryMode"] == "Logs"
+            assert target["datasource"]["uid"] == "cloudshield-cloudwatch"
+            assert 1 <= len(target["logGroupNames"]) <= 20
+            assert "SOURCE " not in target["expression"]
+    assert "No data" in panels[1]["description"]
+    assert "전체 10초 SLA 미평가" in panels[1]["title"]
+    assert "Duration" not in panels[1]["targets"][0]["expression"]
+    assert "latest(analysis_status)" in panels[2]["targets"][0]["expression"]
+    assert dashboard["refresh"] == ""
+    with pytest.raises(ValueError):
+        build_dashboard("invalid region")
 
 
 def test_llm_card_preserves_contract_and_does_not_claim_remediation(
