@@ -55,10 +55,14 @@ WAF timestamp와 CloudWatch ingestionTime/eventId를 별도로 보존했다. 수
 
 Web controller complete=true/exit 0, 복구 후 HTTP 200, 같은 사건의 3차 알림 함수 성공을 확인했다. 최종 타깃은 Baseline SG이며 WAF에 현재 출발지 차단이 남아 있지 않다. 각 성공 시나리오의 기존 Grafana 5개 쿼리 Complete 응답을 보존했다. Incoming Webhook 성공은 원본 Slack 게시 ts와 전체 1·2·3차 카드 대조를 대신하지 않는다.
 
+## Slack 원문·Grafana 화면 후속 대조
+
+[6개 Slack 카드와 Grafana 화면 대조](2026-10-30-p5-4-slack-grafana-correlation.md)를 완료했다. 양 사건의 1·2·3차 동일 ID와 원본 게시 순서를 확인했고 Grafana 실제 화면을 보존했다. SSH는 call_failed, Web은 parse_failed여서 두 2차 카드는 Fallback이다. 초기 Web Complete/빈 결과는 보존하고 동일 범위 재조회와 화면 수치 일치를 확인했다. 기존 Grafana 타임라인에는 3차 복구 행이 없으므로 전체 생명주기 표시 완료로 쓰지 않는다.
+
 ## 남은 DoD와 인계
 
 - A/B와 실제 첫 요청 기준 지연의 수집·집계·집행·전파 구간을 확인한다. 이번 후속 변경에서 플랫폼 코드를 수정하거나 새로운 이슈를 만들지 않았다.
-- 실제 WAF BLOCK/ALLOW 원문 대조는 확보했다. B의 Slack 1·2·3차 원문/게시 ts·같은 구간 Grafana 화면 대조가 남아 있다. 현재 403은 실제 네트워크 관측, 서버 BLOCK_WAF 성공, 승인 ALB의 실제 WAF BLOCK 원문을 연결했다.
+- 실제 WAF BLOCK/ALLOW 원문 대조는 확보했다. Slack 1·2·3차 원문/게시 ts·같은 구간 Grafana 화면 대조도 후속 기록으로 확보했다. 현재 대시보드의 3차 복구 이벤트 표시 연계는 후속 검토 사항이다. 현재 403은 실제 네트워크 관측, 서버 BLOCK_WAF 성공, 승인 ALB의 실제 WAF BLOCK 원문을 연결했다.
 - SSH 키 인증은 선택 해제 상태여서 null이다. SSH 첫 실제 공격 패킷, 장비 간 시계 최대 오차, 연결 재사용 증거도 미확보다.
 - 왕복 동작과 3차 알림 호출은 두 시나리오에서 완료했지만 전체 P5 DoD 및 첫 공격 기준 10초 SLA 완료로 판정하지 않는다. 남은 증명 범위를 명시한 채 PR을 Ready for review로 전환한다. 티켓 전체 완료·머지는 별도 판정이다.
 
