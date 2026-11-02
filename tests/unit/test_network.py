@@ -16,6 +16,874 @@ import pytest
 
 
 @pytest.fixture
+def connection_modules(monkeypatch):
+    directory = Path(__file__).resolve().parents[2] / "network"
+    monkeypatch.syspath_prepend(str(directory))
+    monkeypatch.syspath_prepend(str(directory / "lab"))
+    return (
+        __import__("connection_lab"),
+        __import__("connection_worker"),
+        __import__("connection_compare"),
+    )
+
+
+@pytest.fixture
+def connection_case(connection_modules, monkeypatch):
+    """소켓/HTTP/PDML은 합성 자료다. 실제 실행과 독립적으로 분할·순서·무결성을 공격한다."""
+    import xml.etree.ElementTree as ET
+
+    worker = connection_modules[1]
+    stamps = iter(range(10000))
+    ticks = iter(range(1, 10000))
+    monkeypatch.setattr(
+        worker, "stamp", lambda: str(Decimal("101") + Decimal(next(stamps)) / 10000)
+    )
+    monkeypatch.setattr(worker.time, "monotonic_ns", lambda: next(ticks))
+
+    def make(mode="http_reuse", *, split=False):
+        run_id = "cs-connection-" + "a" * 32
+        config = {
+            "profile": worker.PROFILE,
+            "scenario": mode,
+            "run_id": run_id,
+            "target": "172.20.0.2",
+            "client": "172.20.0.3",
+            "port": 8080,
+            "requests": 3 if mode.startswith("http_") else 0,
+            "connections": 2 if mode == "http_close" else 1,
+            "concurrency": 1,
+            "capture_seconds": 15,
+            "packets": 512,
+            "file_bytes": 1048576,
+            "connect_seconds": 3,
+            "io_seconds": 2,
+            "client_seconds": 10,
+            "capture_file_rlimit_bytes": 65536,
+        }
+        cj, sj = (worker.Journal(mode, run_id, role) for role in ("client", "server"))
+        rows = []
+
+        class FakeSocket:
+            def __init__(self, role, connection):
+                self.role, self.connection = role, connection
+
+            def fileno(self):
+                return 4
+
+            def getsockname(self):
+                return (
+                    (config["client"], 40000 + self.connection)
+                    if self.role == "client"
+                    else (config["target"], 8080)
+                )
+
+            def getpeername(self):
+                return (
+                    (config["target"], 8080)
+                    if self.role == "client"
+                    else (config["client"], 40000 + self.connection)
+                )
+
+        def add(
+            connection,
+            *,
+            server=False,
+            seq=101,
+            ack=201,
+            syn=False,
+            fin=False,
+            rst=False,
+            ackflag=True,
+            payload=b"",
+            http=(),
+        ):
+            row = {
+                "frame.time_epoch": str(Decimal("100.1") + Decimal(len(rows)) / 1000),
+                "frame.number": str(len(rows) + 1),
+                "frame.len": str(66 + len(payload)),
+                "frame.cap_len": str(66 + len(payload)),
+                "tcp.stream": str(connection - 1),
+                "ip.src": config["target"] if server else config["client"],
+                "ip.dst": config["client"] if server else config["target"],
+                "tcp.srcport": "8080" if server else str(40000 + connection),
+                "tcp.dstport": str(40000 + connection) if server else "8080",
+                "tcp.flags.syn": str(int(syn)),
+                "tcp.flags.ack": str(int(ackflag)),
+                "tcp.flags.fin": str(int(fin)),
+                "tcp.flags.reset": str(int(rst)),
+                "tcp.seq_raw": str(seq),
+                "tcp.ack_raw": str(ack),
+                "tcp.len": str(len(payload)),
+                "payload": payload,
+                "http": list(http),
+            }
+            rows.append(row)
+            return len(rows)
+
+        groups = ((1, 2), (3,)) if mode == "http_close" else ((1, 2, 3),)
+        if not mode.startswith("http_"):
+            groups = ((1,),)
+        for connection, ordinals in enumerate(groups, 1):
+            cj.opened(FakeSocket("client", connection), connection)
+            sj.opened(FakeSocket("server", connection), connection)
+            add(connection, syn=True, seq=100, ack=0, ackflag=False)
+            add(connection, server=True, syn=True, seq=200, ack=101)
+            add(connection)
+            cseq, sseq = 101, 201
+
+            def data_packet(raw, *, server=False, message=None, connection=connection):
+                nonlocal cseq, sseq
+                chunks = (raw[:13], raw[13:]) if split and len(raw) > 13 else (raw,)
+                for index, chunk in enumerate(chunks):
+                    frame = add(
+                        connection,
+                        server=server,
+                        seq=sseq if server else cseq,
+                        ack=cseq if server else sseq,
+                        payload=chunk,
+                        http=[message] if message and index == len(chunks) - 1 else [],
+                    )
+                    if server:
+                        sseq += len(chunk)
+                    else:
+                        cseq += len(chunk)
+                return frame
+
+            if mode.startswith("http_"):
+                for ordinal in ordinals:
+                    request = worker.http_bytes(run_id, ordinal)
+                    close = mode == "http_close" and ordinal in (2, 3)
+                    response = worker.http_bytes(
+                        run_id, ordinal, status=403 if ordinal == 2 else 200, close=close
+                    )
+                    req = {"raw": request, "response": False, "request_in": 0}
+                    request_frame = data_packet(request, message=req)
+                    data_packet(
+                        response,
+                        server=True,
+                        message={"raw": response, "response": True, "request_in": request_frame},
+                    )
+                    cj.record(connection, "send", data=request, ordinal=ordinal)
+                    sj.record(connection, "request_receive", data=request, ordinal=ordinal)
+                    sj.record(connection, "response_send", data=response, ordinal=ordinal)
+                    message = worker.split_http(response, response=True)[0]
+                    cj.record(
+                        connection,
+                        "receive_http",
+                        data=response,
+                        ordinal=ordinal,
+                        status=403 if ordinal == 2 else 200,
+                        headers=message["headers"],
+                        header_bytes=message["header_bytes"],
+                    )
+                if mode == "http_reuse":
+                    cj.record(connection, "shutdown_write")
+                    sj.record(connection, "eof")
+                    sj.record(connection, "shutdown_write")
+                    cj.record(connection, "eof")
+                else:
+                    sj.record(connection, "shutdown_write")
+                    cj.record(connection, "eof")
+                    cj.record(connection, "shutdown_write")
+                    sj.record(connection, "eof")
+            elif mode == "half_close":
+                data_packet(worker.HALF_REQUEST)
+                cj.record(connection, "send", data=worker.HALF_REQUEST)
+                cj.record(connection, "shutdown_write")
+                sj.record(connection, "receive", data=worker.HALF_REQUEST)
+                sj.record(connection, "eof")
+                add(connection, fin=True, seq=cseq, ack=sseq)
+                cseq += 1
+                data_packet(worker.HALF_RESPONSE, server=True)
+                sj.record(connection, "response_send", data=worker.HALF_RESPONSE)
+                sj.record(connection, "shutdown_write")
+                cj.record(connection, "receive", data=worker.HALF_RESPONSE)
+                cj.record(connection, "eof")
+            else:
+                data_packet(worker.RESET_REQUEST)
+                cj.record(connection, "send", data=worker.RESET_REQUEST)
+                sj.record(connection, "receive", data=worker.RESET_REQUEST)
+                sj.record(connection, "abortive_close", linger_hex="0100000000000000")
+                add(connection, server=True, rst=True, seq=sseq, ack=cseq)
+                cj.record(connection, "socket_reset", errno=104)
+            if mode == "http_close":
+                add(connection, server=True, fin=True, seq=sseq, ack=cseq)
+                sseq += 1
+                add(connection, fin=True, seq=cseq, ack=sseq)
+                cseq += 1
+                add(connection, server=True, seq=sseq, ack=cseq)
+            elif mode != "established_rst":
+                if mode != "half_close":
+                    add(connection, fin=True, seq=cseq, ack=sseq)
+                    cseq += 1
+                add(connection, server=True, fin=True, seq=sseq, ack=cseq)
+                sseq += 1
+                add(connection, seq=cseq, ack=sseq)
+            cj.record(connection, "socket_close")
+            sj.record(connection, "socket_close")
+
+        result = {
+            "scenario": mode,
+            "run_id": run_id,
+            "worker_complete": True,
+            "error": None,
+            "capture": {
+                "started_epoch": "100",
+                "ended_epoch": "116",
+                "exit": 124,
+                "kernel_dropped": 0,
+                "packets": len(rows),
+            },
+        }
+        server_result = {"scenario": mode, "run_id": run_id, "complete": True, "error": None}
+
+        def render():
+            root = ET.Element("pdml")
+            for row in rows:
+                packet = ET.SubElement(root, "packet")
+                proto = ET.SubElement(packet, "proto", name="tcp")
+                for name, value in row.items():
+                    if name not in ("http", "payload"):
+                        ET.SubElement(proto, "field", name=name, show=str(value))
+                if row["payload"]:
+                    ET.SubElement(proto, "field", name="tcp.payload", value=row["payload"].hex())
+                for http in row["http"]:
+                    message = worker.split_http(http["raw"], response=http["response"])[0]
+                    proto = ET.SubElement(packet, "proto", name="http")
+                    headers = message["headers"]
+                    values = {"http.content_length_header": headers["content-length"]}
+                    if http["response"]:
+                        values.update(
+                            {
+                                "http.response.code": message["start_line"].split()[1],
+                                "http.request_in": str(http["request_in"]),
+                            }
+                        )
+                    else:
+                        values.update(
+                            {
+                                "http.request.method": "GET",
+                                "http.request.uri": message["start_line"].split()[1],
+                            }
+                        )
+                    for name, value in values.items():
+                        ET.SubElement(proto, "field", name=name, show=value)
+                    line_name = "http.response.line" if http["response"] else "http.request.line"
+                    for name, value in headers.items():
+                        ET.SubElement(
+                            proto,
+                            "field",
+                            name=line_name,
+                            value=f"{name}: {value}\r\n".encode().hex(),
+                        )
+                    if message["body_hex"]:
+                        ET.SubElement(
+                            proto, "field", name="http.file_data", value=message["body_hex"]
+                        )
+            return ET.tostring(root, encoding="unicode")
+
+        return rows, config, result, cj.value(), sj.value(), server_result, render
+
+    return make
+
+
+@pytest.mark.parametrize("mode", ["http_reuse", "http_close", "half_close", "established_rst"])
+@pytest.mark.parametrize("split", [False, True])
+def test_connection_four_lifecycles_and_split_payloads(
+    connection_modules, connection_case, mode, split
+):
+    rows, config, worker, client, server, sr, render = connection_case(mode, split=split)
+    result = connection_modules[2].compare(render(), config, worker, client, server, sr)
+    assert result["passed"], result["reasons"]
+    assert len(result["connections"]) == (2 if mode == "http_close" else 1)
+    assert result["packet_count"] == len(rows)
+    assert result["retransmissions"] == 0
+    if mode.startswith("http_"):
+        statuses = [m["status"] for c in result["connections"] for m in c["http"] if m["status"]]
+        assert statuses == [200, 403, 200]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "run",
+        "socket",
+        "role",
+        "stream",
+        "handshake",
+        "truncated",
+        "time",
+        "limit",
+        "address",
+        "bytes",
+        "ordinal",
+        "header",
+        "fin_ack",
+        "fin_direction",
+        "missing_receive",
+        "capture",
+        "server",
+        "client",
+        "reset",
+        "early_fin",
+    ],
+)
+def test_connection_false_success_is_rejected(connection_modules, connection_case, change):
+    mode = "established_rst" if change == "reset" else "http_reuse"
+    rows, config, worker, client, server, sr, render = connection_case(mode)
+    if change == "run":
+        server["run_id"] = "different-run"
+    elif change == "socket":
+        client["events"][1]["socket_id"] += "other"
+    elif change == "role":
+        server["role"] = "client"
+    elif change == "stream":
+        rows[4]["tcp.stream"] = "1"
+    elif change == "handshake":
+        rows[2]["tcp.ack_raw"] = "202"
+    elif change == "truncated":
+        rows[4]["tcp.len"] = "1"
+    elif change == "time":
+        worker["capture"]["ended_epoch"] = "122"
+    elif change == "limit":
+        config["requests"] = 1
+    elif change == "address":
+        rows[4]["ip.src"] = "192.0.2.9"
+    elif change == "bytes":
+        rows[3]["payload"] = b"X" + rows[3]["payload"][1:]
+    elif change == "ordinal":
+        client["events"][1]["ordinal"] = 3
+    elif change == "header":
+        client["events"][2]["headers"]["connection"] = "close"
+    elif change == "fin_ack":
+        rows[-1]["tcp.ack_raw"] = "50000"
+    elif change == "fin_direction":
+        rows[-3]["tcp.flags.fin"] = "0"
+    elif change == "missing_receive":
+        server["events"][1]["event"] = "tcp_ack"
+    elif change == "capture":
+        worker["capture"]["kernel_dropped"] = 1
+    elif change == "server":
+        sr["complete"] = False
+    elif change == "client":
+        worker["worker_complete"] = False
+    elif change == "reset":
+        rows[-1]["tcp.flags.reset"] = "0"
+    elif change == "early_fin":
+        rows[4]["tcp.flags.fin"] = "1"
+    try:
+        result = connection_modules[2].compare(render(), config, worker, client, server, sr)
+    except (ValueError, KeyError):
+        pass
+    else:
+        assert not result["passed"], change
+
+
+def test_connection_pdml_preserves_multiple_messages_and_rejects_xml_bounds(
+    connection_modules, connection_case
+):
+    rows, _, _, _, _, _, render = connection_case()
+    first, second = [row for row in rows if row["http"] and not row["http"][0]["response"]][:2]
+    first["http"].extend(second["http"])
+    second["http"] = []
+    _, messages, _ = connection_modules[2].parse_pdml(render(), start="100", end="120")
+    assert len([m for m in messages if m["frame"] == int(first["frame.number"])]) == 2
+    _, commented, _ = connection_modules[2].parse_pdml(
+        '<?xml version="1.0"?><!-- TShark 정상 주석 -->' + render(), start="100", end="120"
+    )
+    assert commented == messages
+    for raw in ("x" * (1048576 + 1), "<!DOCTYPE pdml><pdml/>", "<pdml/>"):
+        with pytest.raises(ValueError):
+            connection_modules[2].parse_pdml(raw, start="100", end="120")
+
+
+@pytest.mark.parametrize("boundary", [1, 12, 35, 150, 200])
+def test_connection_http_framing_keeps_partial_and_coalesced_messages(connection_modules, boundary):
+    worker = connection_modules[1]
+    raw = worker.http_bytes("cs-connection-" + "a" * 32, 1, status=200)
+    boundary = min(boundary, len(raw) - 1)
+    assert worker.split_http(raw[:boundary], response=True) is None
+    parsed, remainder = worker.split_http(raw + raw, response=True)
+    assert bytes.fromhex(parsed["data_hex"]) == remainder == raw
+    assert worker.split_http(remainder, response=True)[1] == b""
+    for bad in (
+        raw.replace(b"Content-Length: 12", b"Content-Length: 999"),
+        raw.replace(b"Host: local.test", b"Host: a\r\nHost: b"),
+        b"X" * 4097,
+    ):
+        with pytest.raises(ValueError):
+            worker.split_http(bad, response=True)
+
+
+def test_connection_plan_has_no_tools_or_files_and_old_contract_stays(
+    connection_modules, packet_modules, monkeypatch, capsys
+):
+    host = connection_modules[0]
+    monkeypatch.setattr(
+        host.base, "bounded_command", lambda *a, **kw: pytest.fail("unexpected tool")
+    )
+    assert host.main([]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["limits"]["http_reuse"] == {"connections": 1, "requests": 3}
+    assert plan["limits"]["capture_packets"] == 512
+    assert packet_modules[0].LIMITS["request_limit"] == 1
+    assert packet_modules[0].LIMITS["capture_seconds"] == 8
+
+
+@pytest.mark.parametrize("mode", ["http_reuse", "http_close", "half_close", "established_rst"])
+def test_connection_client_exact_connects_no_implicit_retry(connection_modules, monkeypatch, mode):
+    worker = connection_modules[1]
+    run_id = "cs-connection-" + "b" * 32
+    sockets = []
+
+    class FakeSocket:
+        def __init__(self, *args):
+            self.ordinal = len(sockets) + 1
+            self.calls = []
+            self.timeouts = []
+            ordinals = (
+                ((1, 2) if self.ordinal == 1 else (3,)) if mode == "http_close" else (1, 2, 3)
+            )
+            self.incoming = b"".join(
+                worker.http_bytes(
+                    run_id,
+                    n,
+                    status=403 if n == 2 else 200,
+                    close=mode == "http_close" and n in (2, 3),
+                )
+                for n in ordinals
+            )
+            if mode == "half_close":
+                self.incoming = worker.HALF_RESPONSE
+            sockets.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+        def connect(self, address):
+            self.calls.append(("connect", address))
+
+        def sendall(self, raw):
+            self.calls.append(("send", raw))
+
+        def shutdown(self, how):
+            self.calls.append(("shutdown", how))
+
+        def fileno(self):
+            return 4
+
+        def getsockname(self):
+            return ("172.20.0.3", 40000 + self.ordinal)
+
+        def getpeername(self):
+            return ("172.20.0.2", 8080)
+
+        def recv(self, size):
+            if mode == "established_rst":
+                raise ConnectionResetError(worker.errno.ECONNRESET, "synthetic reset")
+            raw, self.incoming = self.incoming[:size], self.incoming[size:]
+            return raw
+
+    monkeypatch.setattr(worker.socket, "socket", FakeSocket)
+    journal = worker.Journal(mode, run_id, "client")
+    worker.run_client(mode, run_id, "172.20.0.2", journal)
+    assert len(sockets) == (2 if mode == "http_close" else 1)
+    assert sum(c[0] == "connect" for s in sockets for c in s.calls) == len(sockets)
+    assert all(0 < timeout <= 3 for s in sockets for timeout in s.timeouts)
+    if mode == "half_close":
+        assert [call[0] for call in sockets[0].calls] == ["connect", "send", "shutdown"]
+    sockets.clear()
+
+    def failed_connect(self, address):
+        raise TimeoutError("synthetic connect timeout")
+
+    monkeypatch.setattr(FakeSocket, "connect", failed_connect)
+    with pytest.raises(TimeoutError):
+        worker.run_client(mode, run_id, "172.20.0.2", worker.Journal(mode, run_id, "client"))
+    assert len(sockets) == 1
+
+
+@pytest.mark.parametrize("bad", ["scenario", "run", "public", "same", "zero"])
+def test_connection_scope_and_io_limits(connection_modules, bad):
+    worker = connection_modules[1]
+    values = ["http_reuse", "cs-connection-" + "a" * 32, "172.20.0.2", "172.20.0.3"]
+    if bad == "scenario":
+        values[0] = "rst"
+    elif bad == "run":
+        values[1] = "../mixed"
+    elif bad == "public":
+        values[2] = "8.8.8.8"
+    elif bad == "same":
+        values[3] = values[2]
+    else:
+        values[2] = "0.0.0.0"
+    with pytest.raises(ValueError):
+        worker.validate(*values)
+    with pytest.raises(TimeoutError):
+        worker.io_timeout(None, 0)
+
+
+@pytest.mark.parametrize("failure", ["capture", "interrupt", "storage", "cleanup"])
+def test_connection_worker_failures_preserve_partial_evidence(
+    connection_modules, monkeypatch, tmp_path, failure
+):
+    worker = connection_modules[1]
+    run_id = "cs-connection-" + "a" * 32
+    monkeypatch.setattr(worker, "DIRECTORY", tmp_path)
+    monkeypatch.setattr(
+        worker,
+        "configuration",
+        lambda scenario, rid, role: {
+            "profile": worker.PROFILE,
+            "scenario": scenario,
+            "run_id": rid,
+            "role": role,
+        },
+    )
+
+    class FailedCapture:
+        def __init__(self, *args, **kwargs):
+            if failure == "interrupt":
+                raise KeyboardInterrupt("synthetic")
+            if failure == "storage":
+                raise OSError("synthetic storage")
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(worker.subprocess, "Popen", FailedCapture)
+    if failure == "cleanup":
+
+        def stop_failure(process):
+            raise OSError("synthetic cleanup")
+
+        monkeypatch.setattr(worker, "stop", stop_failure)
+    else:
+        monkeypatch.setattr(worker, "stop", lambda process: None)
+    assert worker.trial("http_reuse", "172.20.0.2", "172.20.0.3", run_id) == 1
+    result = json.loads((tmp_path / "worker-result.json").read_text())
+    assert not result["worker_complete"] and result["error"]
+    assert (tmp_path / "config.json").is_file() and (tmp_path / "client.json").is_file()
+    if failure == "cleanup":
+        assert result["cleanup_error"]
+
+
+def test_connection_server_failure_is_not_success(connection_modules, monkeypatch, tmp_path):
+    worker = connection_modules[1]
+    monkeypatch.setattr(worker, "DIRECTORY", tmp_path)
+    monkeypatch.setattr(worker, "configuration", lambda *args: {})
+
+    def failed(*args):
+        raise OSError("synthetic server")
+
+    monkeypatch.setattr(worker, "run_server", failed)
+    assert worker.serve("half_close", "cs-connection-" + "a" * 32) == 1
+    assert not json.loads((tmp_path / "server-result.json").read_text())["complete"]
+    assert (tmp_path / "server.json").is_file()
+
+
+def test_connection_suite_reuses_bounded_runner_keeps_failures(
+    connection_modules, tmp_path, monkeypatch
+):
+    host = connection_modules[0]
+    calls = []
+
+    class FakeLab:
+        def __init__(self, output, scenario):
+            self.output, self.scenario, self.run_id = output, scenario, output.name
+            self.events = []
+            output.mkdir()
+
+        def experiment(self):
+            calls.append(self.output.name)
+            return {"passed": len(calls) != 1, "reasons": ["synthetic"] if len(calls) == 1 else []}
+
+        def cleanup(self):
+            return []
+
+    monkeypatch.setattr(host, "ConnectionLab", FakeLab)
+    monkeypatch.setattr(host.base, "source_commit", lambda: "synthetic")
+    monkeypatch.setattr(host, "source_fingerprints", lambda: {})
+    assert host.suite(tmp_path) == 1
+    summary = json.loads(next(tmp_path.glob("*/summary.json")).read_text())
+    assert len(calls) == len(set(calls)) == 12
+    assert not summary["trials"][0]["passed"] and not summary["complete"]
+    assert summary["limits"]["profile"] == "cloudshield-connection-v1"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "half_fin",
+        "half_receive",
+        "half_order",
+        "reset_ack",
+        "reset_direction",
+        "reset_linger",
+        "reset_api",
+        "close_reuse",
+        "cap_len",
+        "ack_range",
+    ],
+)
+def test_connection_direction_application_and_new_socket_guards(
+    connection_modules, connection_case, change
+):
+    mode = (
+        "half_close"
+        if change.startswith("half_")
+        else ("established_rst" if change.startswith("reset_") else "http_close")
+    )
+    rows, config, worker, client, server, sr, render = connection_case(mode)
+    if change == "half_fin":
+        next(row for row in rows if row["tcp.flags.fin"] == "1")["tcp.flags.fin"] = "0"
+    elif change == "half_receive":
+        server["events"][1]["event"] = "tcp_ack"
+    elif change == "half_order":
+        server["events"][2]["event"], server["events"][3]["event"] = "response_send", "eof"
+    elif change == "reset_ack":
+        rows[-1]["tcp.ack_raw"] = "101"
+    elif change == "reset_direction":
+        rows[-1]["ip.src"], rows[-1]["ip.dst"] = rows[-1]["ip.dst"], rows[-1]["ip.src"]
+        rows[-1]["tcp.srcport"], rows[-1]["tcp.dstport"] = (
+            rows[-1]["tcp.dstport"],
+            rows[-1]["tcp.srcport"],
+        )
+    elif change == "reset_linger":
+        server["events"][-2]["linger_hex"] = "0000000000000000"
+    elif change == "reset_api":
+        client["events"][-2]["event"] = "eof"
+    elif change == "close_reuse":
+        for event in client["events"]:
+            if event["connection"] == 2:
+                event["local_port"] = 40001
+    elif change == "cap_len":
+        rows[3]["frame.cap_len"] = "1"
+    else:
+        rows[4]["tcp.ack_raw"] = str(2**32)
+    try:
+        result = connection_modules[2].compare(render(), config, worker, client, server, sr)
+    except (ValueError, KeyError):
+        pass
+    else:
+        assert not result["passed"], change
+
+
+def test_connection_socket_journal_enforces_bytes_and_event_capacity(connection_modules):
+    worker = connection_modules[1]
+
+    class FakeSocket:
+        def fileno(self):
+            return 4
+
+        def getsockname(self):
+            return ("172.20.0.3", 40000)
+
+        def getpeername(self):
+            return ("172.20.0.2", 8080)
+
+    for scenario, data in (("half_close", b"x" * 257), ("http_reuse", b"x" * 2049)):
+        journal = worker.Journal(scenario, "cs-connection-" + "a" * 32, "client")
+        journal.opened(FakeSocket(), 1)
+        with pytest.raises(ValueError):
+            journal.record(1, "send", data=data)
+        assert len(journal.events) == 1
+    journal = worker.Journal("http_reuse", "cs-connection-" + "a" * 32, "client")
+    journal.opened(FakeSocket(), 1)
+    with pytest.raises(ValueError):
+        for _ in range(64):
+            journal.record(1, "send", data=b"x" * 2048)
+    assert len(json.dumps(journal.value()).encode()) <= 65536
+    assert len(journal.events) <= 64
+
+
+@pytest.mark.parametrize("role", ["network", "server", "client"])
+@pytest.mark.parametrize("mode", ["http_reuse", "http_close", "half_close", "established_rst"])
+def test_connection_isolation_never_adds_firewall_privileges(
+    connection_modules, tmp_path, monkeypatch, role, mode
+):
+    host = connection_modules[0]
+    lab = host.ConnectionLab(tmp_path / "trial", mode)
+    lab.image_id = "sha256:" + "a" * 64
+    calls = []
+
+    def fake_call(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "b" * 64, "")
+
+    monkeypatch.setattr(lab, "call", fake_call)
+    lab.create_owned(role)
+    command = calls[0]
+    assert "NET_ADMIN" not in command and "--privileged" not in command and "-p" not in command
+    if role == "network":
+        assert "--internal" in command
+    else:
+        assert "--read-only" in command and "no-new-privileges:true" in command
+        assert command[command.index("--cap-drop") + 1] == "ALL"
+        if role == "server":
+            assert command[-2:] == ("sleep", "infinity")
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_connection_transfer_checks_before_and_after_hash_and_retains_source(
+    connection_modules, tmp_path, monkeypatch, changed
+):
+    host = connection_modules[0]
+    lab = host.ConnectionLab(tmp_path / "trial", "http_reuse")
+    cid = "a" * 64
+    raw = b"{}"
+    checksum = hashlib.sha256(raw).hexdigest()
+    hashes = []
+
+    def fake_call(*args, **kwargs):
+        if "find" in args:
+            output = "client.json 2\n"
+        elif "sha256sum" in args:
+            hashes.append(args)
+            output = ("0" * 64 if changed and len(hashes) == 2 else checksum) + "  client.json"
+        else:
+            output = ""
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    monkeypatch.setattr(lab, "call", fake_call)
+    monkeypatch.setattr(
+        host.base,
+        "bounded_command",
+        lambda argv, **kwargs: {
+            "command": argv,
+            "code": 0,
+            "reason": None,
+            "stdout": raw,
+            "stderr": "",
+            "partial_output": False,
+        },
+    )
+    if changed:
+        with pytest.raises(ValueError):
+            lab.preserve_role(cid, "client")
+        assert cid in lab.retained_containers
+    else:
+        lab.preserve_role(cid, "client")
+        assert cid not in lab.retained_containers
+    assert len(hashes) == 2 and (lab.output / "client.json").read_bytes() == raw
+
+
+@pytest.mark.parametrize("failure", [None, "hash", "mixed", "path", "interrupt", "storage"])
+def test_connection_offline_analysis_hash_chain_and_failures(
+    connection_modules, connection_case, tmp_path, monkeypatch, failure
+):
+    host = connection_modules[0]
+    root = tmp_path / "connection"
+    origin = root / "original"
+    origin.mkdir(parents=True)
+    trials = []
+    for mode in host.SCENARIOS:
+        for repetition in range(1, 4):
+            _, config, worker, client, server, sr, render = connection_case(mode)
+            directory = origin / f"{mode}-{repetition}"
+            directory.mkdir()
+            if failure == "mixed" and not trials:
+                sr["run_id"] += "mixed"
+            values = {
+                "config.json": config,
+                "client.json": client,
+                "worker-result.json": worker,
+                "server-config.json": {"run_id": config["run_id"]},
+                "server.json": server,
+                "server-result.json": sr,
+                "decoder.json": {"code": 0, "reason": None},
+            }
+            for name, value in values.items():
+                host.base.save(directory / name, value)
+            (directory / "capture.pcap").write_bytes(
+                b"synthetic pcap placeholder, no decoding tool"
+            )
+            (directory / "capture.stdout").write_bytes(b"")
+            (directory / "capture.stderr").write_bytes(b"synthetic capture")
+            (directory / "packets.pdml").write_text(render(), encoding="utf-8")
+            host.base.evidence_manifest(directory, {"result": {"run_id": config["run_id"]}})
+            if failure == "path" and not trials:
+                manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+                info = manifest["files"].pop("capture.pcap")
+                manifest["files"]["../capture.pcap"] = info
+                (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            trials.append(
+                {
+                    "scenario": mode,
+                    "repetition": repetition,
+                    "run_id": config["run_id"],
+                    "passed": False,
+                    "error": "original parser failure",
+                    "remaining_resources": [],
+                    "manifest_sha256": hashlib.sha256(
+                        (directory / "manifest.json").read_bytes()
+                    ).hexdigest(),
+                }
+            )
+    host.base.save(origin / "plan.json", {"scenarios": host.SCENARIOS})
+    original = {
+        "trials": trials,
+        "complete": False,
+        "plan_sha256": hashlib.sha256((origin / "plan.json").read_bytes()).hexdigest(),
+    }
+    host.base.save(origin / "summary.json", original)
+    summary_before = (origin / "summary.json").read_bytes()
+    (origin / "summary.sha256").write_text(
+        hashlib.sha256(summary_before).hexdigest() + "  summary.json\n"
+    )
+    monkeypatch.setattr(host, "source_fingerprints", lambda: {})
+    monkeypatch.setattr(host.base, "bounded_command", lambda *a, **kw: pytest.fail("offline tool"))
+    if failure == "hash":
+        with (origin / "http_reuse-1/client.json").open("ab") as stream:
+            stream.write(b" ")
+    if failure == "interrupt":
+
+        def interrupted(*args):
+            raise KeyboardInterrupt("synthetic offline interrupt")
+
+        monkeypatch.setattr(host, "compare", interrupted)
+    if failure == "storage":
+        original_save = host.base.save
+
+        def failed_save(path, value):
+            if path.name == "http_reuse-1.json":
+                raise OSError("synthetic archive failure")
+            return original_save(path, value)
+
+        monkeypatch.setattr(host.base, "save", failed_save)
+        with pytest.raises(OSError):
+            host.reanalyze(origin, root)
+        assert list(root.glob("*/references.json"))
+    else:
+        assert host.reanalyze(origin, root) == (0 if failure is None else 1)
+        summaries = [path for path in root.glob("*/summary.json") if path.parent != origin]
+        assert len(summaries) == 1
+        result = json.loads(summaries[0].read_text(encoding="utf-8"))
+        assert len(result["trials"]) == 12
+        assert all(t["original_error"] == "original parser failure" for t in result["trials"])
+        assert result["source_summary_sha256"] == hashlib.sha256(summary_before).hexdigest()
+        if failure == "interrupt":
+            assert all("not_started" in t.get("error", "") for t in result["trials"][1:])
+        elif failure:
+            assert not result["trials"][0]["passed"] and all(
+                t["passed"] for t in result["trials"][1:]
+            )
+        host.base.fingerprint(
+            summaries[0].parent / "manifest.json",
+            (summaries[0].parent / "manifest.sha256").read_text().split()[0],
+        )
+    assert (origin / "summary.json").read_bytes() == summary_before
+    with pytest.raises(ValueError):
+        host.reanalyze(tmp_path, root)
+
+
+@pytest.fixture
 def roundtrip(monkeypatch):
     directory = Path(__file__).resolve().parents[2] / "network"
     monkeypatch.syspath_prepend(str(directory))

@@ -145,6 +145,15 @@ def evidence_manifest(directory, metadata, *, limit=4 * FILE_BYTES):
 
 
 class PacketLab(Lab):
+    def server_command(self):
+        """서버 실행만 프로파일별로 교체하고 기존 1요청 실험의 기본 명령은 유지한다."""
+        return [
+            "python3",
+            "/opt/lab/packet_worker.py",
+            "serve",
+            "403" if self.scenario == "http403" else "200",
+        ]
+
     def __init__(self, output, scenario, *, seconds=45):
         if scenario not in SCENARIOS or seconds not in (45, 600):
             raise ValueError("고정 시나리오/상한 오류")
@@ -227,16 +236,7 @@ class PacketLab(Lab):
             for cap in caps:
                 args += ["--cap-add", cap]
             args += [self.image_id]
-            args += (
-                [
-                    "python3",
-                    "/opt/lab/packet_worker.py",
-                    "serve",
-                    "403" if self.scenario == "http403" else "200",
-                ]
-                if role == "server"
-                else ["sleep", "infinity"]
-            )
+            args += self.server_command() if role == "server" else ["sleep", "infinity"]
         # CLI timeout은 create가 서버에 도달했는지 알 수 없다. 정확한 이름+label로만 회수한다.
         self.pending.append((role, name))
         identity = self.call(*args).stdout.strip()
@@ -320,10 +320,19 @@ class PacketLab(Lab):
             raise ValueError("방화벽 카운터 없음")
         return {"rule_verified": True, "rule_packets": int(counter[1])}
 
-    def preserve(self, client):
+    def preserve(
+        self, client, *, worker_path="/opt/lab/packet_worker.py", quiescent_args=None, allowed=None
+    ):
         # 복사 실패 시 원본 tmpfs를 가진 컨테이너와 네트워크를 보존한다.
         self.retained_containers.add(client)
-        self.call("exec", client, "python3", "/opt/lab/packet_worker.py", "quiescent", self.run_id)
+        self.call(
+            "exec",
+            client,
+            "python3",
+            worker_path,
+            "quiescent",
+            *(quiescent_args if quiescent_args is not None else (self.run_id,)),
+        )
         listing = self.call(
             "exec",
             client,
@@ -339,17 +348,21 @@ class PacketLab(Lab):
         entries = listing.splitlines()
         if len(entries) > 12:
             raise ValueError("컨테이너 증거 개수 초과")
-        allowed = {
-            "config.json",
-            "worker-result.json",
-            "capture.pcap",
-            "capture.stdout",
-            "capture.stderr",
-            "curl.stdout",
-            "curl.stderr",
-            "headers.txt",
-            "body.txt",
-        }
+        allowed = (
+            allowed
+            if allowed is not None
+            else {
+                "config.json",
+                "worker-result.json",
+                "capture.pcap",
+                "capture.stdout",
+                "capture.stderr",
+                "curl.stdout",
+                "curl.stderr",
+                "headers.txt",
+                "body.txt",
+            }
+        )
         for line in entries:
             name, size = line.rsplit(" ", 1)
             bound = LOG_BYTES if name.endswith((".stdout", ".stderr")) else FILE_BYTES
@@ -549,7 +562,7 @@ class PacketLab(Lab):
         return failures
 
 
-def suite(root):
+def suite(root, *, lab_factory=None, scenarios=SCENARIOS, limits=LIMITS, source_hashes=None):
     root.mkdir(parents=True, exist_ok=True)
     directory = create_run_directory(root)
     started = time.monotonic()
@@ -557,15 +570,17 @@ def suite(root):
     save(
         directory / "plan.json",
         {
-            "limits": LIMITS,
-            "scenarios": SCENARIOS,
+            "limits": limits,
+            "scenarios": scenarios,
             "host": platform.platform(),
             "source_commit": source_commit(),
-            "source_sha256": source_fingerprints(),
+            "source_sha256": source_hashes()
+            if source_hashes is not None
+            else source_fingerprints(),
         },
     )
     interrupted = False
-    for mode in SCENARIOS:
+    for mode in scenarios:
         for repetition in range(1, 4):
             if interrupted or time.monotonic() - started >= 720:
                 trials.append(
@@ -577,7 +592,8 @@ def suite(root):
                     }
                 )
                 continue
-            lab = PacketLab(directory / f"{mode}-{repetition}", mode)
+            factory = lab_factory if lab_factory is not None else PacketLab
+            lab = factory(directory / f"{mode}-{repetition}", mode)
             result = {
                 "scenario": mode,
                 "repetition": repetition,
@@ -600,7 +616,7 @@ def suite(root):
                     interrupted = True
                 try:
                     save(lab.output / "commands.json", lab.events)
-                    files = evidence_manifest(lab.output, {"result": result, "limits": LIMITS})
+                    files = evidence_manifest(lab.output, {"result": result, "limits": limits})
                     result["manifest_sha256"] = hashlib.sha256(
                         (lab.output / "manifest.json").read_bytes()
                     ).hexdigest()
@@ -619,10 +635,10 @@ def suite(root):
         "trials": trials,
         "complete": len(trials) == 12 and all(t["passed"] for t in trials),
         "elapsed_seconds": round(time.monotonic() - started, 3),
-        "limits": LIMITS,
+        "limits": limits,
         "plan_sha256": hashlib.sha256((directory / "plan.json").read_bytes()).hexdigest(),
     }
-    if sum(t.get("evidence_bytes", 0) for t in trials) + 2 * FILE_BYTES > LIMITS["suite_bytes"]:
+    if sum(t.get("evidence_bytes", 0) for t in trials) + 2 * FILE_BYTES > limits["suite_bytes"]:
         raise ValueError("실행 묶음 용량 상한 초과; 원본 보존")
     save(directory / "summary.json", summary)
     with (directory / "summary.sha256").open("x", encoding="ascii") as stream:
