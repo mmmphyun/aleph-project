@@ -376,7 +376,8 @@ def test_visible_control_expansion_respects_line_and_byte_limits_without_partial
     logs = ["\x00" * MAX_LOG_LINE_CHARS] * (MAX_LOG_LINES + 1)
     prompt = build_bedrock_analysis_prompt(sample_incident_report, logs)
     retained = _prompt_log_lines(prompt)
-    assert len(retained) <= MAX_LOG_LINES
+    assert len(retained) == 9
+    assert all(retained)
     assert all(len(line) <= MAX_LOG_LINE_CHARS for line in retained)
     assert sum(len(line.encode()) for line in retained) <= MAX_LOG_BYTES
     assert all(re.fullmatch(r"(?:\\u0000)*", line) for line in retained)
@@ -389,9 +390,35 @@ def test_visible_control_expansion_respects_line_and_byte_limits_without_partial
         len(line) // 6 for line in retained
     )
     assert payload["truncation"]["truncated_lines"] == len(retained)
+    assert payload["truncation"]["included_lines"] == 9
     assert payload["truncation"]["omitted_lines"] == len(logs) - len(retained)
     assert len(prompt.encode()) <= MAX_PROMPT_BYTES
     assert logs[0] == "\x00" * MAX_LOG_LINE_CHARS
+
+
+@pytest.mark.parametrize("blocked_character", ["\x00", "가", "🛡"])
+def test_budget_omits_fully_cut_lines_but_keeps_original_empty_lines_and_later_fitting_text(
+    sample_incident_report: IncidentReport, blocked_character: str
+) -> None:
+    """남은 1바이트에 들어가지 않는 로그를 누락하고 후행 증거와 실제 빈 줄은 보존한다."""
+    logs = ["a" * MAX_LOG_LINE_CHARS] * 7 + ["a" * (MAX_LOG_LINE_CHARS - 1)]
+    logs += [blocked_character, "", "Z"]
+    original = list(logs)
+    prompt = build_bedrock_analysis_prompt(sample_incident_report, logs)
+    assert _prompt_log_lines(prompt) == logs[:8] + ["", "Z"]
+    payload = next(
+        value
+        for value in _json_values(prompt)
+        if isinstance(value, dict) and "sanitization" in value
+    )
+    assert payload["truncation"] == {
+        "total_lines": 11,
+        "included_lines": 10,
+        "omitted_lines": 1,
+        "truncated_lines": 0,
+    }
+    assert payload["sanitization"]["log_control_characters"] == 0
+    assert logs == original
 
 
 def test_visible_controls_and_multibyte_evidence_share_the_existing_byte_budget(

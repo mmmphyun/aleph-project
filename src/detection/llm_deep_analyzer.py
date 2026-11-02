@@ -176,6 +176,10 @@ def _bounded_logs(raw_logs: list[str]) -> tuple[list[str], dict[str, int], dict[
             retained_chars += len(visible)
             remaining -= encoded_size
             line_escaped += visible != character
+        # 용량 때문에 한 문자도 남지 않은 로그를 실제 빈 줄로 오인해 포함 건수를
+        # 부풀리지 않는다. 남은 예산에 들어가는 후행 로그는 순서대로 계속 선택한다.
+        if line and not retained:
+            continue
         selected.append("".join(retained))
         truncated += len(retained) != len(line)
         escaped_characters += line_escaped
