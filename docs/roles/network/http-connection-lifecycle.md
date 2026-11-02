@@ -289,3 +289,9 @@ analyze는 원본 summary/plan/manifest와 모든 파일의 크기·SHA-256을 �
 [TShark 출력 옵션](https://www.wireshark.org/docs/man-pages/tshark),
 [Wireshark TCP 재조립](https://www.wireshark.org/docs/wsug_html_chunked/ChAdvReassemblySection)을
 참고했다. 정상 403 응답과 TCP 종료의 관계는 이번 서버가 선택한 동작으로 해석한다.
+
+
+분리 검증 완료 후 관리형 archive를 요청했으나 앱이 해당 경로를 현재 채팅의 primary checkout으로
+등록해 `The task's primary checkout cannot be removed.`로 거부했다. 보호를 우회하지 않고
+검증 사본을 보존한다. 실제 작업 브랜치·커밋과 원본 증거는 `C:/Aleph`에 있다. 게이트 뒤 실행
+코드·테스트는 같은 바이트이며 이후 변경은 본 Markdown의 실측/검증/보존 기록뿐이다.
