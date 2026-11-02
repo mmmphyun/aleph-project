@@ -1,0 +1,65 @@
+{
+  "kind": "controller_preparation_selected_evidence",
+  "checked_at": "2026-10-30T08:52:13.757401+00:00",
+  "source": {
+    "private_alias": "controller-preflight-final",
+    "bytes": 650,
+    "sha256": "edc02b63332f3eb48f53b4616a6e2764626673a7fa34c21aa2e816d0862f4dca",
+    "selection": "preflight flags and query references only; no account/resource/credential identifiers"
+  },
+  "observed": {
+    "mode": "preflight",
+    "checked_at": "2026-10-30T08:52:13.757401+00:00",
+    "blockers": [],
+    "resource_changes": false,
+    "slack_message_sent": false,
+    "waf_update_permission": "owner_authorized_not_live_tested",
+    "caller_verified": true,
+    "target_verified": true,
+    "ipset_verified": true,
+    "remote_verified": true,
+    "webhook_verified": true,
+    "grafana_verified": true,
+    "grafana_queries": {
+      "query_refs": [
+        "1A",
+        "1B",
+        "2A",
+        "3A",
+        "4A"
+      ],
+      "query_status": "Complete"
+    },
+    "ec2_restore_permission": "DryRunOperation",
+    "ssh_key_auth_required": false,
+    "full_p5_key_auth_dod_verified": false
+  },
+  "scope": {
+    "attacker": "attacker-p5-4",
+    "target": "target-p5-4",
+    "region": "ap-southeast-2",
+    "grafana_bind": "127.0.0.1:3000",
+    "credential_location": "local_controller_only",
+    "grafana_auth": "owner_authorized_direct_sdk_credentials",
+    "iam_read_only_enforced": false
+  },
+  "not_executed": [
+    "live_attack",
+    "target_probe",
+    "packet_capture",
+    "restore_api_write",
+    "waf_update",
+    "slack_post"
+  ],
+  "unverified": [
+    "first_actual_attack_packet",
+    "e2e_10_second_sla",
+    "clock_max_error",
+    "target_ssh_key_auth",
+    "waf_raw_action",
+    "slack_original_ts",
+    "grafana_browser_render"
+  ],
+  "valid_live_approval_created": false,
+  "e2e_sla_verified": false
+}

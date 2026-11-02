@@ -1,0 +1,202 @@
+{
+  "kind": "environment_preparation_selected_evidence",
+  "source_commit": "822fdc1c8ea0be75d921a989302dc5e6b240e9f9",
+  "attacker_alias": "attacker-p5-4",
+  "runtime": {
+    "runtime_url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16%2B20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "runtime_archive_sha256": "ce4f6d0a6cfdb3bed6e44c2f9affd85943c76a42e25ad3a259002f31d6fb8a20",
+    "runtime_archive_bytes": 34505639,
+    "python_version": "Python 3.12.16",
+    "system_python": "Python 3.10.12"
+  },
+  "existing_assets": {
+    "source_commit": "822fdc1c8ea0be75d921a989302dc5e6b240e9f9",
+    "verified_files": 8,
+    "files": [
+      {
+        "filename": "demo_attack_runner.sh",
+        "bytes": 574,
+        "sha256": "d729d588169134608ed7b667b7e0d8abbd85615a6a01a3a26b0be1004a39759c"
+      },
+      {
+        "filename": "demo_attack_runner.py",
+        "bytes": 29036,
+        "sha256": "9d8e45c4c99893857100b695926c48f985c03854c0e25df56a84c273ebdf006d"
+      },
+      {
+        "filename": "ec2_hydra_measurement.py",
+        "bytes": 23572,
+        "sha256": "3fb1257e8a7d9ed4a238b16992403e462ef4c2df651f0e0a29694d05fa976ea6"
+      },
+      {
+        "filename": "web_dir_scan.sh",
+        "bytes": 13536,
+        "sha256": "14dca86ccb4310b11fbe4c2685f0497c2933a06708f35e2cf98ccf339a9aacd6"
+      },
+      {
+        "filename": "tcpdump_capture.sh",
+        "bytes": 4164,
+        "sha256": "01e2e693d5426699aab921b163b3a379fd8257357afc0d15aa68f155179499e7"
+      },
+      {
+        "filename": "roundtrip_timeline.py",
+        "bytes": 40141,
+        "sha256": "ccc6f26948e8ba932dad71d07f13858dd7b66a98d76631b4a96ece3bace2c57a"
+      },
+      {
+        "filename": "sg_connection_timeline.py",
+        "bytes": 13820,
+        "sha256": "d891788aa52547477ddb123134fe27926d8463feab188cc916de1c532ee54b8d"
+      },
+      {
+        "filename": "waf_packet_timeline.py",
+        "bytes": 6144,
+        "sha256": "81f6a5a996fc2bf8cde0cf85918ac56161f88abc48e1044bbb1105d8983d8a21"
+      }
+    ],
+    "package_sha256": "22d2ed0c0257469cc47b8711b8b10520886f8016426059dc2555f5c86a304750",
+    "bash_syntax_exit_codes": {
+      "demo_attack_runner.sh": 0,
+      "web_dir_scan.sh": 0,
+      "tcpdump_capture.sh": 0
+    },
+    "hydra_version": "Hydra v9.2",
+    "dry_run_exit_code": 0,
+    "roundtrip_help_exit_code": 0
+  },
+  "capture_preparation": {
+    "execution_user": "root via sudo -n",
+    "private_root_validation": {
+      "uid": 0,
+      "owner_uid": 0,
+      "mode": "0o700",
+      "empty": true
+    },
+    "ens5_listed": true,
+    "approval_file_created": false,
+    "packet_capture_executed": false
+  },
+  "clock_and_storage": {
+    "ntp_status": {
+      "exit_code": 0,
+      "output": "NTP=yes\nNTPSynchronized=yes"
+    },
+    "clock_max_error_seconds": null,
+    "route_interface": "ens5",
+    "free_bytes": 5438234624,
+    "capture_reserve_3gib_satisfied": true
+  },
+  "grafana": {
+    "url": "http://127.0.0.1:3000",
+    "container_name": "cloudshield-p5-4-grafana",
+    "image_repo_digests": [
+      "grafana/grafana-oss@sha256:408afb9726de5122b00a2576763a8a57a3c86d5b0eff5305bc994ceb3eb96c3f"
+    ],
+    "health": {
+      "database": "ok",
+      "version": "11.2.0",
+      "commit": "2a88694fd3ced0335bf3726cc5d0adc2d1858855"
+    },
+    "unauthenticated_dashboard_http_status": 401,
+    "authenticated_dashboard_http_status": 200,
+    "dashboard_uid": "cloudshield-p5-2",
+    "panels": [
+      {
+        "id": 1,
+        "title": "공격 후보 로그 인입 · SSH 실패 / HTTP 4xx",
+        "query_count": 2
+      },
+      {
+        "id": 2,
+        "title": "탐지→대응 반환 지연 · 전체 10초 SLA 미평가",
+        "query_count": 1
+      },
+      {
+        "id": 3,
+        "title": "LLM 정상 / Fallback · 사건별 최종 관측 상태",
+        "query_count": 1
+      },
+      {
+        "id": 4,
+        "title": "사건 처리 타임라인 · 최신 200건",
+        "query_count": 1
+      }
+    ],
+    "datasource_http_status": 200,
+    "datasource_uid": "cloudshield-cloudwatch",
+    "bind_mounts_read_only": true,
+    "loopback_only": true,
+    "aws_credentials_mounted": false,
+    "aws_metadata_disabled": true,
+    "cloudwatch_query_executed": false,
+    "aws_datasource_connection_verified": false,
+    "browser_rendering_verified": false
+  },
+  "live_measurement": {
+    "attack_executed": false,
+    "target_probe_executed": false,
+    "packet_capture_executed": false,
+    "recovery_executed": false,
+    "run_id": null,
+    "incident_id": null,
+    "sla_seconds": null
+  },
+  "source_files": [
+    {
+      "private_filename": "runtime-preparation.private.json",
+      "bytes": 721,
+      "sha256": "749e6e00d59aec6da8e92e0e05c7fbc3693d340a70533d2d2566372ba037de72"
+    },
+    {
+      "private_filename": "runner-preparation.private.json",
+      "bytes": 2318,
+      "sha256": "1b308483cb2eb48a9472f0659cdad3c9659720178852232e43dab1655fb998c2"
+    },
+    {
+      "private_filename": "readiness-clock.private.json",
+      "bytes": 437,
+      "sha256": "a153476d8d4ab7bfb6ce73c48ca304282f81174b72fe4821b7b8bbbc961cd52a"
+    },
+    {
+      "private_filename": "capture-permission-preparation.private.json",
+      "bytes": 578,
+      "sha256": "e9da4a826f89b7701e94762155bb86d928673013105a9e824efdf576bfe7588a"
+    },
+    {
+      "private_filename": "dry-run.stdout.private.txt",
+      "bytes": 740,
+      "sha256": "fb22350e9cb8f6f5536c93b117e59c4d43e708e888157d7250aea4654b1c22c3"
+    },
+    {
+      "private_filename": "dry-run.stderr.private.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "private_filename": "deployment-manifest.private.json",
+      "bytes": 1403,
+      "sha256": "9f2633f2a7ae303cc3592f1d76c6a715052d2b3fc2db05a0d61ad3494f141696"
+    },
+    {
+      "private_filename": "preparation-preservation-manifest.private.json",
+      "bytes": 1222,
+      "sha256": "622b5ca762724d4f36243c86fced5000aa1ee4edca731909898843a4a40e0f28"
+    },
+    {
+      "private_filename": "grafana-preparation.private.json",
+      "bytes": 1435,
+      "sha256": "1a27c6db11241a93520d2fce50ccc0901e29ad5d2a7be0772e32e04ec95dbddf"
+    }
+  ],
+  "selection_and_masking": [
+    "Selected readiness, version, permission, authentication and hash results; omitted private runtime/evidence paths and login secret.",
+    "Seven transferred remote files matched their remote SHA-256 and byte counts; the preservation manifest is retained separately.",
+    "Grafana API readiness is verified; browser rendering and AWS data connection are not verified.",
+    "NTP synchronization does not establish a measured cross-host clock error.",
+    "Original private-key bytes, credentials, actual IP/account/instance/VPC identifiers are excluded."
+  ],
+  "limits": [
+    "Preparation only; no real traffic roundtrip or SLA evidence.",
+    "Hashes establish retained bytes, not AWS origin or extraction completeness."
+  ]
+}

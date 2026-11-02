@@ -1,0 +1,102 @@
+{
+  "kind": "live_attempt_selected_evidence",
+  "controller_run_id": "20261030T090116Z-1401680ef574",
+  "started_at": "2026-10-30T09:01:16.540329+00:00",
+  "ended_at": "2026-10-30T09:03:16.598273+00:00",
+  "scope": {
+    "attacker": "attacker-p5-4",
+    "target": "target-p5-4",
+    "port": 22,
+    "region": "ap-southeast-2"
+  },
+  "result": {
+    "workflow_complete": false,
+    "runner_exit_code": 20,
+    "controller_exit_code": 3,
+    "baseline": "timeout",
+    "hydra_started": false,
+    "web_started": false,
+    "incident_id": null,
+    "slack_sent": false,
+    "traffic_verified": false,
+    "failures": [
+      "attack_or_block_not_completed",
+      "incident:ValueError",
+      "traffic_not_recovered"
+    ],
+    "recovery_probes": 6
+  },
+  "packet_observation": {
+    "pcap_frames": 7,
+    "outbound_syn": 7,
+    "outbound_new_tcp_ports": 7,
+    "inbound_syn_ack": 0,
+    "inbound_rst": 0,
+    "inbound_tcp_frames": 0,
+    "direction_basis": "approved target IP and TCP port 22; attacker capture is before public NAT",
+    "first_frame_epoch": "1793350886.368845000",
+    "last_frame_epoch": "1793350934.195614000"
+  },
+  "configuration": {
+    "l4_function_success": true,
+    "l4_outcome": "unchanged",
+    "waf_function_success": true,
+    "final_baseline_sg_verified": true,
+    "final_waf_source_clear": true,
+    "final_checked_at": "2026-10-30T09:05:08.700938+00:00",
+    "configuration_recovery_transition_verified": false
+  },
+  "diagnostics": {
+    "aws_cli_available": true,
+    "aws_cli_version": "2.39.2",
+    "describe_security_groups": "permission_denied",
+    "drop_location": "unverified",
+    "original_remote_files": 14,
+    "all_remote_hashes_match": true,
+    "aws_cli_returncode": 254
+  },
+  "e2e_sla_verified": false,
+  "sources": [
+    {
+      "private_alias": "controller-result.private.json",
+      "bytes": 2040,
+      "sha256": "d77b9c8e392562d5f17112cc76a7cbf667d9dfbf1b7f141617fed2eeaa6a9e93"
+    },
+    {
+      "private_alias": "ssh/scenario-result.private.json",
+      "bytes": 1517,
+      "sha256": "f726120752dacc1f880249ce3af75a54e419e8d1a74340953d390896bc934e14"
+    },
+    {
+      "private_alias": "ssh/restore.private.json",
+      "bytes": 1080,
+      "sha256": "884f977f99fd8051406872868a7d7aa080110636e63c29c47797505e65e02dc6"
+    },
+    {
+      "private_alias": "ssh/recovery-probes.private.json",
+      "bytes": 1058,
+      "sha256": "57344a7f1f49aaef24399f5c990e62b1652252714a07a1e266b020da933a6c9b"
+    },
+    {
+      "private_alias": "ssh/remote-manifest.private.json",
+      "bytes": 2323,
+      "sha256": "5a6a941faa04a8d0e6a344bceadcb970c9ec3de9bc44f83be464a0d26c915265"
+    },
+    {
+      "private_alias": "ssh/packet-review-corrected.private.json",
+      "bytes": 718,
+      "sha256": "7168e745517cf6bc08413bf8071c3c335e4a15aec7d4384c71cd168f197d7b49"
+    },
+    {
+      "private_alias": "ssh/packet-review-outer.private.csv",
+      "bytes": 595,
+      "sha256": "d04652efb5042ae8b9f742204ed4a3b356e6907c6a9d9ee9f3180777111b3be0"
+    },
+    {
+      "private_alias": "ssh/remote/capture-0.pcap",
+      "bytes": 654,
+      "sha256": "c9ae5b17a3eef2ea5159e9e9112bacd0546554c09f6bb5c6d6ea2bc7cda26ccf"
+    }
+  ],
+  "selection": "Identifiers masked; packet direction uses approved destination before public NAT. Initial private direction summary was corrected and is not used."
+}
