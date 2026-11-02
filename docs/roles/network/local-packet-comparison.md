@@ -205,7 +205,9 @@ ACL·캐시·게이트 코드를 변경하지 않고 기준 커밋의 관리형 
 복사해 바이트 일치를 확인했다. 최초 분리 환경은 dev 도구가 없어 Ruff 시작 전 실패했으며,
 이후 **Python 3.12.14 + `uv sync --locked --extra dev`**로 원본과 같은 잠긴 환경을 준비해
 동일 명령을 다시 실행했다. 우회 플래그는 사용하지 않았다. 검증 경로는
-`C:/Users/User/.codex/worktrees/network-packet-validation/Aleph`이며 작업 종료 후 정리한다.
+`C:/Users/User/.codex/worktrees/network-packet-validation/Aleph`다. 앱이 이를 현재 채팅의 기본
+체크아웃으로 등록해 archive를 거부했으므로 검증 사본은 보존한다. 실제 작업 브랜치·커밋은
+`C:/Aleph`에 있으며, 이 보호를 우회해 검증 worktree를 삭제하지 않았다.
 기존 테스트·fixture 226개의 AST도 기준 커밋과 같음을 확인했다.
 
 품질 게이트 원본 로그는 `network/lab/runs/quality-a70c26bdf27d42cc8adc3103110b2cf8/check-separated-dev.log`,
