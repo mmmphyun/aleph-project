@@ -133,6 +133,645 @@ def test_roundtrip_precise_roundtrip_and_atomic_output(
     assert not list(tmp_path.glob(".roundtrip-*"))
 
 
+@pytest.fixture
+def packet_modules(monkeypatch):
+    directory = Path(__file__).resolve().parents[2] / "network"
+    monkeypatch.syspath_prepend(str(directory))
+    monkeypatch.syspath_prepend(str(directory / "lab"))
+    return (
+        __import__("packet_lab"),
+        __import__("packet_worker"),
+        __import__("packet_scenario_compare"),
+    )
+
+
+@pytest.fixture
+def packet_case(packet_modules):
+    """합성 필드로 판독을 검증한다. 실제 PCAP 실험과 혼동하지 않는다."""
+    import csv
+    import io
+
+    comparator = packet_modules[2]
+
+    def make(mode="normal"):
+        rows = []
+
+        def packet(
+            *,
+            server=False,
+            syn=False,
+            ack=True,
+            fin=False,
+            rst=False,
+            seq=101,
+            ackno=201,
+            length=0,
+            method="",
+            status="",
+        ):
+            row = dict.fromkeys(comparator.ALL_FIELDS, "")
+            row.update(
+                {
+                    "frame.time_epoch": str(Decimal("100.1") + Decimal(len(rows)) / 1000),
+                    "tcp.stream": "0",
+                    "ip.src": "172.18.0.2" if server else "172.18.0.3",
+                    "ip.dst": "172.18.0.3" if server else "172.18.0.2",
+                    "tcp.srcport": "8080" if server else "40000",
+                    "tcp.dstport": "40000" if server else "8080",
+                    "tcp.flags.syn": str(int(syn)),
+                    "tcp.flags.ack": str(int(ack)),
+                    "tcp.flags.fin": str(int(fin)),
+                    "tcp.flags.reset": str(int(rst)),
+                    "frame.number": str(len(rows) + 1),
+                    "tcp.seq_raw": str(seq),
+                    "tcp.ack_raw": str(ackno),
+                    "tcp.len": str(length),
+                    "http.request.method": method,
+                    "http.response.code": status,
+                }
+            )
+            rows.append(row)
+
+        packet(syn=True, ack=False, seq=100, ackno=0)
+        if mode == "rst":
+            packet(server=True, rst=True, seq=0, ackno=101)
+        elif mode != "drop":
+            packet(server=True, syn=True, seq=200, ackno=101)
+            packet()
+            packet(method="GET", length=64)
+            packet(
+                server=True,
+                seq=201,
+                ackno=165,
+                length=100,
+                status="403" if mode == "http403" else "200",
+            )
+            packet(server=True, fin=True, seq=301, ackno=165)
+            packet(seq=165, ackno=302)
+            packet(fin=True, seq=165, ackno=302)
+            packet(server=True, seq=302, ackno=166)
+        config = {
+            "scenario": mode,
+            "run_id": "synthetic-packet",
+            "target": "172.18.0.2",
+            "client": "172.18.0.3",
+            "port": 8080,
+            "requests": 1,
+            "concurrency": 1,
+            "capture_seconds": 8,
+            "packets": 256,
+            "file_bytes": 1048576,
+            "rule_verified": True,
+            "rule_packets": 1,
+        }
+        worker = {
+            "scenario": mode,
+            "run_id": config["run_id"],
+            "worker_complete": True,
+            "error": None,
+            "capture": {
+                "started_epoch": "100",
+                "ended_epoch": "108",
+                "exit": 124,
+                "kernel_dropped": 0,
+                "packets": len(rows),
+            },
+            "client": {
+                "exit": {"drop": 28, "rst": 7}.get(mode, 0),
+                "reason": "timeout" if mode == "drop" else "http_response",
+                "local_port": 40000,
+                "http_status": 0
+                if mode in ("drop", "rst")
+                else (403 if mode == "http403" else 200),
+            },
+        }
+
+        def render():
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=comparator.ALL_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+            worker["capture"]["packets"] = len(rows)
+            return output.getvalue()
+
+        return rows, worker, config, render
+
+    return make
+
+
+@pytest.mark.parametrize("mode", ["normal", "drop", "rst", "http403"])
+def test_packet_compare_four_distinct_outcomes(packet_modules, packet_case, mode):
+    rows, worker, config, render = packet_case(mode)
+    result = packet_modules[2].compare(render(), worker, config)
+    assert result["passed"]
+    assert result["new_connections"] == 1
+    assert result["handshake_verified"] == (mode in ("normal", "http403"))
+    assert result["syn_retransmissions"] == result["retransmissions"] == 0
+    if mode == "rst":
+        assert result["rst"][0]["direction"] == "server_to_client"
+        assert result["response_seconds"] == "0.001"
+    elif mode in ("normal", "http403"):
+        assert [x["frame"] for x in result["handshake_frames"]] == [1, 2, 3]
+        assert [x["direction"] for x in result["fin"]] == ["server_to_client", "client_to_server"]
+    assert len(rows) == result["packet_count"]
+
+
+@pytest.mark.parametrize("different", [False, True])
+def test_packet_syn_retransmission_is_not_new_connection(packet_modules, packet_case, different):
+    rows, worker, config, render = packet_case("drop")
+    row = dict(rows[0], **{"frame.number": "2", "frame.time_epoch": "101.1"})
+    if different:
+        row.update({"tcp.stream": "1", "tcp.srcport": "40001", "tcp.seq_raw": "999"})
+    rows.append(row)
+    result = packet_modules[2].compare(render(), worker, config)
+    assert result["syn_retransmissions"] == (0 if different else 1)
+    assert result["new_connections"] == (2 if different else 1)
+    assert result["passed"] != different
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "handshake",
+        "client",
+        "response_direction",
+        "http_status",
+        "capture_failed",
+        "kernel_drop",
+        "rule",
+        "counter",
+        "clock",
+    ],
+)
+def test_packet_contradictions_never_become_expected_success(packet_modules, packet_case, change):
+    mode = "drop" if change in ("rule", "counter") else "normal"
+    rows, worker, config, render = packet_case(mode)
+    if change == "handshake":
+        rows[1]["tcp.ack_raw"] = "999"
+    elif change == "client":
+        worker["client"]["exit"] = 28
+    elif change == "response_direction":
+        rows[4].update({k: rows[3][k] for k in ("ip.src", "ip.dst", "tcp.srcport", "tcp.dstport")})
+    elif change == "http_status":
+        rows[4]["http.response.code"] = "403"
+    elif change == "capture_failed":
+        worker.update(worker_complete=False, error="capture failure")
+    elif change == "kernel_drop":
+        worker["capture"]["kernel_dropped"] = 1
+    elif change == "rule":
+        config["rule_verified"] = False
+    elif change == "counter":
+        config["rule_packets"] = 0
+    else:
+        rows[1]["frame.time_epoch"] = "100.01"
+    assert not packet_modules[2].compare(render(), worker, config)["passed"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("tcp.seq_raw", "4294967296"),
+        ("tcp.ack_raw", "-1"),
+        ("tcp.seq_raw", "１"),
+        ("frame.number", "0"),
+        ("tcp.len", "65536"),
+        ("tcp.flags.syn", "2"),
+        ("tcp.analysis.retransmission", "true"),
+        ("http.request.method", "POST"),
+        ("http.response.code", "500"),
+        ("ip.src", "8.8.8.8"),
+        ("frame.time_epoch", "99"),
+    ],
+)
+def test_packet_invalid_fields_are_rejected(packet_modules, packet_case, field, value):
+    rows, worker, config, render = packet_case()
+    rows[0][field] = value
+    with pytest.raises(ValueError):
+        packet_modules[2].compare(render(), worker, config)
+
+
+@pytest.mark.parametrize("change", ["bytes", "rows", "duplicate_frame", "time", "limit", "run"])
+def test_packet_input_and_window_bounds(packet_modules, packet_case, change):
+    rows, worker, config, render = packet_case()
+    if change == "bytes":
+        raw = "X" * (1048576 + 1)
+    elif change == "rows":
+        rows.extend([dict(rows[0])] * 257)
+    elif change == "duplicate_frame":
+        rows[1]["frame.number"] = "1"
+    elif change == "time":
+        worker["capture"]["ended_epoch"] = "114"
+    elif change == "limit":
+        config["requests"] = 2
+    else:
+        worker["run_id"] = "another-run"
+    with pytest.raises(ValueError):
+        packet_modules[2].compare(raw if change == "bytes" else render(), worker, config)
+
+
+def test_packet_missing_packets_are_not_drop_success(packet_modules, packet_case):
+    rows, worker, config, render = packet_case("drop")
+    rows.clear()
+    assert not packet_modules[2].compare(render(), worker, config)["passed"]
+
+
+def test_packet_plan_never_runs_tools_or_creates_files(packet_modules, monkeypatch, tmp_path):
+    host = packet_modules[0]
+    monkeypatch.setattr(host, "bounded_command", lambda *a, **k: pytest.fail("tool"))
+    monkeypatch.setattr(host, "PacketLab", lambda *a, **k: pytest.fail("lab"))
+    assert host.main(["plan", "--output-root", str(tmp_path / "absent")]) == 0
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("mode", ["normal", "drop", "rst", "http403"])
+@pytest.mark.parametrize("role", ["server", "client"])
+def test_packet_container_capabilities_and_isolation(
+    packet_modules, tmp_path, monkeypatch, mode, role
+):
+    host = packet_modules[0]
+    lab = host.PacketLab(tmp_path / "trial", mode)
+    lab.network, lab.image_id = "a" * 64, "sha256:local"
+    calls = []
+
+    def call(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "b" * 64, "")
+
+    monkeypatch.setattr(lab, "call", call)
+    assert lab.create_owned(role) == "b" * 64
+    args = calls[0]
+    assert args[args.index("--network") + 1] == lab.network
+    assert "--read-only" in args and "no-new-privileges:true" in args
+    assert "max-file=1" in args and "max-size=64k" in args and "compress=false" in args
+    assert not {"--privileged", "--publish", "-p", "--mount", "--volume", "-v"} & set(args)
+    caps = [args[i + 1] for i, arg in enumerate(args) if arg == "--cap-add"]
+    assert caps == (
+        ["NET_RAW", "SETUID", "SETGID", "KILL"]
+        if role == "client"
+        else (["NET_ADMIN"] if mode in ("drop", "rst") else [])
+    )
+    assert lab.pending == [] and lab.containers == ["b" * 64]
+
+
+def test_packet_create_timeout_never_deletes_foreign_name(packet_modules, tmp_path, monkeypatch):
+    host = packet_modules[0]
+    lab = host.PacketLab(tmp_path / "trial", "normal")
+    calls = []
+
+    def call(*args, **kwargs):
+        calls.append(args)
+        if args[0] == "network" and args[1] == "create":
+            raise TimeoutError("ambiguous create")
+        return subprocess.CompletedProcess(args, 0, json.dumps([{"Labels": {}}]), "")
+
+    monkeypatch.setattr(lab, "call", call)
+    with pytest.raises(TimeoutError):
+        lab.create_owned("network")
+    assert lab.cleanup()
+    assert all("rm" not in args for args in calls)
+
+
+def test_packet_archive_failure_retains_original_container(packet_modules, tmp_path, monkeypatch):
+    host = packet_modules[0]
+    lab = host.PacketLab(tmp_path / "trial", "normal")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("copy unavailable")
+
+    monkeypatch.setattr(lab, "call", fail)
+    with pytest.raises(RuntimeError):
+        lab.preserve("owned")
+    assert lab.retained_containers == {"owned"}
+
+
+def test_packet_cleanup_continues_after_owned_failure(packet_modules, tmp_path, monkeypatch):
+    host = packet_modules[0]
+    lab = host.PacketLab(tmp_path / "trial", "normal")
+    lab.containers, lab.network = ["a", "b"], "net"
+    calls = []
+
+    def call(*args, **kwargs):
+        calls.append(args)
+        if args == ("inspect", "b"):
+            raise RuntimeError("engine failure")
+        item = {
+            "Id": args[-1],
+            "Config": {"Labels": {host.LABEL: lab.run_id}},
+            "Labels": {host.LABEL: lab.run_id},
+            "Containers": {},
+        }
+        return subprocess.CompletedProcess(args, 0, json.dumps([item]), "")
+
+    monkeypatch.setattr(lab, "call", call)
+    errors = lab.cleanup()
+    assert len(errors) == 1 and errors[0].startswith("b:")
+    assert ("rm", "-f", "a") in calls and ("network", "rm", "net") in calls
+
+
+@pytest.mark.parametrize("mode", ["timeout", "output", "exit"])
+def test_packet_tool_failure_bounds_and_partial_output(packet_modules, mode):
+    host = packet_modules[0]
+    code = {
+        "timeout": "import time; time.sleep(3)",
+        "output": "print('X'*10000)",
+        "exit": "raise SystemExit(7)",
+    }[mode]
+    result = host.bounded_command(
+        [sys.executable, "-c", code],
+        timeout=0.05 if mode == "timeout" else 3,
+        env=os.environ.copy(),
+        limit=1024,
+    )
+    assert result["code"] != 0 and len(result["stdout"].encode()) <= 1024
+    assert (
+        result["reason"]
+        == {"timeout": "tool_timeout", "output": "output_limit", "exit": None}[mode]
+    )
+
+
+def test_packet_manifest_hashes_and_exclusive_storage(packet_modules, tmp_path):
+    host = packet_modules[0]
+    (tmp_path / "partial.pcap").write_bytes(b"partial evidence")
+    host.evidence_manifest(tmp_path, {"passed": False})
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert (
+        manifest["files"]["partial.pcap"]["sha256"]
+        == hashlib.sha256(b"partial evidence").hexdigest()
+    )
+    with pytest.raises(ValueError):
+        host.evidence_manifest(tmp_path, {"passed": True})
+    assert manifest["passed"] is False
+
+
+@pytest.mark.parametrize("kind", ["size", "write"])
+def test_packet_storage_errors_propagate(packet_modules, tmp_path, monkeypatch, kind):
+    host = packet_modules[0]
+    if kind == "size":
+        with pytest.raises(ValueError):
+            host.save(tmp_path / "large.json", {"value": "X" * 1048576})
+    else:
+        monkeypatch.setattr(host.os, "fsync", lambda *a: (_ for _ in ()).throw(OSError("disk")))
+        with pytest.raises(OSError):
+            host.save(tmp_path / "partial.json", {"passed": False})
+        assert (tmp_path / "partial.json").exists()
+
+
+@pytest.mark.parametrize(
+    "scenario,target,client,run_id",
+    [
+        ("unknown", "172.18.0.2", "172.18.0.3", "id"),
+        ("drop", "8.8.8.8", "172.18.0.3", "id"),
+        ("drop", "127.0.0.1", "172.18.0.3", "id"),
+        ("drop", "172.18.0.2", "172.18.0.2", "id"),
+        ("rst", "172.18.0.2", "172.18.0.3", "bad;id"),
+    ],
+)
+def test_packet_worker_rejects_invalid_scope(packet_modules, scenario, target, client, run_id):
+    with pytest.raises(ValueError):
+        packet_modules[1].validate(scenario, target, client, run_id)
+
+
+def test_packet_worker_request_limits_and_exact_clock(packet_modules, monkeypatch):
+    worker = packet_modules[1]
+    args = worker.curl_argv("172.18.0.2")
+    assert args[args.index("--connect-timeout") + 1] == "4"
+    assert args[args.index("--max-time") + 1] == "5"
+    assert args[args.index("--retry") + 1] == "0"
+    assert args[-1] == "http://172.18.0.2:8080/"
+    monkeypatch.setattr(worker.time, "time_ns", lambda: 1793351458217667001)
+    assert worker.stamp() == "1793351458.217667001"
+
+
+def test_packet_owned_child_escalates_term_then_kill(packet_modules, monkeypatch):
+    worker = packet_modules[1]
+    signals = []
+
+    class Process:
+        pid = 1234
+        calls = 0
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            self.calls += 1
+            if self.calls == 1:
+                assert timeout == 2
+                raise subprocess.TimeoutExpired("owned", timeout)
+            assert timeout == 1
+
+    monkeypatch.setattr(
+        worker.os, "killpg", lambda pid, sig: signals.append((pid, sig)), raising=False
+    )
+    monkeypatch.setattr(worker.signal, "SIGKILL", 9, raising=False)
+    worker.stop(Process())
+    assert signals == [(1234, worker.signal.SIGTERM), (1234, worker.signal.SIGKILL)]
+
+
+@pytest.mark.parametrize("failure", ["mismatch", "exception", "interrupt", "cleanup"])
+def test_packet_suite_retains_failed_trials_without_retry(
+    packet_modules, tmp_path, monkeypatch, failure
+):
+    host = packet_modules[0]
+    calls = []
+
+    class FakeLab:
+        def __init__(self, output, scenario):
+            self.output, self.scenario = output, scenario
+            self.output.mkdir()
+            self.run_id, self.events = output.name, []
+
+        def experiment(self):
+            calls.append(self.output.name)
+            if len(calls) == 1 and failure in ("exception", "interrupt"):
+                raise RuntimeError("capture") if failure == "exception" else KeyboardInterrupt()
+            return {"passed": len(calls) > 1 or failure != "mismatch", "reasons": []}
+
+        def cleanup(self):
+            return ["owned-leftover"] if len(calls) == 1 and failure == "cleanup" else []
+
+    monkeypatch.setattr(host, "PacketLab", FakeLab)
+    monkeypatch.setattr(host, "source_commit", lambda: "synthetic")
+    assert host.suite(tmp_path) == 1
+    summary = json.loads(next(tmp_path.glob("*/summary.json")).read_text(encoding="utf-8"))
+    assert len(summary["trials"]) == 12 and not summary["trials"][0]["passed"]
+    assert len(calls) == (1 if failure in ("interrupt", "cleanup") else 12)
+
+
+@pytest.mark.parametrize("extra_cap", [False, True])
+def test_packet_engine_canonical_cap_names_keep_exact_permissions(
+    packet_modules, tmp_path, monkeypatch, extra_cap
+):
+    host = packet_modules[0]
+    lab = host.PacketLab(tmp_path / "trial", "drop")
+    lab.network, lab.image_id, lab.containers = "net", "image", ["server", "client"]
+
+    def call(*args, **kwargs):
+        if args[:2] == ("network", "inspect"):
+            item = {
+                "Id": "net",
+                "Internal": True,
+                "Driver": "bridge",
+                "Labels": {host.LABEL: lab.run_id},
+                "Containers": {"server": {}, "client": {}},
+            }
+        else:
+            cid = args[-1]
+            caps = (
+                ["CAP_NET_ADMIN"]
+                if cid == "server"
+                else ["CAP_NET_RAW", "CAP_SETUID", "CAP_SETGID", "CAP_KILL"]
+            )
+            if extra_cap:
+                caps.append("CAP_SYS_ADMIN")
+            item = {
+                "Id": cid,
+                "Image": "image",
+                "State": {"Running": True},
+                "Config": {"Labels": {host.LABEL: lab.run_id}},
+                "Mounts": [],
+                "HostConfig": {
+                    "NetworkMode": "net",
+                    "ReadonlyRootfs": True,
+                    "CapAdd": caps,
+                    "CapDrop": ["ALL"],
+                    "SecurityOpt": ["no-new-privileges:true"],
+                },
+                "NetworkSettings": {
+                    "Networks": {
+                        "net": {
+                            "NetworkID": "net",
+                            "IPAddress": "172.18.0.2" if cid == "server" else "172.18.0.3",
+                        }
+                    }
+                },
+            }
+        return subprocess.CompletedProcess(args, 0, json.dumps([item]), "")
+
+    monkeypatch.setattr(lab, "call", call)
+    if extra_cap:
+        with pytest.raises(ValueError):
+            lab.verify_pair("server", "client")
+    else:
+        assert lab.verify_pair("server", "client") == ["172.18.0.2", "172.18.0.3"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["none", "tool", "readiness", "interrupt", "exit", "dropped", "empty", "saturated", "pcap"],
+)
+def test_packet_capture_failure_and_interrupt_preserve_partial_result(
+    packet_modules, tmp_path, monkeypatch, failure
+):
+    worker = packet_modules[1]
+    monkeypatch.setattr(worker, "DIRECTORY", tmp_path)
+    original_read = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        return (
+            " ".join(["0"] * 22)
+            if str(path).replace("\\", "/") == "/proc/self/stat"
+            else (original_read(path, *args, **kwargs))
+        )
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    signals, probes = [], []
+    monkeypatch.setattr(worker.os, "killpg", lambda *a: signals.append(a), raising=False)
+    monkeypatch.setattr(worker.signal, "SIGKILL", 9, raising=False)
+
+    class Process:
+        pid = 12345
+        code = None
+
+        def __init__(self, args, **kwargs):
+            if failure == "tool":
+                raise FileNotFoundError("tcpdump")
+            self.err = kwargs["stderr"]
+            self.err.write(b"tcpdump: listening on eth0\n")
+            self.err.flush()
+            (tmp_path / "capture.pcap").write_bytes(b"X" * (24 if failure == "pcap" else 64))
+            assert args[-2:] == ["8", "256"]
+
+        def poll(self):
+            return 1 if failure == "readiness" else self.code
+
+        def wait(self, timeout):
+            self.code = 1 if failure == "exit" else 124
+            if not self.err.closed:
+                count = 0 if failure == "empty" else (256 if failure == "saturated" else 1)
+                dropped = 1 if failure == "dropped" else 0
+                self.err.write(
+                    (
+                        f"{count} packets captured\n{dropped} packets dropped by kernel\n"
+                        "시간 제한 도달: 종료 코드 124\n"
+                    ).encode()
+                )
+                self.err.flush()
+            return self.code
+
+    def probe(target):
+        probes.append(target)
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
+        return {"exit": 28, "http_status": 0, "reason": "timeout"}
+
+    monkeypatch.setattr(worker.subprocess, "Popen", Process)
+    monkeypatch.setattr(worker, "probe", probe)
+    code = worker.trial("drop", "172.18.0.2", "172.18.0.3", "synthetic")
+    result = json.loads((tmp_path / "worker-result.json").read_text())
+    assert code == (0 if failure == "none" else 1)
+    assert result["worker_complete"] == (failure == "none")
+    assert len(probes) == (0 if failure in ("tool", "readiness") else 1)
+    assert (tmp_path / "config.json").exists()
+    if failure == "interrupt":
+        assert result["error"].startswith("KeyboardInterrupt") and signals
+
+
+def test_packet_manifest_rejects_oversized_original_without_deleting_it(packet_modules, tmp_path):
+    path = tmp_path / "partial.pcap"
+    with path.open("wb") as stream:
+        stream.truncate(1048577)
+    with pytest.raises(ValueError):
+        packet_modules[0].evidence_manifest(tmp_path, {"passed": False})
+    assert path.stat().st_size == 1048577
+
+
+@pytest.mark.parametrize("mode", ["normal", "drop", "rst", "http403"])
+def test_packet_tshark_boolean_versions_preserve_original_input(packet_modules, packet_case, mode):
+    rows, worker, config, render = packet_case(mode)
+    for row in rows:
+        for key in packet_modules[2].FIELDS[6:]:
+            row[key] = "True" if row[key] == "1" else "False"
+    raw = render()
+    result = packet_modules[2].compare(raw, worker, config)
+    assert result["passed"] and result["normalized_boolean_fields"] == 4 * len(rows)
+    assert '"True"' in raw or "True" in raw
+    assert rows[0]["tcp.flags.syn"] == "True"
+
+
+def test_packet_binary_transfer_never_decodes_pcap(packet_modules):
+    result = packet_modules[0].bounded_command(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes([0,255,254,128]))"],
+        timeout=3,
+        env=os.environ.copy(),
+        binary=True,
+    )
+    assert result["code"] == 0 and result["stdout"] == bytes([0, 255, 254, 128])
+
+
+def test_packet_deadline_and_bad_resource_stop_before_tools(packet_modules, tmp_path, monkeypatch):
+    host = packet_modules[0]
+    lab = host.PacketLab(tmp_path / "trial", "normal")
+    monkeypatch.setattr(host, "bounded_command", lambda *a, **k: pytest.fail("tool"))
+    with pytest.raises(ValueError):
+        lab.create_owned("foreign")
+    lab.deadline = 0
+    with pytest.raises(TimeoutError):
+        lab.call("version")
+    with pytest.raises(SystemExit):
+        host.main(["run", "--output-root", str(tmp_path)])
+
+
 @pytest.mark.parametrize("source_kind", ["http_probe", "pcap_http"])
 def test_roundtrip_web_keepalive_observes_http_transitions(roundtrip, roundtrip_case, source_kind):
     context, rows, add, save, observations = roundtrip_case("web")
