@@ -11,6 +11,7 @@ import argparse
 import functools
 import hashlib
 import json
+import math
 import shutil
 import sys
 import time
@@ -80,6 +81,26 @@ IMAGE_SOURCES = {
     "network/tcpdump_capture.sh": "/opt/network/tcpdump_capture.sh",
     "network/lab/tcpdump.sh": "/usr/local/bin/tcpdump",
 }
+
+
+def evidence_json(raw):
+    """공유 strict parser의 중복 키 검증 뒤 프로파일 수치 연산용 유한 float를 읽는다.
+
+    Why: 앱 소요 시간과 tc 비율은 JSON number이며 공유 Decimal 객체를 직접 직렬화하지 않는다.
+    Constraints: 원본 1MiB, NaN/Infinity/float overflow 거부. epoch 문자열의 정밀도는 유지한다.
+    Side-effects: 순수 파싱이며 원본 증거는 변경하지 않는다.
+    """
+    if len(raw) > FILE_BYTES:
+        raise ValueError("JSON 증거 1MiB 상한")
+    strict_json(raw)
+
+    def finite(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("비유한 JSON 수치")
+        return number
+
+    return json.loads(raw, parse_float=finite)
 
 
 def source_fingerprints():
@@ -261,7 +282,7 @@ class NetemLab(base.PacketLab):
 
     def analyze(self):
         values = {
-            name: strict_json((self.output / name).read_bytes())
+            name: evidence_json((self.output / name).read_bytes())
             for name in (
                 "config.json",
                 "c-app.json",

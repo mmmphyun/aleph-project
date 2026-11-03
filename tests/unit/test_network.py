@@ -333,6 +333,67 @@ def test_netem_four_conditions_keep_body_and_capture_identity(
         assert value["effect_observed"]
 
 
+@pytest.mark.parametrize("mode", ["baseline", "delay", "loss", "reorder"])
+def test_netem_serialized_evidence_preserves_numeric_analysis(netem_modules, netem_case, mode):
+    lab, _, analyzer = netem_modules
+    data = netem_case(mode)
+    for key in set(data) - {"fields", "follows", "body"}:
+        data[key] = lab.evidence_json(json.dumps(data[key]).encode())
+    result = analyzer.compare(**data)
+    assert json.loads(json.dumps(result))["transfer_complete"]
+    assert result["status"] == ("baseline" if mode == "baseline" else "effect_observed")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b'{"a":1,"a":2}', b'{"a":NaN}', b'{"a":1e9999}', b" " * (1024**2 + 1)],
+    ids=["duplicate", "nan", "overflow", "capacity"],
+)
+def test_netem_json_boundary_rejects_ambiguous_or_nonfinite_input(netem_modules, raw):
+    with pytest.raises(ValueError):
+        netem_modules[0].evidence_json(raw)
+
+
+def test_netem_late_reset_keeps_body_completion_separate(netem_modules, netem_case):
+    import csv
+    import io
+
+    data = netem_case()
+    reader = csv.DictReader(io.StringIO(data["fields"]["s"]))
+    rows = list(reader)
+    rows[-1]["tcp.flags.reset"] = "1"
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=reader.fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    data["fields"]["s"] = output.getvalue()
+    value = netem_modules[2].compare(**data)
+    assert value["transfer_complete"] and value["body_integrity"]
+    assert not value["passed"] and value["reasons"] == ["closure_anomaly"]
+    assert value["status"] == "closure_anomaly" and not value["closure"]["complete"]
+
+
+@pytest.mark.parametrize("mode", ["delay", "loss", "reorder"])
+def test_netem_unmatched_packet_is_inconclusive_not_zero_effect(netem_modules, netem_case, mode):
+    import csv
+    import io
+
+    data = netem_case(mode)
+    reader = csv.DictReader(io.StringIO(data["fields"]["p"]))
+    rows = list(reader)
+    next(r for r in rows if r["tcp.srcport"] == "8080" and r["tcp.payload"])["ip.id"] = "0xffff"
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=reader.fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    data["fields"]["p"] = output.getvalue()
+    value = netem_modules[2].compare(**data)
+    assert value["passed"] and value["transfer_complete"]
+    assert value["effect_observed"] is None and not value["pairing_assessable"]
+    assert value["effect_assessment"] == value["status"] == "effect_inconclusive"
+    assert value["packet_pairing"]["unmatched_after"]
+
+
 @pytest.mark.parametrize("mode", ["loss", "reorder"])
 def test_netem_setting_alone_never_proves_observed_effect(netem_modules, netem_case, mode):
     value = netem_modules[2].compare(**netem_case(mode, observed=False))

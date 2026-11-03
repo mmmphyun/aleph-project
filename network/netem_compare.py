@@ -457,7 +457,6 @@ def compare(
             "content_length": 65536,
             "header_bytes": len(response_head(config["run_id"])),
         }
-        and ending["complete"]
     )
     if len(body) > 65536:
         raise ValueError("실제 앱 본문 상한")
@@ -514,17 +513,29 @@ def compare(
         "loss": assessable and drops > 0 and bool(pairs["unmatched_before"]),
         "reorder": assessable and bool(pairs["arrival_inversions"]),
     }[config["scenario"]]
+    # 전후 세그먼트 단위가 달라지면 미관측(0)과 판정 불충분을 구분한다.
+    # 대응된 일부 패킷의 지연·역전 원본은 packet_pairing에 그대로 남긴다.
+    assessment = (
+        "baseline"
+        if config["scenario"] == "baseline"
+        else (
+            "effect_observed"
+            if observed
+            else ("effect_unobserved" if assessable else "effect_inconclusive")
+        )
+    )
+    passed = transfer and ending["complete"]
     return {
-        "passed": transfer,
-        "reasons": [] if transfer else ["transfer_failed"],
+        "passed": passed,
+        "reasons": ([] if passed else ["closure_anomaly" if transfer else "transfer_failed"]),
         "status": "transfer_failed"
         if not transfer
-        else (
-            "baseline"
-            if config["scenario"] == "baseline"
-            else ("effect_observed" if observed else "effect_unobserved")
-        ),
-        "effect_observed": observed if config["scenario"] != "baseline" else None,
+        else ("closure_anomaly" if not ending["complete"] else assessment),
+        "effect_assessment": assessment,
+        "effect_observed": observed
+        if assessment not in ("baseline", "effect_inconclusive")
+        else None,
+        "pairing_assessable": assessable,
         "measurement_complete": True,
         "transfer_complete": transfer,
         "packetization_sufficient": packetization,
