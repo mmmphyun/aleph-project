@@ -145,6 +145,14 @@ def evidence_manifest(directory, metadata, *, limit=4 * FILE_BYTES):
 
 
 class PacketLab(Lab):
+    def capabilities(self, role):
+        """프로파일이 소유 역할별 최소 권한만 교체하며 기존 실험 권한은 유지한다."""
+        return (
+            ["NET_RAW", "SETUID", "SETGID", "KILL"]
+            if role == "client"
+            else (["NET_ADMIN"] if self.scenario in ("drop", "rst") else [])
+        )
+
     def server_command(self):
         """서버 실행만 프로파일별로 교체하고 기존 1요청 실험의 기본 명령은 유지한다."""
         return [
@@ -196,11 +204,7 @@ class PacketLab(Lab):
                 name,
             ]
         else:
-            caps = (
-                ["NET_RAW", "SETUID", "SETGID", "KILL"]
-                if role == "client"
-                else (["NET_ADMIN"] if self.scenario in ("drop", "rst") else [])
-            )
+            caps = self.capabilities(role)
             args = [
                 "create",
                 "--name",
@@ -266,11 +270,7 @@ class PacketLab(Lab):
             item = json.loads(self.call("inspect", cid).stdout)[0]
             host = item["HostConfig"]
             nets = list(item["NetworkSettings"]["Networks"].values())
-            expected_caps = (
-                ["NET_RAW", "SETUID", "SETGID", "KILL"]
-                if cid == client
-                else (["NET_ADMIN"] if self.scenario in ("drop", "rst") else [])
-            )
+            expected_caps = self.capabilities("client" if cid == client else "server")
             if (
                 item["Id"] != cid
                 or cid not in self.containers
@@ -562,10 +562,18 @@ class PacketLab(Lab):
         return failures
 
 
-def suite(root, *, lab_factory=None, scenarios=SCENARIOS, limits=LIMITS, source_hashes=None):
+def suite(
+    root,
+    *,
+    lab_factory=None,
+    scenarios=SCENARIOS,
+    limits=LIMITS,
+    source_hashes=None,
+    started_at=None,
+):
     root.mkdir(parents=True, exist_ok=True)
     directory = create_run_directory(root)
-    started = time.monotonic()
+    started = time.monotonic() if started_at is None else started_at
     trials = []
     save(
         directory / "plan.json",
@@ -582,7 +590,7 @@ def suite(root, *, lab_factory=None, scenarios=SCENARIOS, limits=LIMITS, source_
     interrupted = False
     for mode in scenarios:
         for repetition in range(1, 4):
-            if interrupted or time.monotonic() - started >= 720:
+            if interrupted or time.monotonic() - started >= limits.get("suite_work_seconds", 720):
                 trials.append(
                     {
                         "scenario": mode,
@@ -616,7 +624,14 @@ def suite(root, *, lab_factory=None, scenarios=SCENARIOS, limits=LIMITS, source_
                     interrupted = True
                 try:
                     save(lab.output / "commands.json", lab.events)
-                    files = evidence_manifest(lab.output, {"result": result, "limits": limits})
+                    manifest_args = (
+                        {"limit": limits["trial_bytes"]}
+                        if limits["trial_bytes"] != LIMITS["trial_bytes"]
+                        else {}
+                    )
+                    files = evidence_manifest(
+                        lab.output, {"result": result, "limits": limits}, **manifest_args
+                    )
                     result["manifest_sha256"] = hashlib.sha256(
                         (lab.output / "manifest.json").read_bytes()
                     ).hexdigest()

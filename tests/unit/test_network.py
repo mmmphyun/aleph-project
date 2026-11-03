@@ -16,6 +16,774 @@ import pytest
 
 
 @pytest.fixture
+def netem_modules(monkeypatch):
+    directory = Path(__file__).resolve().parents[2] / "network"
+    monkeypatch.syspath_prepend(str(directory))
+    monkeypatch.syspath_prepend(str(directory / "lab"))
+    return __import__("netem_lab"), __import__("netem_worker"), __import__("netem_compare")
+
+
+@pytest.fixture
+def netem_case(netem_modules):
+    """실제 통신 없이 전후 패킷 순서·TShark 재조립·앱 로그의 독립 근거를 만든다."""
+    import copy
+    import csv
+    import io
+
+    _, worker, analyzer = netem_modules
+
+    def make(mode="baseline", observed=True, wrap=False):
+        run_id = "cs-netem-" + "a" * 32
+        client_ip, server_ip, port = "172.20.0.3", "172.20.0.2", 41000
+        initial_c, initial_s = (2**32 - 100, 2**32 - 300) if wrap else (100, 500)
+        config = {
+            "profile": worker.PROFILE,
+            "scenario": mode,
+            "run_id": run_id,
+            "client": client_ip,
+            "server": server_ip,
+            "connections": 1,
+            "requests": 1,
+            "body_bytes": 65536,
+            "body_sha256": worker.BODY_SHA256,
+            "packets": 1024,
+            "capture_seconds": 20,
+            "file_bytes": 1024**2,
+        }
+        req, response = worker.request(run_id), worker.response_head(run_id) + worker.BODY
+        source = []
+
+        def packet(direction, when, seq, ack, data=b"", syn=False, fin=False, retrans=False):
+            c = direction == "c"
+            row = dict.fromkeys(analyzer.ALL_FIELDS, "")
+            row.update(
+                {
+                    "frame.time_epoch": str(when),
+                    "tcp.stream": "7",
+                    "ip.src": client_ip if c else server_ip,
+                    "ip.dst": server_ip if c else client_ip,
+                    "tcp.srcport": str(port if c else 8080),
+                    "tcp.dstport": str(8080 if c else port),
+                    "tcp.flags.syn": str(int(syn)),
+                    "tcp.flags.ack": str(int(not syn or not c)),
+                    "tcp.flags.fin": str(int(fin)),
+                    "tcp.flags.reset": "0",
+                    "frame.number": str(len(source) + 1),
+                    "frame.len": str(54 + len(data)),
+                    "frame.cap_len": str(54 + len(data)),
+                    "ip.id": f"0x{len(source) + 1:04x}",
+                    "ip.hdr_len": "20",
+                    "tcp.seq_raw": str(seq % 2**32),
+                    "tcp.ack_raw": str(ack % 2**32),
+                    "tcp.len": str(len(data)),
+                    "tcp.analysis.retransmission": "1" if retrans else "",
+                    "tcp.payload": data.hex(":"),
+                }
+            )
+            source.append(row)
+            return row
+
+        packet("c", Decimal("101.001"), initial_c, 0, syn=True)
+        packet("s", Decimal("101.002"), initial_s, initial_c + 1, syn=True)
+        packet("c", Decimal("101.003"), initial_c + 1, initial_s + 1)
+        packet("c", Decimal("101.004"), initial_c + 1, initial_s + 1, req)
+        packet("s", Decimal("101.005"), initial_s + 1, initial_c + 1 + len(req))
+        data = []
+        for offset in range(0, len(response), 1024):
+            when = Decimal("101.006") + Decimal(len(data)) / 1000
+            data.append(
+                packet(
+                    "s",
+                    when,
+                    initial_s + 1 + offset,
+                    initial_c + 1 + len(req),
+                    response[offset : offset + 1024],
+                )
+            )
+        original_missing = None
+        if mode == "loss" and observed:
+            original_missing = data[1]["ip.id"]
+            when = Decimal(data[-1]["frame.time_epoch"]) + Decimal("0.1")
+            packet(
+                "s",
+                when,
+                initial_s + 1 + 1024,
+                initial_c + 1 + len(req),
+                response[1024:2048],
+                retrans=True,
+            )
+        last = Decimal(source[-1]["frame.time_epoch"])
+        packet(
+            "s",
+            last + Decimal("0.001"),
+            initial_s + 1 + len(response),
+            initial_c + 1 + len(req),
+            fin=True,
+        )
+        tail = last + Decimal("0.06")
+        packet("c", tail, initial_c + 1 + len(req), initial_s + 2 + len(response))
+        packet(
+            "c",
+            tail + Decimal("0.001"),
+            initial_c + 1 + len(req),
+            initial_s + 2 + len(response),
+            fin=True,
+        )
+        packet(
+            "s", tail + Decimal("0.002"), initial_s + 2 + len(response), initial_c + 2 + len(req)
+        )
+        before, after = [], []
+        ordinal = 0
+        for original in source:
+            row = copy.deepcopy(original)
+            row["frame.time_epoch"] = str(Decimal(row["frame.time_epoch"]) + Decimal("0.000001"))
+            before.append(row)
+            if row["ip.src"] != server_ip or row["ip.id"] == original_missing:
+                continue
+            post = copy.deepcopy(row)
+            delay = Decimal("0.000001")
+            if Decimal(row["frame.time_epoch"]) > Decimal("101.0033"):
+                ordinal += 1
+                if mode == "delay" or (mode == "reorder" and (not observed or ordinal % 3)):
+                    delay += Decimal("0.05")
+            post["frame.time_epoch"] = str(Decimal(post["frame.time_epoch"]) + delay)
+            after.append(post)
+        after.sort(key=lambda r: Decimal(r["frame.time_epoch"]))
+        groups = {"s": source, "p": before, "q": after}
+        fields, captures = {}, {}
+        for prefix, rows in groups.items():
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=analyzer.ALL_FIELDS)
+            writer.writeheader()
+            for index, row in enumerate(rows, 1):
+                row = {
+                    **row,
+                    "frame.number": str(index),
+                    "tcp.stream": {"s": "7", "p": "9", "q": "2"}[prefix],
+                }
+                writer.writerow(row)
+            fields[prefix] = output.getvalue()
+            captures[prefix] = {
+                "interface": "ifb0" if prefix == "q" else "eth0",
+                "peer": client_ip if prefix == "s" else server_ip,
+                "valid": True,
+                "errors": [],
+                "exit": 124,
+                "kernel_dropped": 0,
+                "packets": len(rows),
+                "started_epoch": "100",
+                "ended_epoch": "122",
+            }
+        delimiter = "=" * 67
+        follows = {
+            "s": (
+                f"{delimiter}\nFollow: tcp,raw\nFilter: tcp.stream eq 7\n"
+                f"Node 0: {client_ip}:{port}\nNode 1: {server_ip}:8080\n"
+                f"{req.hex()}\n\t{response.hex()}\n{delimiter}\n"
+            ),
+            "q": (
+                f"{delimiter}\nFollow: tcp,raw\nFilter: tcp.stream eq 2\n"
+                f"Node 0: {server_ip}:8080\nNode 1: {client_ip}:{port}\n"
+                f"{response.hex()}\n{delimiter}\n"
+            ),
+        }
+
+        def event(kind, at, index, **kwargs):
+            return {
+                "event": kind,
+                "event_id": index,
+                "epoch": str(at),
+                "monotonic_ns": int(at * 10**9),
+                **kwargs,
+            }
+
+        first = next(
+            r
+            for r in after
+            if r["tcp.seq_raw"] == str((initial_s + 1) % 2**32) and int(r["tcp.len"])
+        )
+        received = Decimal(first["frame.time_epoch"]) + Decimal("0.00001")
+        completed = max(
+            Decimal(r["frame.time_epoch"]) for r in after if int(r["tcp.len"])
+        ) + Decimal("0.0001")
+        client_events = [
+            event("connect_started", Decimal("101.0008"), 1),
+            event("connect_returned", Decimal("101.00302"), 2),
+            event("socket_open", Decimal("101.00303"), 3),
+            event("request_send_started", Decimal("101.0039"), 4),
+            event("request_send_returned", Decimal("101.0041"), 5, bytes=len(req)),
+            event("receive", received, 6, bytes=1024),
+            event("body_complete", completed, 7, bytes=65536, sha256=worker.BODY_SHA256),
+            event("eof", completed + Decimal("0.01"), 8),
+        ]
+        client = {
+            **{k: config[k] for k in ("profile", "scenario", "run_id")},
+            "role": "client",
+            "socket": {
+                "id": run_id + ":client:1",
+                "pid": 7,
+                "fd": 3,
+                "local": [client_ip, port],
+                "remote": [server_ip, 8080],
+            },
+            "events": client_events,
+            "body": {"bytes": 65536, "sha256": worker.BODY_SHA256},
+            "http": {
+                "status": 200,
+                "content_length": 65536,
+                "header_bytes": len(worker.response_head(run_id)),
+            },
+            "metrics": {
+                "connect_seconds": 0.00222,
+                "first_byte_seconds": float(received - Decimal("101.0039")),
+                "complete_seconds": float(completed - Decimal("101.0039")),
+            },
+        }
+        server = {
+            **{k: config[k] for k in ("profile", "scenario", "run_id")},
+            "role": "server",
+            "socket": {
+                "id": run_id + ":server:1",
+                "pid": 8,
+                "fd": 4,
+                "local": [server_ip, 8080],
+                "remote": [client_ip, port],
+            },
+            "events": [
+                event("socket_open", Decimal("101.0031"), 1),
+                event("request_received", Decimal("101.0045"), 2),
+            ],
+        }
+
+        def snapshot():
+            options = {"limit": 128, "gap": 0}
+            if mode in ("delay", "reorder"):
+                options["delay"] = {"delay": 0.05}
+            if mode == "loss":
+                options["loss-random"] = {"loss": 0.1}
+            if mode == "reorder":
+                options.update(reorder={"reorder": 1}, gap=3)
+            return [
+                {
+                    "kind": "netem",
+                    "options": options,
+                    "packets": 1,
+                    "bytes": 60,
+                    "drops": 0,
+                    "backlog": 0,
+                    "qlen": 0,
+                }
+            ]
+
+        after_stats = snapshot()
+        final_stats = snapshot()
+        final_stats[0].update(
+            packets=len(after) + int(original_missing is not None),
+            bytes=70000,
+            drops=int(original_missing is not None),
+        )
+        injection = {
+            **{k: config[k] for k in ("profile", "scenario", "run_id")},
+            "seed_supported": False,
+            "seed": None,
+            "after": after_stats,
+            "applied_epoch": "101.0032",
+            "verified_epoch": "101.0033",
+        }
+        client_result = {
+            **config,
+            "role": "client",
+            "worker_complete": True,
+            "transfer_complete": True,
+            "captures": {p: captures[p] for p in ("p", "q")},
+        }
+        server_result = {
+            **config,
+            "role": "server",
+            "worker_complete": True,
+            "transfer_complete": True,
+            "captures": {"s": captures["s"]},
+        }
+        return dict(
+            fields=fields,
+            follows=follows,
+            config=config,
+            client=client,
+            server=server,
+            client_result=client_result,
+            server_result=server_result,
+            injection=injection,
+            final={"removed": True, "before_removal": final_stats, "removal_epoch": "122.1"},
+            body=worker.BODY,
+        )
+
+    return make
+
+
+@pytest.mark.parametrize("mode", ["baseline", "delay", "loss", "reorder"])
+@pytest.mark.parametrize("wrap", [False, True])
+def test_netem_four_conditions_keep_body_and_capture_identity(
+    netem_modules, netem_case, mode, wrap
+):
+    value = netem_modules[2].compare(**netem_case(mode, wrap=wrap))
+    assert value["passed"] and value["body_integrity"] and value["body_bytes"] == 65536
+    assert value["handshake"] == [1, 2, 3] and value["closure"]["complete"]
+    assert value["seed"] is None and value["seed_supported"] is False
+    if mode != "baseline":
+        assert value["effect_observed"]
+
+
+@pytest.mark.parametrize("mode", ["loss", "reorder"])
+def test_netem_setting_alone_never_proves_observed_effect(netem_modules, netem_case, mode):
+    value = netem_modules[2].compare(**netem_case(mode, observed=False))
+    assert value["passed"] and value["status"] == "effect_unobserved"
+    assert not value["effect_observed"]
+    assert value["qdisc_drop_delta"] == 0 and value["retransmission_candidates"] == 0
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "run",
+        "role",
+        "capture",
+        "time",
+        "counter",
+        "limit",
+        "seed",
+        "socket",
+        "body",
+        "follow",
+        "seq",
+    ],
+)
+def test_netem_contradictions_and_transfer_failure_stay_separate(netem_modules, netem_case, change):
+    import csv
+    import io
+
+    data = netem_case()
+    if change == "run":
+        data["injection"]["run_id"] = "another"
+    elif change == "role":
+        data["client_result"]["role"] = "server"
+    elif change == "capture":
+        data["client_result"]["captures"]["q"]["kernel_dropped"] = 1
+    elif change == "time":
+        data["injection"]["applied_epoch"] = "101.001"
+    elif change == "counter":
+        data["final"]["before_removal"][0]["packets"] = 0
+    elif change == "limit":
+        data["injection"]["after"][0]["options"]["limit"] = 129
+    elif change == "seed":
+        data["injection"]["seed"] = 20261102
+    elif change == "socket":
+        data["client"]["socket"]["id"] = "another"
+    elif change == "body":
+        data["body"] = b"!" + data["body"][1:]
+        value = netem_modules[2].compare(**data)
+        assert not value["passed"] and value["status"] == "transfer_failed"
+        return
+    elif change == "follow":
+        data["follows"]["q"] = data["follows"]["q"].rstrip("=\n")
+    else:
+        reader = csv.DictReader(io.StringIO(data["fields"]["q"]))
+        rows = list(reader)
+        rows[2]["tcp.seq_raw"] = "4294967295"
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=reader.fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+        data["fields"]["q"] = output.getvalue()
+    with pytest.raises((ValueError, KeyError)):
+        netem_modules[2].compare(**data)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("frame.cap_len", "1"),
+        ("ip.hdr_len", "24"),
+        ("tcp.seq_raw", "4294967296"),
+        ("tcp.flags.syn", "yes"),
+        ("frame.time_epoch", "99"),
+        ("tcp.payload", "zz"),
+        ("tcp.stream", "-1"),
+        ("tcp.dstport", "443"),
+    ],
+)
+def test_netem_decoded_field_bounds(netem_modules, netem_case, field, value):
+    import csv
+    import io
+
+    data = netem_case()
+    analyzer = netem_modules[2]
+    reader = csv.DictReader(io.StringIO(data["fields"]["s"]))
+    rows = list(reader)
+    rows[0][field] = value
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=reader.fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    with pytest.raises(ValueError):
+        analyzer.parse_fields(
+            output.getvalue(), data["config"], data["server_result"]["captures"]["s"], "s", 41000
+        )
+
+
+@pytest.mark.parametrize("bad", ["unknown", "127.0.0.1", "same", "run"])
+def test_netem_invalid_scope_precedes_tools(netem_modules, monkeypatch, bad):
+    worker = netem_modules[1]
+    monkeypatch.setattr(worker, "command", lambda *a, **k: pytest.fail("도구 호출 금지"))
+    mode, run, server, client = "baseline", "cs-netem-" + "a" * 32, "172.20.0.2", "172.20.0.3"
+    if bad == "unknown":
+        mode = "drop"
+    elif bad == "127.0.0.1":
+        server = bad
+    elif bad == "same":
+        client = server
+    else:
+        run = "cs-other"
+    with pytest.raises(ValueError):
+        worker.prepare(mode, run, server, client, False)
+
+
+def test_netem_default_plan_has_no_tools_or_files(netem_modules, monkeypatch, tmp_path, capsys):
+    host = netem_modules[0]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        host.base, "bounded_command", lambda *a, **k: pytest.fail("기본 plan 도구 호출")
+    )
+    assert host.main([]) == 0
+    value = json.loads(capsys.readouterr().out)
+    assert value["limits"]["connections"] == value["limits"]["requests"] == 1
+    assert value["limits"]["suite_seconds"] == 960 and not list(tmp_path.iterdir())
+
+
+def test_netem_profile_permissions_leave_existing_profiles_intact(netem_modules, tmp_path):
+    host = netem_modules[0]
+    lab = host.NetemLab(tmp_path / "new", "baseline")
+    assert "NET_ADMIN" not in lab.capabilities("server")
+    assert "NET_ADMIN" in lab.capabilities("client")
+    probe = host.NetemLab(tmp_path / "probe", "baseline", seconds=30)
+    assert probe.capabilities("server") == [] and probe.capabilities("client") == ["NET_ADMIN"]
+    legacy = host.base.PacketLab(tmp_path / "legacy", "normal")
+    assert legacy.capabilities("server") == [] and "NET_ADMIN" not in legacy.capabilities("client")
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_netem_suite_keeps_twelve_slots_without_retry(
+    netem_modules, tmp_path, monkeypatch, failure
+):
+    host = netem_modules[0]
+    calls = []
+
+    class FakeLab:
+        def __init__(self, output, scenario, **kwargs):
+            self.output, self.scenario, self.run_id = output, scenario, output.name
+            self.events = []
+            output.mkdir()
+
+        def experiment(self):
+            calls.append(self.output.name)
+            return {"passed": not (failure and len(calls) == 1), "reasons": []}
+
+        def cleanup(self):
+            return []
+
+    monkeypatch.setattr(host, "probe", lambda root: {"passed": True, "seed_supported": False})
+    monkeypatch.setattr(host, "NetemLab", FakeLab)
+    monkeypatch.setattr(host.base, "source_commit", lambda: "synthetic")
+    monkeypatch.setattr(host, "source_fingerprints", lambda: {})
+    assert host.suite(tmp_path) == int(failure)
+    summary = json.loads(next(tmp_path.glob("*/summary.json")).read_text(encoding="utf-8"))
+    assert len(calls) == len(set(calls)) == len(summary["trials"]) == 12
+    assert summary["trials"][0]["passed"] is not failure
+
+
+@pytest.mark.parametrize("failure", ["tc", "capture", "server", "store", "interrupt"])
+def test_netem_worker_partial_failures_preserve_result(
+    netem_modules, tmp_path, monkeypatch, failure
+):
+    worker = netem_modules[1]
+    monkeypatch.setattr(worker, "DIRECTORY", tmp_path)
+    monkeypatch.setattr(worker, "worker_identity", lambda: {"worker_pid": 7, "worker_start": "1"})
+    closed = []
+
+    class FakeCapture:
+        def __init__(self, prefix, *args):
+            self.prefix = prefix
+            if failure == "capture" and prefix == "q":
+                raise RuntimeError("capture")
+
+        def finish(self, normal=True):
+            closed.append((self.prefix, normal))
+            return {"valid": normal}
+
+    monkeypatch.setattr(worker, "Capture", FakeCapture)
+    monkeypatch.setattr(worker, "ready", lambda c: None)
+
+    def exchange(*args):
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
+        raise OSError(failure)
+
+    monkeypatch.setattr(worker, "client_exchange", exchange)
+    monkeypatch.setattr(worker, "qdisc", lambda events: [{}])
+
+    def command(events, *args, **kwargs):
+        if failure == "tc":
+            raise RuntimeError("tc")
+        return {}
+
+    monkeypatch.setattr(worker, "command", command)
+    if failure == "store":
+        monkeypatch.setattr(worker, "save", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+        with pytest.raises(OSError):
+            worker.run("client", "baseline", "cs-netem-" + "a" * 32, "172.20.0.2", "172.20.0.3")
+        return
+    code = worker.run("client", "baseline", "cs-netem-" + "a" * 32, "172.20.0.2", "172.20.0.3")
+    result = json.loads((tmp_path / "c-result.json").read_text(encoding="utf-8"))
+    assert not result["transfer_complete"] and closed
+    if failure in ("tc", "capture", "interrupt"):
+        assert code == 1 and not result["worker_complete"]
+    if failure == "capture":
+        assert closed == [("p", False)]
+
+
+def test_netem_log_overflow_is_bounded_and_never_valid_capture(
+    netem_modules, tmp_path, monkeypatch
+):
+    worker = netem_modules[1]
+    monkeypatch.setattr(worker, "DIRECTORY", tmp_path)
+    chunks = iter((b"a" * 65536, b"b", b""))
+    monkeypatch.setattr(worker.os, "read", lambda *a: next(chunks))
+    capture = worker.Capture.__new__(worker.Capture)
+    capture.prefix = "p"
+    capture.device, capture.peer = "eth0", "172.20.0.2"
+    capture.buffers = {"stderr": bytearray()}
+    capture.errors = []
+
+    class Pipe:
+        def fileno(self):
+            return 7
+
+        def close(self):
+            pass
+
+    capture.drain("stderr", Pipe())
+    assert (tmp_path / "p.stderr").stat().st_size == 65536
+    assert capture.errors == ["log_limit"]
+
+
+@pytest.mark.parametrize("extra", [0, 1, 4096])
+def test_netem_body_capacity_preserves_only_bounded_prefix(netem_modules, extra):
+    worker = netem_modules[1]
+    body = bytearray(b"a" * 65535)
+    if extra:
+        with pytest.raises(ValueError):
+            worker.extend_body(body, b"b" * (1 + extra))
+    else:
+        worker.extend_body(body, b"b")
+    assert len(body) == 65536
+
+
+@pytest.fixture
+def netem_socket(netem_modules, tmp_path, monkeypatch):
+    """가짜 소켓만 주입해 분할 수신·단일 연결·단일 요청을 검증한다."""
+    import collections
+
+    worker = netem_modules[1]
+    monkeypatch.setattr(worker, "DIRECTORY", tmp_path)
+    (tmp_path / "control").mkdir()
+    run_id = "cs-netem-" + "a" * 32
+    worker.save(tmp_path / "control/armed.json", {"run_id": run_id})
+
+    class FakeSocket:
+        def __init__(self, chunks):
+            self.chunks = collections.deque(chunks)
+            self.sent, self.connected, self.timeouts = [], [], []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def setsockopt(self, *args):
+            pass
+
+        def getsockopt(self, *args):
+            return 1200
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+        def bind(self, value):
+            self.bound = value
+
+        def connect(self, value):
+            self.connected.append(value)
+
+        def getsockname(self):
+            return ("172.20.0.3", 41000)
+
+        def getpeername(self):
+            return ("172.20.0.2", 8080)
+
+        def fileno(self):
+            return 4
+
+        def sendall(self, data):
+            self.sent.append(data)
+
+        def shutdown(self, how):
+            pass
+
+        def recv(self, size):
+            if not self.chunks:
+                return b""
+            data = self.chunks.popleft()
+            if len(data) > size:
+                self.chunks.appendleft(data[size:])
+            return data[:size]
+
+    def make(chunks):
+        sock = FakeSocket(chunks)
+        monkeypatch.setattr(worker.socket, "socket", lambda *a, **k: sock)
+        journal = worker.Journal("baseline", run_id, "client")
+        return worker, sock, journal, run_id
+
+    return make
+
+
+@pytest.mark.parametrize("cut", [1, 5, 50, 130, 4096])
+def test_netem_client_fragmented_response_never_reconnects(
+    netem_socket, netem_modules, tmp_path, cut
+):
+    worker = netem_modules[1]
+    run_id = "cs-netem-" + "a" * 32
+    raw = worker.response_head(run_id) + worker.BODY
+    worker, sock, journal, run_id = netem_socket([raw[:cut], raw[cut:], b""])
+    worker.client_exchange("baseline", run_id, "172.20.0.2", "172.20.0.3", journal)
+    assert sock.connected == [("172.20.0.2", 8080)]
+    assert (
+        sock.sent == [worker.request(run_id)]
+        and (tmp_path / "body.bin").read_bytes() == worker.BODY
+    )
+    assert journal.value["http"]["content_length"] == 65536
+    assert journal.value["body"]["sha256"] == worker.BODY_SHA256
+    assert max(sock.timeouts) <= 5 and journal.value["metrics"]["complete_seconds"] is not None
+
+
+@pytest.mark.parametrize("bad", ["status", "length", "hash", "short", "extra", "storage"])
+def test_netem_client_failure_keeps_partial_body_without_retry(
+    netem_socket, netem_modules, tmp_path, monkeypatch, bad
+):
+    worker = netem_modules[1]
+    run_id = "cs-netem-" + "a" * 32
+    raw = worker.response_head(run_id) + worker.BODY
+    if bad == "status":
+        raw = raw.replace(b"200 OK", b"403 NO")
+    elif bad == "length":
+        raw = raw.replace(b"65536", b"65535")
+    elif bad == "hash":
+        raw = raw[:-1] + bytes([raw[-1] ^ 1])
+    elif bad == "short":
+        raw = raw[:200]
+    elif bad == "extra":
+        raw += b"extra"
+    worker, sock, journal, run_id = netem_socket([raw, b""])
+    if bad == "storage":
+        monkeypatch.setattr(worker.os, "fsync", lambda fd: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises((ValueError, EOFError, OSError)):
+        worker.client_exchange("baseline", run_id, "172.20.0.2", "172.20.0.3", journal)
+    assert len(sock.connected) == 1 and len(sock.sent) <= 1
+    assert (tmp_path / "body.bin").stat().st_size <= 65536
+
+
+@pytest.mark.parametrize("change", ["count", "drops", "code", "file", "errors"])
+def test_netem_capture_cutoff_is_failure_not_effect(netem_modules, tmp_path, monkeypatch, change):
+    worker = netem_modules[1]
+    monkeypatch.setattr(worker, "DIRECTORY", tmp_path)
+    capture = worker.Capture.__new__(worker.Capture)
+    capture.prefix = "p"
+    capture.device, capture.peer = "eth0", "172.20.0.2"
+    capture.started = worker.time.monotonic()
+    capture.started_epoch = "100"
+    captured = 1024 if change == "count" else 12
+    dropped = 1 if change == "drops" else 0
+    capture.buffers = {
+        "stderr": bytearray(
+            (
+                f"시간 제한 도달\n{captured} packets captured\n"
+                f"{dropped} packets dropped by kernel\n"
+            ).encode()
+        )
+    }
+    capture.errors = ["log_limit"] if change == "errors" else []
+    capture.threads = []
+
+    class Process:
+        returncode = 0 if change == "code" else 124
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            return self.returncode
+
+    capture.process = Process()
+    (tmp_path / "p.pcap").write_bytes(b"x" * (1024**2 + 1 if change == "file" else 25))
+    assert not capture.finish()["valid"]
+
+
+@pytest.mark.parametrize("change", ["reference", "time", "ack", "overlap"])
+def test_netem_ack_rtt_uses_only_unambiguous_sender_reference(netem_modules, change):
+    analyzer = netem_modules[2]
+    origin = {
+        "frame.number": 1,
+        "direction": "server_to_client",
+        "tcp.len": 10,
+        "tcp.seq_raw": 100,
+        "tcp.analysis.ack_rtt": "",
+        "tcp.analysis.acks_frame": "",
+        "time": Decimal("100"),
+    }
+    acknowledgment = {
+        "frame.number": 2,
+        "direction": "client_to_server",
+        "tcp.len": 0,
+        "tcp.seq_raw": 200,
+        "tcp.ack_raw": 110,
+        "tcp.analysis.ack_rtt": "0.05",
+        "tcp.analysis.acks_frame": "1",
+        "time": Decimal("100.05"),
+    }
+    rows = [origin, acknowledgment]
+    assert len(analyzer.ack_rtt_samples(rows)) == 1
+    if change == "reference":
+        acknowledgment["tcp.analysis.acks_frame"] = "9"
+        assert analyzer.ack_rtt_samples(rows) == []
+    elif change == "overlap":
+        rows.append({**origin, "frame.number": 3, "tcp.seq_raw": 105, "tcp.len": 10})
+        assert analyzer.ack_rtt_samples(rows) == []
+    else:
+        if change == "time":
+            acknowledgment["time"] = Decimal("100.06")
+        else:
+            acknowledgment["tcp.ack_raw"] = 109
+        with pytest.raises(ValueError):
+            analyzer.ack_rtt_samples(rows)
+
+
+def test_netem_probe_failure_stops_before_any_trial(netem_modules, tmp_path, monkeypatch):
+    host = netem_modules[0]
+    monkeypatch.setattr(host, "probe", lambda root: {"passed": False})
+    monkeypatch.setattr(host.base, "suite", lambda *a, **k: pytest.fail("기능 실패 후 전송 금지"))
+    assert host.suite(tmp_path) == 1
+
+
+@pytest.fixture
 def connection_modules(monkeypatch):
     directory = Path(__file__).resolve().parents[2] / "network"
     monkeypatch.syspath_prepend(str(directory))
