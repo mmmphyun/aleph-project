@@ -62,9 +62,9 @@ CloudShield는 가정이 아닌 **실제 AWS 인프라(`ap-southeast-2`) 및 테
 
 | 핵심 검증 도메인 | 달성 지표 | 세부 관측 조건 및 환경 | 단일 신뢰점 원본 |
 | :--- | :---: | :--- | :---: |
-| **L4 인스턴스 격리 SLA** | **`5.48s`** | 서버 5회 실패 기록 후 첫 무응답 SYN 관측 (타임아웃 확인: `6.28s`) | [패킷 실측 보고서](docs/roles/network/2026-10-25-p4-3-final-showcase-verification.md) |
+| **L4 인스턴스 격리 SLA** | **`5.48s`** | 서버 5회 실패 기록 후 첫 무응답 SYN 관측 (P3-3c 실측: `5.478s`, P4-3 재실측: `4.51s-6.05s`) | [P3-3c 실측 보고서](docs/roles/network/2026-10-14-p3-3c-hydra-l4-remeasurement.md) |
 | **L7 WAF IPSet 차단 SLA** | **`18.20s`** | Lambda 시작부터 첫 403 응답 관측 (공격 시작 기준: `21.29s` 전파 지연) | [WAF 실측 보고서](docs/roles/network/2026-10-16-p3-6-waf-measurement.md) |
-| **관제 파이프라인 반환** | **`2.70s`** | Logs Insights 탐지 $\rightarrow$ 대응 반환 시간 max/p95 지표 | [관제 패널 검증서](docs/roles/cloud-b/2026-10-30-p5-2-panel-verification.md) |
+| **오케스트레이터 반환 지표** | **`2.70s`** | 고정 로그 실환경 통합 실증 1건의 탐지 $\rightarrow$ 대응 반환 계측 (max/p95: `2.7042s`, 전체 SLA와 구분) | [P5-2 패널 검증서](docs/roles/cloud-b/2026-10-30-p5-2-panel-verification.md) |
 | **자동화 파이프라인 검증** | **1,907 tests** | 계약 불변식, 네트워크 패킷 덤프, 모킹 인프라 전체 테스트 통과 | [단위 테스트 슈트](tests/unit/) |
 | **협업 거버넌스 안정성** | **137 PRs** | 사전 검증 하네스를 통한 137건 PR 머지 무충돌 유지 (커밋 153건) | [GitHub PR 히스토리](https://github.com/mmmphyun/aleph-project/pulls?q=is%3Apr+is%3Amerged) |
 | **도메인 작업 분담률** | **30:26:23:21** | 승윤 30%, 동형 26%, 시훈 23%, 찬원 21% 균등 분담 | [노션 프로젝트 일정 DB](https://app.notion.com/p/A-d5f04d37c22582ad9e7f81acd36191d0) |
@@ -184,7 +184,7 @@ CloudShield는 가정이 아닌 **실제 AWS 인프라(`ap-southeast-2`) 및 테
      - *2단계 전파*: 1차 실시간 격리 알림 카드 발송 후, 심층 분석이 완료되면 동일한 `incident_id`를 갖는 2차 분석 카드를 연계 발송.
      - *장애 및 인젝션 격리*: 제어 문자 이스케이프를 적용해 공격 문자열에 의한 의도치 않은 슬랙 멘션(@here, @channel) 공격을 방어하고, SaaS 네트워크 순단에 대비한 타임아웃 예외 처리 적용.
   4. **Grafana 4사분면 CloudWatch Logs Insights 관제 대시보드 설계**:
-     - 공격 인입 건수, 10초 SLA 대응 소요 시간(max/p95 2.7042s), LLM 정상/Fallback 전환율, 8단계 사건 처리 타임라인을 코드로 시각화.
+     - 공격 인입 건수, 고정 로그 실환경 통합 실증(매칭 1건) 기준 오케스트레이터 탐지 $\rightarrow$ 대응 반환 지표(max/p95 2.7042s, 전체 관통 SLA와 구분), LLM 정상/Fallback 전환율, 8단계 사건 처리 타임라인을 코드로 시각화.
 
 <div align="center">
 
@@ -200,7 +200,7 @@ CloudShield는 가정이 아닌 **실제 AWS 인프라(`ap-southeast-2`) 및 테
 | **중앙 로깅 인프라** | `amazon-cloudwatch-agent.json` | 버퍼 플러시 2초 최적화, 다중 로그 스트림 수집 | [수집 레이턴시 보고서](docs/roles/cloud-b/2026-10-08-cloudwatch-collection-latency-report.md) |
 | **로그 정형화 라우터** | `src/collector/cw_processor.py` | Base64/Gzip 역직렬화, LogGroup 분기, 인메모리 중복 제거 | [스트림 라우터 명세](docs/roles/cloud-b/2026-09-29-nginx-payload-decoder-and-multistream-router.md) |
 | **관제 알림 렌더러** | `src/reporter/slack_notifier.py` | Block Kit 2단계 알림, 집행 상태 분리 표기, 멘션 인젝션 방어 | [Slack 2단계 실측서](docs/roles/cloud-b/2026-10-23-p4-2-slack-sequential-measurement.md) |
-| **SecOps 대시보드** | `docs/roles/cloud-b/grafana/p5-2.json` | 4사분면 Logs Insights 쿼리, SLA 2.7042s 관측, 사건 타임라인 추적 | [Grafana 쿼리 대조서](docs/roles/cloud-b/2026-10-30-p5-2-panel-verification.md) |
+| **SecOps 대시보드** | `docs/roles/cloud-b/grafana/p5-2.json` | 4사분면 Logs Insights 쿼리, 오케스트레이터 반환 2.7042s 관측(전체 SLA와 구분), 사건 타임라인 추적 | [Grafana 쿼리 대조서](docs/roles/cloud-b/2026-10-30-p5-2-panel-verification.md) |
 
 </div>
 
@@ -290,17 +290,17 @@ flowchart LR
 
 <div align="center">
 
-| 구분 | [시나리오 1] SSH Brute Force (L4 대응) | [시나리오 2] Web L7 Directory Scanning (L7 대응) |
+| 구분 | [시나리오 1] SSH Brute Force (L4/L7 복합 대응) | [시나리오 2] Web L7 Directory Scanning (L7 대응) |
 | :--- | :--- | :--- |
 | **공격 도구** | Hydra 9.2 (`network/attack_simulation.sh`) | Curl, Gobuster, Nikto |
 | **인입 경로** | SSH 포트(TCP 22) 패스워드 무차별 대입 | Web HTTP/HTTPS(80/443) 비인가 디렉터리 경로 탐색 |
 | **타깃 로그** | `/var/log/auth.log` (`SyslogAuthEvent`) | `/var/log/nginx/access.log` (`NginxAccessLogEvent`) |
-| **1차 탐지 룰** | 동일 IP 기준 5분 내 5회 이상 인증 실패 / 다중 계정 스프레잉 | 짧은 시간 내 비인가 URL 패턴 탐색 및 401/403/404 임계치 초과 |
-| **MITRE ATT&CK** | `T1110.001` (Brute Force: Password Guessing) | `T1110.003` (Password Spraying), `T1595.002` (Active Scanning) |
-| **차단 조치** | **L4 EC2 Quarantine SG 단독 원자적 교체** | **L7 AWS WAF IPSet `/32` 인바운드 차단 등록** |
+| **1차 탐지 룰** | 동일 IP 기준 5분 내 5회 이상 인증 실패 (`SSH_BRUTE_FORCE`) | 짧은 시간 내 비인가 디렉터리 경로 탐색 (`WEB_DIRECTORY_SCANNING`) |
+| **MITRE ATT&CK** | `T1110.001` (Brute Force: Password Guessing) | `T1595.003` (Active Scanning: Wordlist Scanning) |
+| **차단 조치** | **L4 Quarantine SG 교체 + L7 WAF IPSet `/32` 복합 차단** (`BLOCK_AND_QUARANTINE`) | **L7 AWS WAF IPSet `/32` 인바운드 차단 등록** (`BLOCK_WAF`) |
 | **실측 소요 지연** | **`5.48s`** (서버 5회 실패 후 첫 무응답 SYN) | **`18.20s`** (Lambda 시작 후 첫 403 응답 / 전파 지연 관측) |
-| **전파 채널** | Slack Block Kit (`quarantine_applied: true`, MITRE ID) | Slack Block Kit (`waf_blocked: true`, 공격자 IP/32) |
-| **복구 절차** | `restore_baseline_sg.py` (단일 명령 기준 SG 원복) | `unblock_waf_ip.py` (WAF IPSet 공격자 IP 삭제) |
+| **전파 채널** | Slack Block Kit (`quarantine_applied: true`, `waf_blocked: true`, `T1110.001`) | Slack Block Kit (`waf_blocked: true`, 공격자 IP/32, `T1595.003`) |
+| **복구 절차** | `restore_baseline_sg.py` (SG 원복) + `unblock_waf_ip.py` (WAF IP 해제) | `unblock_waf_ip.py` (WAF IPSet 공격자 IP 삭제) |
 
 </div>
 
