@@ -9,8 +9,17 @@ Why:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
-from scripts.is_docs_only import evaluate_changes, is_docs_only_file
+
+# scripts 임포트 경로 확보
+root_dir = Path(__file__).resolve().parents[2]
+if str(root_dir) not in sys.path:
+    sys.path.insert(0, str(root_dir))
+
+from scripts.is_docs_only import evaluate_changes, is_docs_only_file  # noqa: E402
 
 
 @pytest.mark.parametrize(
