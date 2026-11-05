@@ -52,15 +52,31 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "[4/5] Pytest 단위 및 계약 테스트 실행 중..." -ForegroundColor Cyan
-if ($hasUv) {
-    uv run python -m pytest -v
-} elseif (Test-Path ".\.venv\Scripts\python.exe") {
-    & ".\.venv\Scripts\python.exe" -m pytest -v
-} else {
-    python -m pytest -v
+
+# 순수 문서 및 정적 자산만 변경된 경우 1,907개 단위 테스트 스킵 (Fail-Closed)
+$isDocsOnly = $false
+try {
+    $docsCheckOutput = Run-Tool "python" @("scripts/is_docs_only.py")
+    if ($LASTEXITCODE -eq 0 -and ($docsCheckOutput -join "`n") -match "docs_only") {
+        $isDocsOnly = $true
+    }
+} catch {
+    $isDocsOnly = $false
 }
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+
+if ($isDocsOnly) {
+    Write-Host "[스킵] 순수 문서 및 정적 자산 변경만 감지되어 Pytest 단위 테스트(1,907건)를 건너뜁니다." -ForegroundColor Yellow
+} else {
+    if ($hasUv) {
+        uv run python -m pytest -v
+    } elseif (Test-Path ".\.venv\Scripts\python.exe") {
+        & ".\.venv\Scripts\python.exe" -m pytest -v
+    } else {
+        python -m pytest -v
+    }
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }
 
 Write-Host "`n[성공] 모든 로컬 품질 및 계약 검증을 통과했습니다." -ForegroundColor Green
