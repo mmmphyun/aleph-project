@@ -1,11 +1,11 @@
-# 로깅 및 관제(SRE) 기술 포트폴리오 (클라우드 B)
+# 로깅 및 SRE 관제 기술 포트폴리오 (클라우드 B)
 
 <div align="center">
 
 **CloudWatch Agent 수집 파이프라인, 이종 로그 스트림 라우터, Slack 2단계 알림 및 Grafana 4사분면 관제**
 
 **담당 엔지니어: 시훈 ([@wkdtlgns99-cell](https://github.com/wkdtlgns99-cell))**  
-*역할: 클라우드 시스템 엔지니어 & 관제/SRE (Cloud Systems / Observability)*
+*역할: 클라우드 시스템 및 SRE 관제 엔지니어*
 
 </div>
 
@@ -15,7 +15,7 @@
 
 클라우드 B는 CloudShield 파이프라인의 **타깃 서버 로깅 환경 구성, CloudWatch Agent 중앙 수집 버퍼 최적화, 이종 로그 스트림 역직렬화 및 라우팅 어댑터, 운영자 혼선 방지 Slack Block Kit 2단계 알림, Grafana 4사분면 SecOps 관제 대시보드 구축**을 전담했습니다.
 
-공격 트래픽이 인입되었을 때 2초 이내에 오케스트레이터로 전달되도록 버퍼 레이턴시를 튜닝하고 차단 결과와 심층 분석 결과를 명확히 분리하여 운영자의 관제 가시성(Observability)을 극대화했습니다.
+공격 트래픽이 인입되었을 때 2초 이내에 오케스트레이터로 전달되도록 버퍼 레이턴시를 튜닝하고 차단 결과와 심층 분석 결과를 명확히 분리하여 운영자의 관제 가시성을 극대화했습니다.
 
 ---
 
@@ -26,8 +26,8 @@
   - CloudWatch Agent의 기본 설정은 비용 및 네트워크 최적화를 위해 로그를 수 분간 메모리에 버퍼링한 후 일괄 전송합니다.
   - 이로 인해 타깃 서버에 침해 공격이 발생해도 로그 전송이 지연되어 10초 이내 자동 차단 파이프라인이 즉시 가동되지 못하는 병목이 발생했습니다.
 * **수집 주기 정밀 튜닝 및 TCO 고려**:
-  - 타깃 인스턴스(/var/log/auth.log, /var/log/nginx/access.log)의 에이전트 설정(mazon-cloudwatch-agent.json)에서 플러시 대기 시간을 **2초**로 정밀 튜닝하여 파이프라인의 **이론적 최소 지연 한계(Theoretical Lower Bound)**를 실측했습니다.
-  - 로그 파일 회전(logrotate) 및 권한을 안정화하여 실인프라 공격 인입 시 수초 이내에 CloudWatch Subscription Filter를 통해 Lambda로 전달되도록 보장하되, 대규모 프로덕션 확장 시 PutLogEvents API 비용 및 스로틀링을 완화하기 위한 Fluent Bit 스트리밍 버퍼링 또는 Kinesis Data Firehose 배치가 보완 아키텍처로 요구됨을 함께 도출했습니다.
+  - 타깃 인스턴스(/var/log/auth.log, /var/log/nginx/access.log)의 에이전트 설정(mazon-cloudwatch-agent.json)에서 플러시 대기 시간을 **2초**로 정밀 튜닝하여 파이프라인의 **이론적 최소 지연 한계**를 실측했습니다.
+  - 로그 파일 회전 및 권한을 안정화하여 실인프라 공격 인입 시 수초 이내에 CloudWatch Subscription Filter를 통해 Lambda로 전달되도록 보장하되, 대규모 프로덕션 확장 시 PutLogEvents API 비용 및 스로틀링을 완화하기 위한 Fluent Bit 스트리밍 버퍼링 또는 Kinesis Data Firehose 배치가 보완 아키텍처로 요구됨을 함께 도출했습니다.
 
 ### 2.2 이종 로그 스트림 역직렬화 어댑터 및 인메모리 중복 제거
 * **다중 로그 스트림 정형화**:
