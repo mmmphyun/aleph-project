@@ -1,0 +1,1081 @@
+<!DOCTYPE html>
+<html lang="ko" class="h-full bg-[#f4f2ec] text-stone-800">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CloudShield - 10초 자동 대응 목표 SecOps</title>
+  <!-- Pretendard 웹폰트 -->
+  <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            canvas: '#f4f2ec',     /* 부드러운 페이퍼 오프화이트 배경 */
+            surface: '#faf9f5',    /* 은은한 서피스 */
+            panel: '#ede9df',      /* 보조 패널 및 코드 배경 */
+            line: '#dfdbd0',       /* 얇고 단정한 구분선 */
+            brand: {
+              50: '#edf3fb',
+              100: '#dbe7f7',
+              600: '#2563eb',
+              700: '#1d4ed8',
+              800: '#1e40af'
+            }
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'Fira Code', 'Consolas', 'monospace'],
+            sans: ['Pretendard', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .slide {
+      display: none;
+      opacity: 0;
+      transition: opacity 0.2s ease-in-out;
+    }
+    .slide.active {
+      display: flex;
+      opacity: 1;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #ede9df;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cfcabf;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #b5b0a4;
+    }
+  </style>
+</head>
+<body class="h-full select-none flex flex-col justify-between overflow-hidden bg-canvas font-sans antialiased text-stone-800">
+
+  <!-- 상단 네비게이션 & 헤더 (테두리 최소화) -->
+  <header class="w-full border-b border-line bg-canvas/90 backdrop-blur px-8 py-3 flex items-center justify-between text-xs z-20">
+    <div class="flex items-center gap-3">
+      <span class="font-mono font-bold tracking-wider text-stone-900 text-sm">CLOUDSHIELD</span>
+      <span class="text-stone-300">/</span>
+      <span class="text-stone-600 font-medium text-xs">클라우드 위협 10초 자동 대응 프로젝트</span>
+    </div>
+
+    <!-- 진행 게이지 & 상태 -->
+    <div class="flex items-center gap-5">
+      <div class="hidden sm:flex items-center gap-2">
+        <div class="w-28 h-1 bg-line rounded-full overflow-hidden">
+          <div id="progressGauge" class="h-full bg-brand-700 transition-all duration-300 w-[8.33%]"></div>
+        </div>
+      </div>
+      <span id="slideIndicator" class="font-mono text-stone-600 text-xs font-semibold">
+        01 / 12
+      </span>
+      <button id="toggleNotesBtn" title="발표자 모드 토글 (N)" class="flex items-center gap-1.5 px-3 py-1.5 rounded text-stone-600 hover:text-stone-900 hover:bg-panel text-xs font-medium transition">
+        <i data-lucide="file-text" class="w-3.5 h-3.5 text-stone-500"></i>
+        <span>대본 (N)</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 메인 슬라이드 뷰포트 -->
+  <main class="relative flex-1 w-full overflow-y-auto px-8 py-6 flex items-center justify-center">
+
+    <!-- ========================================== -->
+    <!-- SLIDE 1: 표지 -->
+    <!-- ========================================== -->
+    <section class="slide active flex-col items-center justify-center text-center w-full max-w-4xl h-full py-6 space-y-8" data-slide="1">
+      <div class="space-y-4">
+        <div class="text-xs font-mono font-semibold tracking-wider text-brand-700 uppercase">
+          Automated SecOps Pipeline
+        </div>
+        <h1 class="text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tight text-stone-900">
+          CloudShield
+        </h1>
+        <p class="text-2xl md:text-3xl text-stone-800 font-bold tracking-tight">
+          침해 위협 감지 시 <span class="text-brand-700">10초 이내 자동 대응을 목표로 하는</span> 보안 파이프라인
+        </p>
+      </div>
+
+      <!-- 팀원 4인 역할 -->
+      <div class="w-full pt-6 border-t border-line">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-6 text-left">
+          <div class="space-y-1.5">
+            <div class="text-xs font-bold text-stone-500 uppercase tracking-wider">네트워크</div>
+            <div class="text-lg font-extrabold text-stone-900">이동형</div>
+            <div class="text-sm text-stone-700 leading-normal">모의 공격 재현<br>패킷 흐름 분석</div>
+          </div>
+          <div class="space-y-1.5">
+            <div class="text-xs font-bold text-stone-500 uppercase tracking-wider">클라우드 B</div>
+            <div class="text-lg font-extrabold text-stone-900">장시훈</div>
+            <div class="text-sm text-stone-700 leading-normal">서버 로그 수집<br>Slack 카드 알림</div>
+          </div>
+          <div class="space-y-1.5">
+            <div class="text-xs font-bold text-stone-500 uppercase tracking-wider">보안</div>
+            <div class="text-lg font-extrabold text-stone-900">함찬원</div>
+            <div class="text-sm text-stone-700 leading-normal">침해 탐지 규칙<br>정규식 시그니처</div>
+          </div>
+          <div class="space-y-1.5">
+            <div class="text-xs font-bold text-brand-700 uppercase tracking-wider">클라우드 A &bull; 발표자</div>
+            <div class="text-lg font-extrabold text-stone-900">한승윤</div>
+            <div class="text-sm text-stone-700 leading-normal">오케스트레이션<br>차단 실행 엔진</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 목표 시간 · 자동 대응 · 진행 상태 (각 1줄) -->
+      <div class="w-full pt-6 border-t border-line flex flex-col sm:flex-row items-start sm:items-center justify-between text-sm md:text-base text-stone-800 gap-3">
+        <div><span class="text-stone-500 font-medium text-xs sm:text-sm">목표 시간:</span> <strong class="text-brand-800 font-bold">10초 이내 무인 대응</strong> <span class="text-stone-500 text-xs">(AWS 실측 예정)</span></div>
+        <span class="text-stone-300 hidden sm:inline">&bull;</span>
+        <div><span class="text-stone-500 font-medium text-xs sm:text-sm">자동 대응:</span> <strong class="text-stone-900 font-bold">수동 개입 0건</strong> <span class="text-stone-500 text-xs">(이벤트 구동)</span></div>
+        <span class="text-stone-300 hidden sm:inline">&bull;</span>
+        <div><span class="text-stone-500 font-medium text-xs sm:text-sm">진행 상태:</span> <strong class="text-emerald-800 font-bold">가상 환경 검증 완료</strong> <span class="text-stone-500 text-xs">(AWS 미배포 &bull; 웹 확장 예정)</span></div>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. 안녕하세요. 클라우드 위협 자동 탐지·대응 파이프라인 CloudShield 발표자 한승윤입니다.
+        2. 저희 팀은 네트워크 이동형 님, 클라우드 B 장시훈 님, 보안 함찬원 님, 클라우드 A 한승윤까지 4명이 각자의 전문 영역을 분담하여 개발하고 있습니다.
+        3. Cloud A는 오케스트레이션과 차단 엔진을, Cloud B는 로그 수집과 Slack 알림을 전담합니다.
+        4. 현재 실제 AWS 배포 전 단계로, 목 데이터와 가상 환경(moto)에서 SSH 무차별 대입 및 패스워드 스프레이 대응 파이프라인 검증을 완료했습니다. 10초 이내 대응은 향후 실제 AWS 인프라 배포 후 검증할 엔지니어링 목표입니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 2: 문제 정의 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="2">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">01. PROBLEM DEFINITION</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">사람이 직접 대응하면 공격을 제때 막기 어렵습니다</h2>
+        <p class="text-base text-stone-700 font-sans">수동 보안 관제의 대응 지연 문제를 해결하고자 합니다.</p>
+      </div>
+
+      <!-- 핵심 문제 상황 (왼쪽 바) -->
+      <div class="border-l-4 border-rose-500 pl-6 py-2 space-y-1">
+        <div class="text-xs font-bold text-rose-700 uppercase tracking-wide">핵심 문제 상황</div>
+        <p class="text-xl md:text-2xl font-bold text-stone-900 leading-snug">
+          사람이 경보를 확인하고 차단하는 동안에도 공격은 계속 진행됩니다.
+        </p>
+      </div>
+
+      <!-- 3대 문제 항목 (각 1줄 설명) -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-8 pt-6 border-t border-line">
+        <div class="space-y-2">
+          <div class="text-base font-bold text-stone-900 flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+            수동 대응의 지연
+          </div>
+          <p class="text-sm text-stone-700 leading-relaxed">
+            알림 확인부터 콘솔 접속까지 지연이 발생해 대응 골든타임을 놓치기 쉽습니다.
+          </p>
+        </div>
+
+        <div class="space-y-2">
+          <div class="text-base font-bold text-stone-900 flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            단일 계층의 한계
+          </div>
+          <p class="text-sm text-stone-700 leading-relaxed">
+            네트워크 방화벽만 막으면 웹 브라우저의 기존 연결과 세션 침투 위험이 남습니다.
+          </p>
+        </div>
+
+        <div class="space-y-2">
+          <div class="text-base font-bold text-stone-900 flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-brand-600"></span>
+            차단 코어 검증 집중
+          </div>
+          <p class="text-sm text-stone-700 leading-relaxed">
+            관제 화면 개발보다 실제 인프라를 신속하게 격리하는 차단 엔진에 집중했습니다.
+          </p>
+        </div>
+      </div>
+
+      <!-- 해결 방향 (한 줄) -->
+      <div class="pt-6 border-t border-line text-sm md:text-base text-stone-800 leading-relaxed">
+        <strong class="text-stone-900 font-bold">해결 방향:</strong> 공격 로그를 감지해 10초 안에 자동 차단과 알림까지 연결한다.
+      </div>
+
+      <div class="presenter-note hidden">
+        1. 본 프로젝트에서 정의한 핵심 문제는 "탐지 후 사람이 대응하는 동안 공격이 계속될 수 있다"는 점입니다.
+        2. 담당자가 알림을 확인하고 IP를 차단하기 전까지 공격이 이어져 계정이 탈취될 위험이 있습니다.
+        3. 따라서 화면 개발에 치우치지 않고, 공격 발생 즉시 사람이 콘솔을 조작하지 않아도 10초 이내에 자동 차단과 알림을 완결하는 파이프라인을 구축하는 데 집중했습니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 3: 핵심 가치 및 목표 (10초 대형 수치 + 2열 텍스트 정렬) -->
+    <!-- ========================================== -->
+    <!-- ========================================== -->
+    <!-- SLIDE 3: 핵심 가치 및 목표 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="3">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">02. CORE METRICS</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">10초 대응 목표와 진행 상황</h2>
+        <p class="text-base text-stone-700 font-sans">10초는 달성 결과가 아니라 실제 AWS 환경에서 검증할 핵심 목표입니다.</p>
+      </div>
+
+      <!-- 메인 수치: 10초 이내 & 수동 개입 0건 크게 표시 -->
+      <div class="py-4 border-b border-line flex flex-col md:flex-row items-start md:items-baseline gap-6 md:gap-14">
+        <div class="flex items-baseline gap-2">
+          <span class="text-6xl md:text-7xl lg:text-8xl font-black text-brand-700 font-mono tracking-tight">&le; 10초</span>
+          <span class="text-sm md:text-base font-bold text-stone-700">대응 시간 목표</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-6xl md:text-7xl lg:text-8xl font-black text-stone-900 font-mono tracking-tight">0건</span>
+          <span class="text-sm md:text-base font-bold text-stone-700">수동 개입 목표</span>
+        </div>
+      </div>
+
+      <!-- 10초 측정 기준 (한 줄) -->
+      <div class="text-sm md:text-base text-stone-700">
+        <strong class="text-stone-900">10초 측정 기준:</strong> 로그 기록부터 필요한 차단 API 성공 및 Slack Webhook 성공 응답까지
+      </div>
+
+      <!-- 진행 상황 3단계 구분 -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-8 text-sm pt-2">
+        <div class="space-y-1.5">
+          <div class="text-xs font-bold text-emerald-800 uppercase tracking-wider">1. 코어 기능 구현</div>
+          <div class="text-lg font-bold text-stone-900">SSH 탐지·차단 로직</div>
+          <p class="text-stone-700 leading-relaxed text-xs md:text-sm">
+            목 데이터 기반 무차별 대입 및 스프레이 판정·차단 로직 구축
+          </p>
+        </div>
+
+        <div class="space-y-1.5">
+          <div class="text-xs font-bold text-emerald-800 uppercase tracking-wider">2. 가상 환경 검증</div>
+          <div class="text-lg font-bold text-stone-900">가상 환경 자동화 테스트 통과</div>
+          <p class="text-stone-700 leading-relaxed text-xs md:text-sm">
+            가상 AWS(moto) 환경에서 자동화 단위·통합 테스트 통과 (인프라 미배포)
+          </p>
+        </div>
+
+        <div class="space-y-1.5">
+          <div class="text-xs font-bold text-stone-500 uppercase tracking-wider">3. 실 AWS 배포·실측 (예정)</div>
+          <div class="text-lg font-bold text-stone-900">인프라 배포 및 10초 실측</div>
+          <p class="text-stone-700 leading-relaxed text-xs md:text-sm">
+            Phase 3~4에서 Terraform 배포 후 실제 클라우드 인프라를 대상으로 10초 검증 예정
+          </p>
+        </div>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. CloudShield가 추구하는 핵심 지표는 "10초 이내 무인 자동 대응"과 "수동 개입 0건"입니다.
+        2. 10초의 측정 기준은 타깃 EC2 서버에 공격 로그가 기록된 시각부터 해당 공격에 필요한 차단 API가 성공하고 Slack Webhook 성공 응답을 수신하기까지의 시각입니다.
+        3. 10초는 이미 달성한 결과가 아니라 9주차 Phase 4에서 실제 AWS 인프라를 대상으로 검증할 목표입니다.
+        4. 현재 실제 AWS 미배포 상태로, 목 데이터와 가상 AWS(moto) 환경에서 SSH 무차별 대입 및 스프레이 파이프라인 단위·통합 테스트를 통과했습니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 4: 전체 구조 및 기술 스택 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-5 text-left" data-slide="4">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">03. ARCHITECTURE &amp; TECH STACK</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">실시간 대응 경로와 비동기 사후 분석</h2>
+        <p class="text-base text-stone-700 font-sans">10초 무인 차단 핵심 경로(실시간)와 심층 사후 분석(비동기)을 분리했습니다. (AWS 미배포 상태)</p>
+      </div>
+
+      <!-- 1. 핵심 대응 경로 (10초 무인 차단 Critical Path) -->
+      <div class="space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-mono font-bold text-brand-700 uppercase tracking-wider">실시간 핵심 대응 경로 (&le; 10초 목표 &bull; LLM 배제)</span>
+          <span class="text-stone-500 font-mono">단일 스트림 &bull; 이벤트 구동</span>
+        </div>
+        <div class="w-full py-3.5 border-y border-line grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+          <div class="space-y-1">
+            <div class="text-xs font-bold text-rose-700"><span class="font-mono">01</span> &bull; 타깃 서버</div>
+            <div class="text-sm font-bold text-stone-900">EC2 / SSH 로그</div>
+            <p class="text-xs text-stone-600 leading-normal">
+              Hydra 모의 공격으로 auth.log 실패 이벤트 발생
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <div class="text-xs font-bold text-brand-700"><span class="font-mono">02</span> &bull; 수집 계층</div>
+            <div class="text-sm font-bold text-stone-900">CW Agent / Logs</div>
+            <p class="text-xs text-stone-600 leading-normal">
+              2초 플러시 설정 전달 &bull; 구독 필터 즉시 인입
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <div class="text-xs font-bold text-amber-700"><span class="font-mono">03</span> &bull; 탐지·집계</div>
+            <div class="text-sm font-bold text-stone-900">Lambda / DynamoDB</div>
+            <p class="text-xs text-stone-600 leading-normal">
+              Python 룰 &bull; DynamoDB 300초 슬라이딩 누적
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <div class="text-xs font-bold text-brand-800"><span class="font-mono">04</span> &bull; 차단 실행</div>
+            <div class="text-sm font-bold text-stone-900">Boto3 / SG &bull; WAF</div>
+            <p class="text-xs text-stone-600 leading-normal">
+              L4 격리 &bull; L7 차단 API를 각각 독립 실행
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <div class="text-xs font-bold text-emerald-800"><span class="font-mono">05</span> &bull; 상황 전파</div>
+            <div class="text-sm font-bold text-stone-900">Slack Webhook</div>
+            <p class="text-xs text-stone-600 leading-normal">
+              외부 협업 API 알림 카드 전파 (결함 격리)
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. 비동기 사후 분석 경로 (Out-of-band, 차단 완료 후 실행) -->
+      <div class="border border-dashed border-stone-400 bg-surface/60 rounded-lg p-3 space-y-1.5">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-1">
+          <div class="font-bold text-stone-800 flex items-center gap-1.5">
+            <span class="font-mono text-stone-500">차단 완료 ┄┄&rarr;</span>
+            <span class="text-stone-900">비동기 LLM 사후 분석</span>
+            <span class="text-stone-500 font-normal">(Out-of-band &bull; 연동 예정 &bull; 10초 실시간 경로 제외)</span>
+          </div>
+          <span class="text-stone-500 font-mono text-xs">자동 실행 없음 &bull; 리포팅 전담</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-stone-700 pt-0.5">
+          <div>&bull; <strong class="text-stone-800">사건 심층 요약:</strong> 차단 완료 후 침해 정황 및 로그 맥락을 종합 분석하여 보고서 생성</div>
+          <div>&bull; <strong class="text-stone-800">재발 방지 권고안:</strong> 취약 계정 정책 강화 및 사후 조치 가이드를 제시 (자동 차단/실행 미수행)</div>
+        </div>
+      </div>
+
+      <!-- 3. 기술 스택 소속 및 역할 (하단 3열 정돈) -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2 border-t border-line text-xs text-stone-700">
+        <div class="space-y-1">
+          <div class="text-stone-900 font-bold">AWS 서비스 (배포 예정)</div>
+          <p class="leading-relaxed text-stone-600">
+            EC2(로그 발생 서버) &bull; CloudWatch Logs(수집) &bull; Lambda(컴퓨팅) &bull; DynamoDB(상태 DB) &bull; SG/WAFv2(접근 제어)
+          </p>
+        </div>
+        <div class="space-y-1">
+          <div class="text-stone-900 font-bold">Python 코어 &bull; 검증 도구</div>
+          <p class="leading-relaxed text-stone-600">
+            Python(탐지/오케스트레이션) &bull; Boto3(AWS SDK) &bull; Pydantic(데이터 계약 검증) &bull; Moto 기반 AWS 호출 모의 테스트
+          </p>
+        </div>
+        <div class="space-y-1">
+          <div class="text-stone-900 font-bold">인프라 코드 &bull; 외부 연동</div>
+          <p class="leading-relaxed text-stone-600">
+            Terraform/HCL(AWS Provider 배포 예정) &bull; Slack(외부 협업 API 알림) &bull; LLM 사후 분석(연동 예정)
+          </p>
+        </div>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. CloudShield 아키텍처는 10초 이내 무인 차단을 위한 실시간 핵심 경로와 심층 분석을 위한 비동기 LLM 사후 분석 경로를 철저히 분리했습니다.
+        2. 실시간 핵심 경로는 'EC2 로그인 실패 로그 발생 → CloudWatch Logs 수집 → Lambda 탐지 및 DynamoDB 300초 상태 누적 → Boto3 기반 L4 SG 격리 및 L7 WAF 차단 → Slack 알림 전파'의 단일 스트림으로 동작하며, 10초 목표 달성을 위해 지연 요인인 LLM 호출을 일체 배제했습니다.
+        3. 차단 완료 후 실행되는 비동기 사후 분석 경로는 LLM을 연계하여 침해 정황을 심층 요약하고 재발 방지 권고안을 제시하는 Out-of-band 리포팅 파이프라인으로 설계되었으며, 자동 차단이나 API 실행 권한은 없습니다.
+        4. 기술 스택 소속과 관련하여 EC2, CloudWatch, Lambda, DynamoDB, WAF는 AWS 서비스(배포 예정)이며, Boto3는 AWS SDK, Pydantic은 계약 검증 라이브러리, Moto는 AWS 호출 모의 테스트 도구입니다. 인프라는 향후 Terraform(HCL)으로 배포할 계획입니다.
+        5. CloudTrail은 5~15분의 전달 지연으로 실시간 경로에서 배제했으며, 현재는 실제 AWS 미배포 상태로 moto 가상 환경에서 코어 파이프라인 무결성을 검증한 상태입니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 5: 공통 보고서 규격 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="5">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">04. DATA CONTRACT</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">단일 침해사고 보고서 규격</h2>
+        <p class="text-base text-stone-700 font-sans">모듈 간 데이터 형식 오류를 방지하기 위해 단일 불변 규격을 사용합니다.</p>
+      </div>
+
+      <!-- 핵심 가치 한 문장 -->
+      <div class="border-l-4 border-brand-700 pl-6 py-2">
+        <p class="text-xl md:text-2xl font-bold text-stone-900 leading-snug">
+          "모듈 간 같은 보고서 형식으로 탐지·차단·알림을 연결한다."
+        </p>
+      </div>
+
+      <!-- 대표 3대 필드 (공격 유형, 공격자 IP, 필요한 조치) -->
+      <div class="w-full py-4 border-y border-line grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="space-y-1">
+          <div class="text-sm font-mono font-bold text-brand-700">attack_type</div>
+          <div class="text-base font-bold text-stone-900">공격 유형</div>
+          <div class="text-xs md:text-sm text-stone-600 font-mono">SSH Brute Force / Spraying</div>
+        </div>
+        <div class="space-y-1">
+          <div class="text-sm font-mono font-bold text-brand-700">source_ip</div>
+          <div class="text-base font-bold text-stone-900">공격자 IP 주소</div>
+          <div class="text-xs md:text-sm text-stone-600 font-sans">차단 대상 /32 단일 IP</div>
+        </div>
+        <div class="space-y-1">
+          <div class="text-sm font-mono font-bold text-brand-700">action_required</div>
+          <div class="text-base font-bold text-stone-900">필요한 조치</div>
+          <div class="text-xs md:text-sm text-stone-600 font-mono">BLOCK_AND_QUARANTINE / BLOCK_WAF</div>
+        </div>
+      </div>
+
+      <!-- 3대 보장 원칙 (각 1줄) -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-8 text-sm text-stone-700">
+        <div class="space-y-1.5">
+          <div class="text-stone-900 font-bold text-base">불변 데이터 모델</div>
+          <p class="leading-relaxed">전달 도중 필드가 변경되지 않도록 읽기 전용 모델을 사용합니다.</p>
+        </div>
+        <div class="space-y-1.5">
+          <div class="text-stone-900 font-bold text-base">담당 역할 분리</div>
+          <p class="leading-relaxed">보안(탐지), Cloud A(차단), Cloud B(수집·알림)의 책임을 명확히 구분합니다.</p>
+        </div>
+        <div class="space-y-1.5">
+          <div class="text-stone-900 font-bold text-base">규격 자동 검증</div>
+          <p class="leading-relaxed">데이터 규격이 변경되면 CI 테스트에서 즉시 감지합니다.</p>
+        </div>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. 모듈 간 같은 보고서 형식(IncidentReport)으로 탐지·차단·알림을 연결합니다.
+        2. 화면의 대표 3대 필드 외에 고유 식별자인 incident_id, 타깃 인스턴스 ID, 한글 상황 요약(summary_ko), 권고안(recommendations) 필드가 포함되어 있습니다.
+        3. 보안 담당이 생성한 단일 보고서를 Cloud A의 차단 엔진과 Cloud B의 알림 모듈이 그대로 공유하며, Pydantic 불변 모델로 데이터 오염을 방지합니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 6: 1구간 모의 공격 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="6">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">05. STAGE 1 : SIMULATION</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">정상 접속과 공격 로그 비교</h2>
+        <p class="text-base text-stone-700 font-sans">실제 침해와 동일한 패턴을 모의 재현하여 탐지 규칙을 검증합니다.</p>
+      </div>
+
+      <!-- 정상 vs 공격 스플릿 뷰 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8 w-full">
+        <!-- 정상 -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between pb-1 border-b border-line">
+            <span class="font-bold text-stone-900 text-base">정상 사용자 접속</span>
+            <span class="text-xs font-semibold text-stone-600">단일 세션 통과</span>
+          </div>
+          <p class="text-xs md:text-sm text-stone-700 leading-relaxed">
+            공개키 인증 1회 성공 후 즉시 연결
+          </p>
+          <div class="bg-panel p-3 rounded-lg border border-line font-mono text-xs text-emerald-800 leading-relaxed overflow-x-auto">
+            Accepted publickey for ubuntu from 203.0.113.10 port 52310 ssh2
+          </div>
+        </div>
+
+        <!-- 공격 -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between pb-1 border-b border-line">
+            <span class="font-bold text-rose-800 text-base">공격 시도 (Hydra)</span>
+            <span class="text-xs font-semibold text-stone-600 font-sans">연속 실패</span>
+          </div>
+          <p class="text-xs md:text-sm text-stone-700 leading-relaxed">
+            짧은 시간 동안 동일 IP·계정으로 인증 실패 반복
+          </p>
+          <div class="bg-panel p-3 rounded-lg border border-line font-mono text-xs text-rose-800 leading-relaxed overflow-x-auto">
+            Failed password for root from 198.51.100.20 port 45210 ssh2<br>
+            Failed password for root from 198.51.100.20 port 45212 ssh2<br>
+            Failed password for root from 198.51.100.20 port 45214 ssh2
+          </div>
+        </div>
+      </div>
+
+      <!-- 탐지 핵심 질문 (한 문장) -->
+      <div class="pt-6 border-t border-line text-sm text-stone-800">
+        <strong class="text-stone-900 font-bold">다음 단계 질문:</strong> 반복 실패와 계정 분산 시도를 어떻게 구분할까?
+      </div>
+
+      <div class="presenter-note hidden">
+        1. 모의 공격 시나리오는 격리된 환경에서 Hydra를 통해 타깃 인스턴스에 SSH 인증 실패를 발생시킵니다.
+        2. 정상 접속은 공개키 1회로 통과하지만, 공격은 짧은 시간 안에 수많은 실패 로그(Failed password)를 남깁니다.
+        3. 단순 오타와 실제 공격, 그리고 단일 계정 집중 공격과 다수 계정 분산 공격을 구분하는 기준이 다음 장의 위협 탐지 룰입니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 7: 2구간 로그 수집 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="7">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">06. STAGE 2 : INGESTION</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">로그 수집: 서버에서 람다까지 최단 경로 연결</h2>
+        <p class="text-base text-stone-700 font-sans">로그가 서버에 머무는 시간을 줄이기 위해 전송 대기 시간을 2초로 단축했습니다.</p>
+      </div>
+
+      <!-- 3단계 흐름: 서버 로그 → 짧은 전송 대기 → 탐지 함수 호출 -->
+      <div class="w-full py-4 border-y border-line grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div class="space-y-1.5">
+          <div class="text-xs font-mono font-bold text-brand-700">STEP 1</div>
+          <div class="text-base font-bold text-stone-900">서버 로그 기록</div>
+          <p class="text-xs md:text-sm text-stone-700 leading-relaxed pt-1">
+            EC2 auth.log에 로그인 실패 이벤트 즉시 기록
+          </p>
+        </div>
+
+        <div class="space-y-1.5">
+          <div class="text-xs font-mono font-bold text-brand-700">STEP 2</div>
+          <div class="text-base font-bold text-stone-900">짧은 전송 대기</div>
+          <p class="text-xs md:text-sm text-stone-700 leading-relaxed pt-1">
+            CloudWatch Agent 2초 플러시 설정 반영 <span class="font-mono text-xs text-stone-500">(force_flush: 2s)</span>
+          </p>
+        </div>
+
+        <div class="space-y-1.5">
+          <div class="text-xs font-mono font-bold text-brand-700">STEP 3</div>
+          <div class="text-base font-bold text-stone-900">탐지 함수 호출</div>
+          <p class="text-xs md:text-sm text-stone-700 leading-relaxed pt-1">
+            CloudWatch Logs 구독 필터 매칭 즉시 Lambda 실행
+          </p>
+        </div>
+      </div>
+
+      <!-- 하단 설명 (각 1줄) -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8 text-sm text-stone-700">
+        <div class="space-y-1.5">
+          <div class="text-stone-900 font-bold text-base">Cloud B 담당 영역</div>
+          <p class="leading-relaxed">
+            CloudWatch Agent 구성에 2초 플러시 설정을 반영하여 로그 체류 시간 단축을 도모합니다.
+          </p>
+        </div>
+        <div class="space-y-1.5">
+          <div class="text-stone-900 font-bold text-base">전송 지연 실측 예정</div>
+          <p class="leading-relaxed">
+            2초 플러시 설정 외 네트워크 지연을 포함한 전체 수집 시간은 Phase 4 실제 AWS 환경에서 실측합니다.
+          </p>
+        </div>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. 2구간 수집의 흐름은 'EC2 로그 → CloudWatch Agent(2초 플러시 설정) → CloudWatch Logs 구독 필터 → Lambda'의 경로입니다.
+        2. CloudWatch Agent 설정에 force_flush_interval 2초를 반영했습니다.
+        3. 이 설정값 반영만으로 전체 10초 완결이 입증된 것은 아니며, 실제 CloudWatch Logs 전달 지연과 종단 간 시간은 Phase 4 실제 AWS 배포 후 실측 검증할 예정입니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 8: 3구간 위협 탐지 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="8">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">07. STAGE 3 : DETECTION</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">위협 탐지: 최근 5분 기준 공격 판정</h2>
+        <p class="text-base text-stone-700 font-sans">오탐을 줄이고 침해를 포착하기 위해 최근 5분(300초) 누적 기록을 평가합니다.</p>
+      </div>
+
+      <!-- 최근 5분 판정 표 (간결한 3열 구조) -->
+      <div class="w-full overflow-hidden border-y border-line">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="border-b border-line text-stone-700 font-bold text-xs md:text-sm">
+              <th class="py-3 pr-4">공격 유형</th>
+              <th class="py-3 px-4">판정 기준 (최근 5분)</th>
+              <th class="py-3 pl-4">대응 조치</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-line/60 text-xs md:text-sm text-stone-800">
+            <tr>
+              <td class="py-3.5 pr-4 font-bold text-rose-800">
+                무차별 대입
+                <span class="text-xs font-mono text-stone-500 font-normal block">SSH_BRUTE_FORCE (HIGH)</span>
+              </td>
+              <td class="py-3.5 px-4 font-medium text-stone-900">
+                같은 IP와 같은 계정 조합에서 최근 5분 내 실패 5회 이상
+                <span class="text-xs text-rose-700 font-bold block sm:inline sm:ml-1">(우선 판정)</span>
+              </td>
+              <td class="py-3.5 pl-4 font-bold text-stone-900">
+                L4 SG 격리 + L7 WAF 차단
+                <span class="text-xs text-emerald-800 font-semibold block">(구현 완료)</span>
+              </td>
+            </tr>
+            <tr>
+              <td class="py-3.5 pr-4 font-bold text-amber-800">
+                패스워드 스프레이
+                <span class="text-xs font-mono text-stone-500 font-normal block">SSH_PASSWORD_SPRAYING (MEDIUM)</span>
+              </td>
+              <td class="py-3.5 px-4 font-medium text-stone-900">
+                같은 IP에서 최근 5분 내 서로 다른 계정 2개 이상으로 실패
+              </td>
+              <td class="py-3.5 pl-4 font-bold text-stone-900">
+                L7 WAF 차단
+                <span class="text-xs text-emerald-800 font-semibold block">(구현 완료)</span>
+              </td>
+            </tr>
+            <tr>
+              <td class="py-3.5 pr-4 text-stone-600 font-medium">
+                기준 미충족
+                <span class="text-xs text-stone-400 font-normal block">미달 이벤트</span>
+              </td>
+              <td class="py-3.5 px-4 text-stone-600">
+                탐지 임계치(5회 또는 2개 계정) 미달
+              </td>
+              <td class="py-3.5 pl-4 text-stone-600">
+                자동 차단하지 않음
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 판정 우선순위 주석 -->
+      <div class="pt-2 text-sm text-stone-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <span><strong class="text-stone-900 font-bold">판정 원칙:</strong> 두 기준이 동시에 맞으면 무차별 대입 판정을 우선합니다.</span>
+        <span class="text-emerald-800 font-bold text-xs">무차별 대입 &bull; 스프레이 룰 구현 완료</span>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. 위협 탐지 단계에서는 최근 5분(300초) 동안의 로그인 실패 기록을 집계해 공격 여부를 엄격하게 판정합니다.
+        2. 무차별 대입: 같은 IP와 같은 계정 조합에서 최근 5분 내 5회 이상 실패 시 HIGH 위험도로 L4 SG 격리와 L7 WAF 차단을 동시 집행합니다.
+        3. 패스워드 스프레이: 같은 IP에서 최근 5분 내 서로 다른 계정 2개 이상으로 실패 시 MEDIUM 위험도로 L7 WAF 차단을 단독 집행합니다.
+        4. 두 기준이 동시에 성립하면 무차별 대입을 우선 판정하며, 탐지 임계치에 미달한 이벤트는 자동 차단하지 않습니다.
+        5. DynamoDB 직전·현재·직후 3-버킷 조회 후 타임스탬프를 실제 300초 윈도우로 필터링하여 버킷 경계면 누락과 동시성 경합을 안전하게 방어합니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 9: 4구간 차단과 알림 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="9">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">08. STAGE 4 : REMEDIATION</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">계층별 차단과 관제 알림</h2>
+        <p class="text-base text-stone-700 font-sans">Cloud A는 차단 집행을, Cloud B는 Slack 상황 전파를 전담합니다.</p>
+      </div>
+
+      <!-- 2열 비교 -->
+      <div class="w-full py-6 border-y border-line grid grid-cols-1 md:grid-cols-2 gap-10">
+        <!-- 원격 접속 무차별 대입 -->
+        <div class="space-y-4">
+          <div class="space-y-1">
+            <div class="text-xs font-bold text-rose-700 uppercase">무차별 대입 대응 &bull; 구현 완료</div>
+            <div class="text-lg font-bold text-stone-900">L4 SG 격리 + L7 WAF 차단 (Cloud A)</div>
+          </div>
+          <div class="space-y-3 text-sm text-stone-700">
+            <div>
+              <strong class="text-stone-900 font-bold">네트워크 방화벽(보안그룹) 격리:</strong>
+              <p class="text-stone-700 mt-0.5 leading-relaxed">인/아웃바운드가 전면 차단된 격리 보안그룹으로 교체해 신규 접속을 끊습니다.</p>
+            </div>
+            <div>
+              <strong class="text-stone-900 font-bold">웹 방화벽(WAF) 차단:</strong>
+              <p class="text-stone-700 mt-0.5 leading-relaxed">공격자 IP(/32)를 WAF IPSet에 등록해 인프라 전체의 웹 접근을 함께 봉쇄합니다.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 스프레이 및 웹 공격 -->
+        <div class="space-y-4">
+          <div class="space-y-1">
+            <div class="text-xs font-bold text-amber-700 uppercase">스프레이 &bull; 웹 스캔 대응</div>
+            <div class="text-lg font-bold text-stone-900">L7 WAF 웹 방화벽 단독 차단 (Cloud A)</div>
+          </div>
+          <div class="space-y-3 text-sm text-stone-700">
+            <div>
+              <strong class="text-stone-900 font-bold">패스워드 스프레이 <span class="text-xs text-emerald-800 font-semibold">(구현 완료)</span>:</strong>
+              <p class="text-stone-700 mt-0.5 leading-relaxed">서버 전체를 격리하지 않고 공격자 IP만 WAF IPSet에 등록해 웹 요청을 단독 차단합니다.</p>
+            </div>
+            <div>
+              <strong class="text-stone-900 font-bold">웹 탐색 스캔 확장 <span class="text-xs text-stone-500 font-semibold">(Phase 2.5 예정)</span>:</strong>
+              <p class="text-stone-700 mt-0.5 leading-relaxed">비정상 URL 경로 탐색 시 WAF 단독 차단 규칙을 적용하며, Cloud B 알림으로 연계됩니다.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 하단 안내 (영향도 정확 표기) -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between text-sm text-stone-700 gap-2">
+        <span><strong class="text-stone-900 font-bold">결함 영향도:</strong> Slack 알림 전송이 실패해도 이미 적용된 L4·L7 차단 API 호출은 취소되지 않고 유지됩니다.</span>
+        <span class="text-brand-700 font-bold">10초 대응 실측 예정 (Phase 4)</span>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. Cloud A 차단 엔진은 공격 유형에 따라 계층을 분리해 적용합니다.
+        2. SSH 무차별 대입은 L4 SG 격리와 L7 WAF 차단을 동시에 집행합니다.
+        3. 패스워드 스프레이는 구현 완료된 기능으로, 서버 전체를 격리하지 않고 L7 WAF 차단만 단독 적용합니다.
+        4. 웹 탐색 스캔 대응은 Phase 2.5 확장 예정입니다.
+        5. Cloud B의 Slack Webhook 전송에 실패하더라도 이미 완료된 Boto3 차단 API 호출 결과는 롤백되지 않고 유지되도록 설계했습니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 10: 오탐 복구 -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="10">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">09. RECOVERY & ROLLBACK</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">오탐 복구: 정상 이용자 복구 절차</h2>
+        <p class="text-base text-stone-700 font-sans">잘못 차단된 정상 서비스 트래픽을 신속히 되돌리기 위한 2단계 복구 절차를 설계했습니다.</p>
+      </div>
+
+      <!-- 2단계 복구 절차 -->
+      <div class="w-full py-6 border-y border-line grid grid-cols-1 md:grid-cols-2 gap-10">
+        <!-- 1단계: 네트워크 차단 원복 -->
+        <div class="space-y-2 text-sm text-stone-700">
+          <div class="text-xs font-bold text-stone-500 uppercase tracking-wider">1단계</div>
+          <div class="text-lg md:text-xl font-bold text-stone-900">네트워크 차단 원복 (설계)</div>
+          <p class="text-stone-700 pt-1 leading-relaxed">
+            격리 시 보존한 원본 보안그룹 목록을 역참조하여 재할당하는 롤백 절차를 설계했습니다.
+          </p>
+          <div class="text-stone-600 text-xs pt-1">
+            &bull; 현재 코드 미구현 상태이며 차기 마일스톤 구현 과제입니다.
+          </div>
+        </div>
+
+        <!-- 2단계: 웹 방화벽 오탐 IP 제거 -->
+        <div class="space-y-2 text-sm text-stone-700">
+          <div class="text-xs font-bold text-stone-500 uppercase tracking-wider">2단계</div>
+          <div class="text-lg md:text-xl font-bold text-stone-900">WAF 차단 목록에서 오탐 IP 제거 (설계)</div>
+          <p class="text-stone-700 pt-1 leading-relaxed">
+            전체 차단 목록을 유지한 채 오탐된 IP 주소만 선별하여 IPSet에서 삭제하는 절차를 설계했습니다.
+          </p>
+          <div class="text-stone-600 text-xs pt-1">
+            &bull; LockToken 기반 낙관적 락으로 동시 수정을 방어하도록 설계했습니다.
+          </div>
+        </div>
+      </div>
+
+      <!-- 하단 안내 -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between text-sm text-stone-700 gap-2">
+        <span><strong class="text-stone-900 font-bold">진행 상태:</strong> 복구 절차 설계 완료 (코드 미구현) &bull; Phase 4 구현 및 실환경 검증 예정</span>
+        <span class="font-bold text-amber-800">검증 예정 (Phase 4)</span>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. 오탐 발생 시의 복구 절차는 네트워크 원복과 WAF IP 제거의 2단계 아키텍처로 설계했습니다.
+        2. 네트워크 원복은 격리 전 원본 보안그룹을 보존해 재할당하고, WAF 원복은 LockToken 기반으로 오탐 IP만 선별 삭제하는 구조입니다.
+        3. 현재 복구 기능은 코드로 구현된 상태가 아니며, 아키텍처 문서상에 절차 설계가 정리된 단계입니다.
+        4. 복구 코드 구현 및 실제 AWS 환경에서의 동작 검증은 Phase 4에서 진행할 계획입니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 11: 개발 현황 및 로드맵 (가로 타임라인 트랙) -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="11">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">10. ROADMAP & MILESTONES</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">9주 마일스톤: 어디까지 왔고 무엇이 남았는가</h2>
+        <p class="text-base text-stone-700 font-sans">1~4주차에 핵심 차단 파이프라인을 완성했고, 5~9주차에 웹 시나리오 확장과 클라우드 실측을 진행합니다. (기준일: 2026.09.28)</p>
+      </div>
+
+      <!-- 가로 타임라인 트랙 (마일스톤 카드 4개 완전 제거) -->
+      <div class="w-full pt-8 pb-4 relative">
+        <!-- 수평 트랙 라인 -->
+        <div class="hidden md:block absolute top-11 left-0 w-full h-0.5 bg-line"></div>
+
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-8 relative">
+          <!-- W1~W2 -->
+          <div class="space-y-3">
+            <div class="flex items-center gap-2">
+              <span class="w-3 h-3 rounded-full bg-emerald-600 ring-4 ring-canvas"></span>
+              <span class="text-xs font-bold text-emerald-800"><span class="font-mono">W1~W2</span> &bull; 완료</span>
+            </div>
+            <div class="text-base font-bold text-stone-900">Phase 1: 기반 구축</div>
+            <div class="text-sm text-stone-700 space-y-1 leading-relaxed">
+              <div>&bull; 데이터 계약 모델 확정</div>
+              <div>&bull; 가상 테스트베드(moto) 구축</div>
+              <div>&bull; CI/CD 자동화 파이프라인</div>
+            </div>
+          </div>
+
+          <!-- W2~W4 -->
+          <div class="space-y-3">
+            <div class="flex items-center gap-2">
+              <span class="w-3 h-3 rounded-full bg-emerald-600 ring-4 ring-canvas"></span>
+              <span class="text-xs font-bold text-emerald-800"><span class="font-mono">W2~W4</span> &bull; 완료</span>
+            </div>
+            <div class="text-base font-bold text-stone-900">Phase 2: 가상 파이프라인 결합</div>
+            <div class="text-sm text-stone-700 space-y-1 leading-relaxed">
+              <div>&bull; 모의 공격 재현 및 2초 수집 연동</div>
+              <div>&bull; 무차별 대입·스프레이 차단 결합</div>
+              <div>&bull; <strong class="text-stone-900 font-semibold">가상 AWS 자동화 테스트 통과</strong></div>
+            </div>
+          </div>
+
+          <!-- W5~W6 -->
+          <div class="space-y-3">
+            <div class="flex items-center gap-2">
+              <span class="w-3 h-3 rounded-full bg-brand-600 ring-4 ring-canvas"></span>
+              <span class="text-xs font-bold text-brand-800"><span class="font-mono">W5~W6</span> &bull; 진행 중 / 예정</span>
+            </div>
+            <div class="text-base font-bold text-stone-900">Phase 2.5: Web 확장</div>
+            <div class="text-sm text-stone-700 space-y-1 leading-relaxed">
+              <div>&bull; 웹 탐색 스캔 공격 재현</div>
+              <div>&bull; 웹 접근 로그 수집 연동</div>
+              <div>&bull; 웹 방화벽 차단 동적 등록</div>
+            </div>
+          </div>
+
+          <!-- W7~W9 -->
+          <div class="space-y-3">
+            <div class="flex items-center gap-2">
+              <span class="w-3 h-3 rounded-full bg-stone-400 ring-4 ring-canvas"></span>
+              <span class="text-xs font-bold text-stone-500"><span class="font-mono">W7~W9</span> &bull; 계획</span>
+            </div>
+            <div class="text-base font-bold text-stone-900">Phase 3~4: 배포·실측</div>
+            <div class="text-sm text-stone-700 space-y-1 leading-relaxed">
+              <div>&bull; Terraform 코드로 AWS 배포</div>
+              <div>&bull; 설정 보안 점검(Trivy) 사전 통과</div>
+              <div>&bull; <strong class="text-stone-900 font-bold">실제 AWS E2E 10초 관통 실측</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 팀 작업 원칙 -->
+      <div class="pt-6 border-t border-line text-sm text-stone-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <span><strong class="text-stone-900 font-bold">팀 작업 원칙:</strong> WIP 1개 제한(열린 PR 시 새 작업 금지) 및 1:1 상호 코드 리뷰 준수</span>
+        <span class="text-stone-600 font-medium font-mono text-xs">powershell .\scripts\check.ps1 100% 필수</span>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. 9주 전체 일정 중 현재 4주차를 마쳤으며, 실제 AWS 미배포 상태로 Phase 1 개발 하네스와 Phase 2 가상 환경 파이프라인 결합을 완료했습니다.
+        2. 가상 AWS(moto) 환경에서 자동화 단위·통합 테스트를 통과하여 코어 로직의 무결성을 확보했습니다.
+        3. Phase 2.5에서 웹 탐색 스캔 대응 확장을 진행하고, Phase 3~4에서 Terraform 배포 및 10초 관통 실측을 진행합니다.
+        4. 팀 작업은 WIP 1개 제한(PR 스태킹 금지), 1:1 상호 코드 리뷰, check.ps1 로컬 사전 검증 원칙을 엄격히 준수합니다.
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SLIDE 12: 결론 및 질의응답 (카드 테두리 없는 3단 영역) -->
+    <!-- ========================================== -->
+    <section class="slide flex-col justify-center w-full max-w-4xl h-full py-6 space-y-8 text-left" data-slide="12">
+      <div class="space-y-1.5">
+        <div class="text-xs font-mono text-brand-700 font-semibold uppercase tracking-wider">SUMMARY & Q&A</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-stone-900">함께 만드는 CloudShield: 진행 현황과 앞으로의 검증</h2>
+        <p class="text-base text-stone-700 font-sans">
+          공통 데이터 계약을 바탕으로 SSH 공격 자동 차단을 완성했으며, <span class="text-brand-700 font-bold">10초 무인 대응을 목표로 실제 클라우드 환경에서 검증</span>을 이어갑니다.
+        </p>
+      </div>
+
+      <!-- 3대 영역 (카드 테두리 없는 3열 구조, 영역당 핵심 문장 2개 이내) -->
+      <div class="w-full py-6 border-y border-line grid grid-cols-1 md:grid-cols-3 gap-8">
+        <!-- 1. 완료한 일 -->
+        <div class="space-y-2">
+          <div class="text-xs font-bold text-emerald-800 uppercase tracking-wider">Phase 1~2 &bull; 완료한 것</div>
+          <div class="text-lg font-bold text-stone-900">가상 환경 파이프라인 결합</div>
+          <div class="text-sm text-stone-700 space-y-1.5 leading-relaxed pt-1">
+            <div>&bull; 목 데이터 기반 무차별 대입·스프레이 판정 및 가상 차단 결합</div>
+            <div>&bull; 가상 AWS 테스트 통과로 코어 로직 무결성 검증 (AWS 미배포)</div>
+          </div>
+        </div>
+
+        <!-- 2. 앞으로 할 일 -->
+        <div class="space-y-2">
+          <div class="text-xs font-bold text-brand-700 uppercase tracking-wider">Phase 2.5~3 &bull; 다음에 할 것</div>
+          <div class="text-lg font-bold text-stone-900">웹 시나리오 확장 및 배포</div>
+          <div class="text-sm text-stone-700 space-y-1.5 leading-relaxed pt-1">
+            <div>&bull; 웹 탐색 스캔 시나리오 확장 및 WAF 동적 차단 규칙 연동</div>
+            <div>&bull; Terraform 기반 AWS 인프라 자동 배포 및 Trivy 보안 검증</div>
+          </div>
+        </div>
+
+        <!-- 3. 검증할 일 -->
+        <div class="space-y-2">
+          <div class="text-xs font-bold text-amber-800 uppercase tracking-wider">Phase 4 &bull; 검증할 것</div>
+          <div class="text-lg font-bold text-stone-900">실제 AWS E2E 실측</div>
+          <div class="text-sm text-stone-700 space-y-1.5 leading-relaxed pt-1">
+            <div>&bull; 실제 클라우드 환경에서 10초 이내 무인 대응 파이프라인 실측</div>
+            <div>&bull; 오탐 발생 시 네트워크 SG 복구 및 WAF 선별 삭제 정상 동작 검증</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 질의응답 텍스트 안내 (박스 없음) -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between text-stone-700 text-sm gap-3">
+        <div>
+          <span class="font-bold text-stone-900 text-base">CloudShield 진행 현황 발표를 마칩니다.</span>
+          <p class="text-stone-600 mt-0.5 text-sm">질문이나 피드백 있으시면 편하게 말씀해 주세요.</p>
+        </div>
+        <span class="font-mono font-bold text-brand-700 text-base shrink-0">Q & A</span>
+      </div>
+
+      <div class="presenter-note hidden">
+        1. CloudShield는 웹/UI 개발 매몰을 방지하고 실제 클라우드 인프라 침해 위협 자동 대응 코어와 10초 관통 파이프라인에 집중하고 있습니다.
+        2. Phase 1~2에서 실제 AWS 배포 전 단계로 목 데이터와 가상 환경(moto)에서 무차별 대입·스프레이 결합 및 자동화 테스트를 통과했습니다.
+        3. Phase 2.5~3에서 웹 탐색 스캔 확장과 Terraform 인프라 자동 배포를 진행합니다.
+        4. Phase 4에서 실제 AWS 인프라를 대상으로 10초 이내 무인 대응 실측과 오탐 복구 절차를 검증할 계획입니다. 질문이나 피드백 편하게 말씀해 주시면 감사하겠습니다.
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ========================================== -->
+  <!-- 하단 발표자 대본 패널 -->
+  <!-- ========================================== -->
+  <aside id="presenterNotesPanel" class="w-full border-t border-line bg-canvas/95 backdrop-blur px-8 py-4 transition-all duration-200 z-20 hidden">
+    <div class="max-w-4xl mx-auto flex flex-col space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-mono font-bold uppercase tracking-wider text-brand-700 flex items-center gap-1.5">
+          <i data-lucide="mic" class="w-4 h-4"></i>
+          <span>발표자 대본 (Presenter Notes)</span>
+          <span class="text-stone-400 font-normal text-xs">[단축키: N]</span>
+        </span>
+        <button id="closeNotesBtn" class="text-xs text-stone-500 hover:text-stone-800 font-medium px-2 py-0.5 rounded hover:bg-panel transition">닫기</button>
+      </div>
+      <div id="notesContent" class="text-xs md:text-sm text-stone-800 leading-relaxed font-sans whitespace-pre-line pl-3 border-l-2 border-brand-700">
+        <!-- JS 동적 주입 -->
+      </div>
+    </div>
+  </aside>
+
+  <!-- 하단 네비게이션 컨트롤 바 (버튼/인디케이터 정돈) -->
+  <footer class="w-full border-t border-line bg-canvas px-8 py-3 flex items-center justify-between text-xs z-10">
+    <div class="text-xs text-stone-500 hidden sm:block">
+      이동: [<span class="font-mono text-stone-700">&larr; / &rarr;</span>] [<span class="font-mono text-stone-700">Space</span>] | 전체화면: [<span class="font-mono text-stone-700">F</span>] | 대본: [<span class="font-mono text-stone-700">N</span>]
+    </div>
+
+    <div class="flex items-center gap-3 mx-auto sm:mx-0">
+      <button id="prevBtn" class="px-3 py-1.5 rounded bg-panel hover:bg-line active:bg-stone-300 text-stone-700 font-semibold transition flex items-center gap-1">
+        <span>&larr;</span> 이전
+      </button>
+      <button id="nextBtn" class="px-4 py-1.5 rounded bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white font-bold transition flex items-center gap-1">
+        다음 <span>&rarr;</span>
+      </button>
+    </div>
+  </footer>
+
+  <!-- ========================================== -->
+  <!-- 슬라이드 제어 스크립트 -->
+  <!-- ========================================== -->
+  <script>
+    (function () {
+      let currentSlide = 1;
+      const slides = document.querySelectorAll('.slide');
+      const totalSlides = slides.length;
+
+      const slideIndicator = document.getElementById('slideIndicator');
+      const progressGauge = document.getElementById('progressGauge');
+      const prevBtn = document.getElementById('prevBtn');
+      const nextBtn = document.getElementById('nextBtn');
+      const notesPanel = document.getElementById('presenterNotesPanel');
+      const notesContent = document.getElementById('notesContent');
+      const toggleNotesBtn = document.getElementById('toggleNotesBtn');
+      const closeNotesBtn = document.getElementById('closeNotesBtn');
+
+      let notesVisible = false;
+
+      function updateSlide(targetIndex) {
+        if (targetIndex < 1 || targetIndex > totalSlides) return;
+
+        slides.forEach((slide) => {
+          slide.classList.remove('active');
+        });
+
+        currentSlide = targetIndex;
+        const activeSlide = slides[currentSlide - 1];
+        activeSlide.classList.add('active');
+
+        // 인디케이터 갱신
+        const padIndex = String(currentSlide).padStart(2, '0');
+        const padTotal = String(totalSlides).padStart(2, '0');
+        slideIndicator.textContent = `${padIndex} / ${padTotal}`;
+
+        // 상단 프로그레스 바
+        const percentage = ((currentSlide) / totalSlides) * 100;
+        progressGauge.style.width = `${percentage}%`;
+
+        // 버튼 상태
+        prevBtn.disabled = currentSlide === 1;
+        prevBtn.classList.toggle('opacity-40', currentSlide === 1);
+        prevBtn.classList.toggle('cursor-not-allowed', currentSlide === 1);
+
+        nextBtn.disabled = currentSlide === totalSlides;
+        nextBtn.classList.toggle('opacity-40', currentSlide === totalSlides);
+        nextBtn.classList.toggle('cursor-not-allowed', currentSlide === totalSlides);
+
+        // 발표자 대본 갱신
+        const noteElem = activeSlide.querySelector('.presenter-note');
+        if (noteElem) {
+          notesContent.textContent = noteElem.textContent.trim().split('\n').map(line => line.trim()).filter(Boolean).join('\n');
+        } else {
+          notesContent.textContent = "작성된 발표자 대본이 없습니다.";
+        }
+      }
+
+      function nextSlide() {
+        if (currentSlide < totalSlides) {
+          updateSlide(currentSlide + 1);
+        }
+      }
+
+      function prevSlide() {
+        if (currentSlide > 1) {
+          updateSlide(currentSlide - 1);
+        }
+      }
+
+      function toggleNotes() {
+        notesVisible = !notesVisible;
+        notesPanel.classList.toggle('hidden', !notesVisible);
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else {
+          if (document.exitFullscreen) {
+            document.exitFullscreen();
+          }
+        }
+      }
+
+      // 이벤트 바인딩
+      nextBtn.addEventListener('click', nextSlide);
+      prevBtn.addEventListener('click', prevSlide);
+      toggleNotesBtn.addEventListener('click', toggleNotes);
+      closeNotesBtn.addEventListener('click', toggleNotes);
+
+      window.addEventListener('keydown', (e) => {
+        if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+
+        switch (e.key) {
+          case 'ArrowRight':
+          case 'ArrowDown':
+          case 'PageDown':
+          case ' ':
+            e.preventDefault();
+            nextSlide();
+            break;
+          case 'ArrowLeft':
+          case 'ArrowUp':
+          case 'PageUp':
+          case 'Backspace':
+            e.preventDefault();
+            prevSlide();
+            break;
+          case 'Home':
+            e.preventDefault();
+            updateSlide(1);
+            break;
+          case 'End':
+            e.preventDefault();
+            updateSlide(totalSlides);
+            break;
+          case 'n':
+          case 'N':
+            e.preventDefault();
+            toggleNotes();
+            break;
+          case 'f':
+          case 'F':
+            e.preventDefault();
+            toggleFullscreen();
+            break;
+        }
+      });
+
+      // 초기화 및 Lucide 아이콘 렌더링
+      updateSlide(1);
+      if (window.lucide) {
+        lucide.createIcons();
+      }
+    })();
+  </script>
+</body>
+</html>

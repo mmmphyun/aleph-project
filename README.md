@@ -6,10 +6,11 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![Test: Pytest](https://img.shields.io/badge/test-pytest-0A9EDC.svg)](https://docs.pytest.org/)
+[![Test: Pytest](https://img.shields.io/badge/test-1%2C907%20passed-0A9EDC.svg)](https://docs.pytest.org/)
 [![AWS Mock: Moto](https://img.shields.io/badge/aws%20mock-moto-FF9900.svg)](http://docs.getmoto.org/)
 [![IaC Security: Trivy](https://img.shields.io/badge/security-trivy-1B365D.svg)](https://trivy.dev/)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-%23FE5196?logo=conventionalcommits&logoColor=white)](https://conventionalcommits.org)
+[![Notion Workspace](https://img.shields.io/badge/Notion-Kanban%20%26%20Scrum-black?logo=notion)](https://app.notion.com/p/A-d5f04d37c22582ad9e7f81acd36191d0)
 
 </div>
 
@@ -21,113 +22,236 @@
 * **목표 대응 지표**: 침해 공격 인입 시 **10초 이내 자동 탐지·차단·상황 전파 완료를 목표로 설계** (Target SLA)
   - **로그 수집 (<3s) $\rightarrow$ 위험도 판정 (<5s) $\rightarrow$ 다중 계층 차단 (<2s) $\rightarrow$ 상황 전파**
 * **추진 배경**:
-  - **수동 침해 분석의 한계**: 클라우드 인프라 대상 무차별 대입, 비인가 스캐닝 등은 발생 수 분 내에 측면 이동으로 전이되므로 사람의 수동 분석으로는 피해를 막기 어렵습니다.
-  - **파이프라인 중심 아키텍처**: 웹 UI 개발에 리소스를 분산하지 않고, **실제 인프라 라우팅, L4 패킷 플래그, 탐지 시그니처, IAM 세션 제어, IaC 등 클라우드 보안 엔지니어링 핵심 과제**에 집중하기 위해 단일 관통 파이프라인 구조를 채택했습니다.
+  - **수동 침해 분석의 한계**: 클라우드 인프라 대상 무차별 대입, 비인가 디렉터리 스캐닝 등은 인입 후 수 분 내에 측면 이동으로 전이되므로 운영자의 수동 콘솔 조작만으로는 골든타임을 방어하기 어렵습니다.
+  - **파이프라인 중심 엔지니어링**: 웹 UI 개발에 리소스를 분산하지 않고, **실제 인프라 라우팅, L4 패킷 플래그 분석, 정규식 ReDoS 방어 시그니처, IAM 세션 제어, DynamoDB 분산 슬라이딩 윈도우, 선언적 IaC** 등 클라우드 보안 및 플랫폼 엔지니어링 핵심 과제에 집중했습니다.
+
+<div align="center">
+
+![CloudShield Architecture Topology](docs/assets/topology.png)
+*CloudShield 전역 하이브리드 침해 대응 아키텍처 토폴로지*
+
+</div>
 
 ---
 
-## 2. 프로젝트 진행 상태 (Roadmap & Status)
+## 2. 3분 30초 관통 녹화 데모 (SSH Brute Force 대응 및 자동 복구)
 
-본 프로젝트는 팀원 간 병렬 개발 병목을 방지하기 위해 **인터페이스 계약(Contract-First)과 로컬 테스트베드를 사전에 구축**하고 단계적으로 구현을 확장하는 마일스톤 방식을 따릅니다:
+발표 환경 및 네트워크 상태에 구애받지 않고 실제 패킷 단위의 차단과 알림 흐름을 증빙하기 위해 제작된 2분할 관통 실측 데모입니다. 좌측은 모의 공격 터미널의 실시간 TCP 연결 상태이며, 우측은 동일 사건 ID(`incident_id`)로 수신된 2단계 Slack 관제 알림 카드입니다.
+
+<div align="center">
+
+[![3분 30초 관통 데모 영상 (클릭 시 재생)](docs/assets/5.ssh-demo-poster.png)](docs/assets/cloudshield-ssh-take2-source.mp4)
+
+*(이미지를 클릭하면 [3분 30초 2분할 관통 데모 영상](docs/assets/cloudshield-ssh-take2-source.mp4) 원본이 재생됩니다)*
+
+</div>
+
+* **데모 핵심 검증 포인트**:
+  1. **공격 인입 및 탐지**: Hydra SSH 공격 인입 후 서버 인증 실패 로그 중앙 수집 및 오케스트레이터 트리거.
+  2. **즉각적 인바운드 드롭**: Boto3 격리 실행 직후 신규 TCP SYN 패킷에 대한 무응답 및 타임아웃 관측.
+  3. **2단계 Slack 알림 전파**: 1차 실시간 격리 알림 도착 후, 백그라운드 EventBridge를 거친 2차 분석 알림 연계.
+  4. **원자적 인프라 롤백**: 검증 완료 후 단일 명령으로 이전 보안 그룹 상태 원복 확인.
+
+---
+
+## 3. 정량 실측 성과 대시보드
+
+CloudShield는 가정이 아닌 **실제 AWS 인프라(`ap-southeast-2`) 및 테스트베드에서 계측된 정량 데이터**를 바탕으로 시스템을 평가했습니다.
+
+<div align="center">
+
+| 핵심 검증 도메인 | 달성 지표 | 세부 관측 조건 및 환경 | 단일 신뢰점 원본 |
+| :--- | :---: | :--- | :---: |
+| **L4 인스턴스 격리 SLA** | **`5.48s`** | 서버 5회 실패 기록 후 첫 무응답 SYN 관측 (P3-3c 실측: `5.478s`, P4-3 재실측: `4.51s-6.05s`) | [P3-3c 실측 보고서](docs/roles/network/2026-10-14-p3-3c-hydra-l4-remeasurement.md) |
+| **L7 WAF IPSet 차단 SLA** | **`18.20s`** | Lambda 시작부터 첫 403 응답 관측 (공격 시작 기준: `21.29s` 전파 지연) | [WAF 실측 보고서](docs/roles/network/2026-10-16-p3-6-waf-measurement.md) |
+| **오케스트레이터 반환 지표** | **`2.70s`** | 고정 로그 실환경 통합 실증 1건의 탐지 $\rightarrow$ 대응 반환 계측 (max/p95: `2.7042s`, 전체 SLA와 구분) | [P5-2 패널 검증서](docs/roles/cloud-b/2026-10-30-p5-2-panel-verification.md) |
+| **자동화 파이프라인 검증** | **1,907 tests** | 계약 불변식, 네트워크 패킷 덤프, 모킹 인프라 전체 테스트 통과 | [단위 테스트 슈트](tests/unit/) |
+| **협업 거버넌스 안정성** | **137 PRs** | 사전 검증 하네스를 통한 137건 PR 머지 무충돌 유지 (커밋 153건) | [GitHub PR 히스토리](https://github.com/mmmphyun/aleph-project/pulls?q=is%3Apr+is%3Amerged) |
+| **도메인 작업 분담률** | **30:26:23:21** | 승윤 30%, 동형 26%, 시훈 23%, 찬원 21% 균등 분담 | [노션 프로젝트 일정 DB](https://app.notion.com/p/A-d5f04d37c22582ad9e7f81acd36191d0) |
+
+</div>
+
+---
+
+## 4. 프로젝트 진행 마일스톤 (Phase 1 - Phase 5 완결)
+
+본 프로젝트는 사전 인터페이스 계약과 로컬 테스트베드를 사전에 구축하고 단계적으로 인프라를 확장하는 마일스톤 방식을 준수하여 전 과정을 완결했습니다:
 
 - [x] **Phase 1: 개발 하네스 및 가상 테스트베드 구축 (완료)**
-  - Pydantic V2 기반 불변 데이터 계약 (`src/contracts/`) 확정 및 Drift Guard 검증
-  - Moto 기반 가상 AWS 리소스(EC2, SG, WAFv2, DynamoDB, IAM) 테스트베드 구축 (단위 테스트 통과)
+  - Pydantic V2 기반 불변 데이터 계약 (`src/contracts/`) 확정 및 Contract Drift Guard 검증
+  - Moto 기반 가상 AWS 리소스(EC2, SG, WAFv2, DynamoDB, IAM) 테스트베드 구축
   - GitHub Actions 기반 품질 검사(Ruff, Pytest), PR 제목 린터, R&R 스코프 하드가드 구축
   - GitHub Issue/PR과 노션 칸반 보드 간 상태 및 일정 자동 동기화 배관 구축
 - [x] **Phase 2: 도메인별 코어 비즈니스 로직 구현 (완료)**
-  - [x] L4 EC2 격리 및 L7 WAF IPSet 차단 Boto3 엔진 구현 (`src/remediation/remediation.py`)
-  - [x] DynamoDB 원자적 카운터 기반 5분 슬라이딩 윈도우 집계 모듈 구현 (`src/remediation/auth_window.py`)
-  - [x] 1차 시그니처 룰 및 결정론적 IncidentReport 매퍼 구현 (`src/detection/rules.py`, `src/detection/incident_mapper.py`)
-  - [x] CloudWatch Logs 페이로드 디코더 및 Slack Block Kit 전파 모듈 구현 (`src/collector/`, `src/reporter/`)
-- [ ] **Phase 3: 관통 시나리오 통합 테스트 및 AWS 인프라 배포 (진행 중)**
-  - [ ] 로컬 목 데이터 기반 10초 관통 E2E 시나리오 통합 테스트 작성 (`tests/integration/`)
-  - [ ] VPC, EC2, WAF, DynamoDB, Lambda 프로비저닝용 Terraform 모듈 작성 (`infra/terraform/`)
-  - [ ] 실제 클라우드 인프라 환경에서 모의 공격 수행 및 파이프라인 레이턴시 실측 (목표: 10초 이내)
+  - L4 EC2 격리 및 L7 WAF IPSet 차단 Boto3 엔진 구현 (`src/remediation/remediation.py`)
+  - DynamoDB 원자적 카운터 기반 5분 슬라이딩 윈도우 집계 모듈 구현 (`src/remediation/auth_window.py`)
+  - 1차 시그니처 룰 및 결정론적 IncidentReport 매퍼 구현 (`src/detection/rules.py`, `src/detection/incident_mapper.py`)
+  - CloudWatch Logs 페이로드 디코더 및 Slack Block Kit 전파 모듈 구현 (`src/collector/`, `src/reporter/`)
+- [x] **Phase 3: AWS 실인프라 프로비저닝 및 관통 실측 (완료)**
+  - VPC, EC2 타깃 서버, ALB, WAFv2, DynamoDB, Lambda Terraform 프로비저닝 완료
+  - Hydra SSH 무차별 대입 및 Nginx 웹 스캐닝 모의 공격 수행
+  - L4 SG 격리(5.48초) 및 L7 WAF 전파 지연(18.2초) 패킷 단위 실측 및 계층별 특성 규명
+- [x] **Phase 4: 비동기 LLM 심층 분석 및 2단계 전파 배관 구축 (완료)**
+  - EventBridge 기반 사후 비동기 Bedrock Claude/Nova 분석 워커 파이프라인 분리
+  - 상사 보고용 3단 구조화 양식 프롬프트 엔지니어링 및 프롬프트 인젝션 방어 검증
+  - Slack Block Kit 1차 실시간 격리 카드 vs 2차 사후 분석 카드 분리 전파
+- [x] **Phase 5: 무상태 관제 프로비저닝 및 최종 쇼케이스 (완료)**
+  - Docker Compose 기반 무상태 Grafana as Code 프로비저닝 환경 구축 (`infra/grafana/`)
+  - CloudWatch Logs Insights 4사분면 관제 패널 쿼리 및 대시보드 검증
+  - 3분 30초 2분할 관통 데모 영상 제작 및 캡스톤 최종 발표 완결
 
 ---
 
-## 3. 10초 관통 파이프라인 아키텍처
+## 5. 4대 직무별 딥다이브 포트폴리오 쇼케이스
 
-CloudShield는 **"10초 실시간 원자적 차단(Critical Path)"**과 **"사후 비동기 심층 분석(Out-of-band LLM)"**을 분리한 이원화 하이브리드 구조를 채택했습니다. 실시간 차단 경로에 외부 LLM API를 동기 호출하면 네트워크 지연(RTT)과 API 응답 지연으로 골든타임(10초)을 놓칠 수 있으므로, 실시간 차단은 100% 로컬 결정론적 코드로 완결합니다.
+팀원 각자의 전문 영역에 따른 고유 엔지니어링 성과와 기술적 문제 해결 과정을 동등한 비중으로 상세 전개합니다.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Attacker as [네트워크] 침해 공격자 (Kali / Hydra)
-    participant Target as [클라우드 B] 타깃 EC2 (/var/log/auth.log)
-    participant Agent as [클라우드 B] CloudWatch Agent
-    participant CW as [클라우드 B] CloudWatch Logs (구독 필터)
-    participant Lambda as [클라우드 A] 오케스트레이터 (orchestrator.py)
-    participant DDB as [클라우드 A] DynamoDB (auth_window.py)
-    participant Mapper as [보안] 침해사고 매퍼 (incident_mapper.py)
-    participant WAF as [클라우드 A] AWS WAF IPSet (/32)
-    participant EC2_API as [클라우드 A] EC2 API (Quarantine SG)
-    participant Slack as [클라우드 B] Slack Webhook (Block Kit)
+### 5.1 클라우드 A (승윤 / [@mmmphyun](https://github.com/mmmphyun)) — 플랫폼 엔지니어 & 테크 리드
 
-    %% 1. 침해 공격 및 중앙 수집
-    Note over Attacker, Target: [시나리오: SSH Brute Force / Spraying]
-    Attacker->>Target: 공격 트래픽 인입 (Hydra 모의 공격)
-    Target->>Target: 시스템 인증 실패 로그 기록 (/var/log/auth.log)
-    Agent->>CW: 로그 실시간 스트리밍 (< 3초)
+전체 인프라 오케스트레이션과 분산 데이터 일관성, 원자적 차단·복구 엔진 및 팀 개발 하네스를 전담했습니다.
 
-    %% 2. 트리거 및 분산 상태 누적
-    CW->>Lambda: 구독 필터 조건 일치 ("Failed password") → Gzip 배치 전달
-    Lambda->>DDB: 배치 로그 파싱 후 5분 윈도우 원자적 카운터 갱신 (ADD failure_count)
-    DDB-->>Lambda: 누적 실패 횟수 및 고유 계정 수 반환
+* **핵심 기술 과제 및 CS 메커니즘**:
+  1. **무상태 컨테이너 환경의 슬라이딩 윈도우 알고리즘 진화**:
+     - *문제 정의*: Lambda는 무상태 컨테이너이므로 호출 간 공격 상태를 메모리에 유지할 수 없으며, 분 경계면(11:59 vs 12:01)에 걸쳐 인입되는 공격이 분할되어 탐지 임계치를 누락하는 결함 식별.
+     - *알고리즘 및 서버리스 트레이드오프*: 상시 인스턴스 비용을 배제하고 유휴 비용 0원의 무상태 서버리스 구조를 유지하기 위해 DynamoDB 온디맨드를 채택. Cloudflare 가중 알고리즘의 저트래픽 오차를 극복하기 위해 분 단위 버킷 기반 **'타임스탬프 3-버킷 슬라이딩 윈도우'**를 설계하여 경계면 누락을 방어.
+     - *분산 일관성 모델 보장*: 쓰기 직후 후속 배치가 즉시 읽어야 하는 파이프라인 특성상 DynamoDB의 최종 일관성으로 인한 카운트 누락을 방어하기 위해 **`ConsistentRead=True`(Strongly Consistent Read)**를 강제 적용.
+  2. **Boto3 기반 원자적 차단 및 단일 명령 롤백 엔진**:
+     - 단일 API 호출(`modify_instance_attribute`)을 통해 침해 인스턴스의 보안 그룹을 격리 SG로 원자적 교체하고, ALB 전면 WAF IPSet에 `/32` 단위 차단을 등록하는 멱등성 엔진 구축.
+     - 관통 실측 후 테스트베드를 즉시 정상화할 수 있는 L4/L7 통합 원자적 롤백 복구 모듈 개발.
+     - SQS 완충 큐에 따른 1-3초의 폴링 큐잉 지연을 배제하고 10초 SLA를 엄수하기 위해 Subscription Filter 동기 직접 트리거를 채택했으며, 프로덕션 동시성 고갈을 방어하는 Lambda 예약 동시성 설계를 병행.
+  3. **컴파일 타임 계약 하드가드 및 무상태 관제 프로비저닝**:
+     - Pydantic V2 불변 모델을 수립하고, 4개 직무 간 모의 데이터 불일치를 선제 방어하는 [5대 교차 계약 테스트](tests/test_contracts.py) 구축.
+     - Grafana 웹 UI 수동 조작을 배제하고 설정 파일(`cloudwatch.yaml`, `dashboards.yaml`) 주입으로 일관된 동일 관제 환경을 재현하는 **Grafana as Code** 환경 구축.
 
-    %% 3. 위협 판정 및 IncidentReport 승격 (외부 API 배제)
-    alt 5분 내 실패 5회 이상 (Brute Force) 또는 고유 계정 2개 이상 (Spraying)
-        Lambda->>Mapper: 탐지 정보 전달
-        Mapper-->>Lambda: 결정론적 IncidentReport 반환 (외부 API 제로)
+<div align="center">
 
-        %% 4. L4 / L7 원자적 차단
-        par 원자적 다중 계층 차단
-            Lambda->>WAF: L7 공격자 IP /32 인바운드 차단 등록 (boto3 update_ip_set)
-            Lambda->>EC2_API: L4 침해 인스턴스 격리 SG 교체 (modify_instance_attribute)
-        end
-
-        %% 5. SecOps 상황 전파
-        Lambda->>Slack: IncidentReport 및 차단 결과 기반 Block Kit 카드 전송 (< 2초)
-        Note over Slack: 관리자에게 10초 이내 격리 완료 상황 전파
-    end
-```
-
----
-
-## 4. 실증 침해 시나리오
-
-CloudShield는 실무에서 빈번히 발생하는 2대 침해 공격을 대상으로 탐지 및 차단 파이프라인을 설계했습니다:
-
-| 구분 | [시나리오 1] SSH Brute Force (L4) | [시나리오 2] Web L7 Directory Scanning & Spraying |
-| :--- | :--- | :--- |
-| **공격 도구** | Hydra, Nmap (`network/attack_simulation.sh`) | Curl, Gobuster, Nikto |
-| **인입 경로** | SSH 포트(TCP 22) 패스워드 무차별 대입 | Web HTTP/HTTPS(80/443) 비인가 디렉토리 탐색 및 로그인 시도 |
-| **타깃 로그** | `/var/log/auth.log` (`SyslogAuthEvent`) | `/var/log/nginx/access.log` (HTTP 4xx/5xx 연속 발생) |
-| **1차 탐지 룰** | 동일 IP 기준 5회 이상 인증 실패 / 다중 계정 스프레잉 | 짧은 시간 내 비인가 URL 패턴 탐색 및 401/403/404 임계치 초과 |
-| **MITRE ATT&CK** | `T1110.001` (Brute Force: Password Guessing) | `T1110.003` (Password Spraying), `T1595.002` (Active Scanning) |
-| **차단 조치** | **L4 EC2 Quarantine SG 단독 교체** (측면 이동 원천 차단) | **L7 AWS WAF IPSet `/32` 차단** (외부 트래픽 인바운드 드롭) |
-| **전파 채널** | Slack Block Kit (`quarantine_applied: true`, MITRE ID) | Slack Block Kit (`waf_blocked: true`, 공격자 IP/32) |
-| **테스트베드** | `mock_auth.log`, `mocked_ec2_target` (Moto 가상 VPC) | `mock_incident_waf_only.json`, `mocked_waf_ipset` (Moto 가상 WAF) |
-
----
-
-## 5. 팀 구성 및 도메인 책임 매트릭스
-
-본 프로젝트는 모듈 간 결합도를 낮추고 각 도메인의 독립적 책임을 명확히 하기 위해, 단일 소유권 원칙에 따라 역할을 분리하여 운영합니다:
-
-| 직무 | 핵심 도메인 및 R&R | 핵심 산출물 및 기술 성과 | 공식 기술 문서 |
+| 담당 영역 | 세부 구현 모듈 | 핵심 엔지니어링 원리 | 상세 기술 문서 |
 | :--- | :--- | :--- | :---: |
-| **네트워크** | - VPC/Subnet 네트워크 토폴로지 설계<br>- Hydra/Nmap 모의 공격 시뮬레이션<br>- tcpdump/Wireshark L4 TCP 플래그 분석<br>- 격리 Security Group 인/아웃바운드 규칙 명세 | `network/attack_simulation.sh`<br>`network/reports/` (Wireshark 분석) | [네트워크 기술 문서](docs/roles/network/README.md) |
-| **클라우드 B** | - 타깃 인스턴스(Ubuntu/Nginx) 환경 구성<br>- CloudWatch Agent 중앙 로깅 파이프라인<br>- CloudWatch Subscription Filter 설계<br>- Slack Incoming Webhook + Block Kit 알림 모듈 | `amazon-cloudwatch-agent.json`<br>`src/collector/cw_processor.py`<br>`src/reporter/slack_notifier.py` | [클라우드 B 기술 문서](docs/roles/cloud-b/README.md) |
-| **보안** | - 정규식 기반 1차 시그니처 룰 엔진 (`rules.py`)<br>- MITRE ATT&CK TTP 1:1 매핑 정의<br>- 결정론적 IncidentReport 매퍼 (`incident_mapper.py`)<br>- 오탐/정탐 분류 기준 및 대응 우선순위 수립 | `src/detection/rules.py`<br>`src/detection/incident_mapper.py`<br>`tests/unit/test_rules.py`<br>`tests/unit/test_incident_mapper.py` | [보안 기술 문서](docs/roles/security/README.md) |
-| **클라우드 A<br>(플랫폼 리드)** | - Terraform 기반 AWS 인프라 IaC 모듈 설계<br>- DynamoDB 원자적 카운터 기반 5분 윈도우 집계 (`auth_window.py`)<br>- Boto3 기반 다중 계층 차단 오케스트레이터 (`orchestrator.py`, `remediation.py`) 개발<br>- GitHub Actions CI/CD 배관 및 Moto 가상 테스트베드 구축 | `infra/terraform/`<br>`src/remediation/auth_window.py`<br>`src/remediation/orchestrator.py`<br>`src/remediation/remediation.py`<br>`tests/conftest.py`<br>`.github/workflows/` | [클라우드 A 기술 문서](docs/roles/cloud-a/README.md) |
+| **분산 윈도우** | `src/remediation/auth_window.py` | DynamoDB 원자적 카운터, 3-버킷 쿼리, Strongly Consistent Read | [윈도우 아키텍처](docs/roles/cloud-a/2026-09-21-auth-failure-window-architecture.md) |
+| **차단/복구 엔진** | `src/remediation/remediation.py` | Boto3 다중 계층 원자적 차단, ClientError 정밀 처리, 멱등 롤백 | [L4/L7 차단 명세](docs/roles/cloud-a/2026-09-10-l4-ec2-quarantine-architecture.md) |
+| **비동기 오케스트레이터** | `src/remediation/orchestrator.py` | 실시간 차단-사후 분석 분리, EventBridge 비동기 격리 파이프라인 | [오케스트레이터 분석](docs/roles/cloud-a/2026-10-21-orchestrator-putevents-worker.md) |
+| **관제 프로비저닝** | `infra/grafana/docker-compose.yml` | Zero-Click 무상태 프로비저닝, 불변 UID 바인딩, 최소 권한 IAM | [Grafana 배포 보고서](docs/roles/cloud-a/2026-10-28-p5-1-pipeline-deploy-and-grafana-provisioning.md) |
+
+</div>
+
+> **클라우드 A 독립 기술 포트폴리오**: [docs/roles/cloud-a/README.md](docs/roles/cloud-a/README.md) (총 14편의 아키텍처 및 실측 보고서 수록)
 
 ---
 
-## 6. 개발 하네스 및 협업 자동화 체계
+### 5.2 보안 (찬원 / [@gkacksdnjs22-stack](https://github.com/gkacksdnjs22-stack)) — 침해 탐지 및 보안 인텔리전스 엔지니어
 
-팀원 전원이 AI 코딩 에이전트를 활용하여 개발을 수행함에 따라, **컨텍스트 왜곡 및 임의 스키마 변경을 방지하는 개발 하네스**를 사전 구축하여 운영합니다:
+시그니처 기반 침해 탐지 룰, MITRE ATT&CK TTP 매핑, ReDoS 방어 및 사후 LLM 분석 인텔리전스를 전담했습니다.
+
+* **핵심 기술 과제 및 CS 메커니즘**:
+  1. **정규식 시그니처 엔진의 ReDoS(Catastrophic Backtracking) 방어**:
+     - *문제 정의*: 대규모 로그 인입 시 악의적인 패턴이나 긴 문자열이 유입되면 정규식 엔진의 지수 시간 복잡도($O(2^n)$) 역추적으로 인해 Lambda CPU가 포화되는 취약점 식별.
+     - *해결책*: 과도한 탐색을 유발하는 중첩 수량자(`(a+)+`)를 전면 배제하고, 원자적 그룹 및 토큰화 기반의 $O(n)$ 선형 시간 탐색 구조로 정규식을 설계하여 ReDoS 위협 방어.
+  2. **10초 실시간 경로와 사후 비동기 LLM 파이프라인의 아키텍처적 분리**:
+     - *설계 결단*: 실시간 차단 경로에 외부 LLM API(Bedrock)를 동기 호출할 경우 네트워크 왕복 시간과 토큰 생성 지연으로 10초 SLA 달성이 불가능함을 식별.
+     - *분리 구조 및 역할 정의*: 단순 침해 팩트 정형 요약은 로컬 매퍼(incident_mapper.py)가 1ms 내에 (1) 완결하고, 고비용 LLM은 웹 비인가 URI의 난독화 페이로드 의도 분석 및 권고 추론이라는 비정형 인텔리전스에 한정 투입하여 차단 골든타임을 확보.
+  3. **상사 보고용 3단 양식 프롬프트 엔지니어링 및 프롬프트 인젝션 방어**:
+     - 관측된 공격 사실만을 엄격히 전달하기 위해 `[1. 침해 개요]`, `[2. 관측 로그 근거]`, `[3. 영향도 및 침해 판정]` 및 3대 권고(`[즉시 조치]`, `[설정 점검]`, `[재발 방지]`) 구조화 양식 설계.
+     - 공격자가 SSH 계정명이나 Web URI에 시스템 명령이나 탈옥 구문을 삽입하더라도 보고서의 핵심 필드(IP, 타깃, 차단 액션)가 변조되지 않도록 **보호 필드 불변성 검증 파서**를 구축하고, Bedrock 호출 실패 시 원본 보고서를 보존하는 **15건의 Fallback 고정 평가셋 회귀 검증** 완료.
+
+<div align="center">
+
+| 담당 영역 | 세부 구현 모듈 | 핵심 엔지니어링 원리 | 상세 기술 문서 |
+| :--- | :--- | :--- | :---: |
+| **탐지 룰 엔진** | `src/detection/rules.py` | ReDoS $O(n)$ 방어 정규식, MITRE ATT&CK T1110/T1595 1:1 매핑 | [ReDoS 설계서](docs/roles/security/2026-09-29-web-l7-signature-redos-design.md) |
+| **침해사고 매퍼** | `src/detection/incident_mapper.py` | 결정론적 IncidentReport 생성, 외부 API 제로화, 필드 불변성 | [매퍼 아키텍처](docs/roles/security/2026-09-11-mitre-incident-report.md) |
+| **LLM 프롬프트/파서** | `src/detection/llm_deep_analyzer.py` | 3단 상사 보고 양식, 프롬프트 인젝션 방어, 비표시 제어문자 가시화 | [3단 프롬프트 설계서](docs/roles/security/2026-10-28-executive-llm-report-and-eval.md) |
+| **장애 회귀 검증** | `tests/unit/test_incident_mapper.py` | Bedrock 장애 시 Fallback 고정 평가셋 15건 불변성 검증 | [LLM 검수 보고서](docs/roles/security/2026-10-30-p5-3-llm-executive-report-evaluation.md) |
+
+</div>
+
+> **보안 독립 기술 포트폴리오**: [docs/roles/security/README.md](docs/roles/security/README.md) (총 10편의 시그니처 및 LLM 분석 보고서 수록)
+
+---
+
+### 5.3 클라우드 B (시훈 / [@wkdtlgns99-cell](https://github.com/wkdtlgns99-cell)) — 클라우드 시스템 및 SRE 관제 엔지니어
+
+타깃 서버 로깅 인프라, 이종 로그 스트림 라우팅, 2단계 Slack 관제 알림 및 Grafana 4사분면 모니터링을 전담했습니다.
+
+* **핵심 기술 과제 및 CS 메커니즘**:
+  1. **CloudWatch Agent 중앙 로깅 튜닝 및 수집 버퍼 최적화**:
+     - *문제 정의*: CloudWatch Agent의 기본 로그 플러시 대기 시간으로 인해 공격 로그 전송이 수 분간 지연되어 실시간 파이프라인이 마비되는 현상 발생.
+     - *해결책 및 TCO 고려*: 타깃 EC2 인스턴스의 수집 버퍼 플러시 주기를 **2초**로 정밀 튜닝하여 파이프라인의 이론적 최소 지연 한계를 실측. 대규모 프로덕션 확장 시 PutLogEvents API 비용 및 스로틀링을 완화하기 위한 Kinesis Firehose / Fluent Bit 버퍼링 연계 아키텍처 도출.
+  2. **이종 로그 스트림 역직렬화 어댑터 및 인메모리 중복 제거**:
+     - 단일 Lambda 오케스트레이터가 서로 다른 규격의 로그(Syslog vs Nginx Combined)를 처리할 수 있도록 Base64 디코딩 및 Gzip 압축 해제 파이프라인 구축.
+     - 로그 그룹 경로에 따라 이벤트를 분기하고, 이벤트 ID 해시 집합을 기반으로 배치 내 중복 로그를 인메모리에서 사전 필터링하는 정형화 어댑터 구현.
+  3. **지시 조치와 엔진 반환값을 분리한 Slack Block Kit 2단계 알림**:
+     - *운영자 혼선 방지*: "차단 지시"와 실제 Boto3 엔진이 반환한 "실제 인프라 집행 상태(성공·실패·미완료·미대상)"를 엄격히 분리 표기하여 오판 방지.
+     - *2단계 전파*: 1차 실시간 격리 알림 카드 발송 후, 심층 분석이 완료되면 동일한 `incident_id`를 갖는 2차 분석 카드를 연계 발송.
+     - *장애 및 인젝션 격리*: 제어 문자 이스케이프를 적용해 공격 문자열에 의한 의도치 않은 슬랙 멘션(@here, @channel) 공격을 방어하고, SaaS 네트워크 순단에 대비한 타임아웃 예외 처리 적용.
+  4. **Grafana 4사분면 CloudWatch Logs Insights 관제 대시보드 설계**:
+     - 공격 인입 건수, 고정 로그 실환경 통합 실증(매칭 1건) 기준 오케스트레이터 탐지 $\rightarrow$ 대응 반환 지표(max/p95 2.7042s, 전체 관통 SLA와 구분), LLM 정상/Fallback 전환율, 8단계 사건 처리 타임라인을 코드로 시각화.
+
+<div align="center">
+
+![Grafana 4-Quadrant SecOps Dashboard](docs/assets/4.grafana-ssh-web-original-dark.png)
+*CloudShield Grafana 4사분면 SecOps 관제 대시보드 실측 화면*
+
+</div>
+
+<div align="center">
+
+| 담당 영역 | 세부 구현 모듈 | 핵심 엔지니어링 원리 | 상세 기술 문서 |
+| :--- | :--- | :--- | :---: |
+| **중앙 로깅 인프라** | `amazon-cloudwatch-agent.json` | 버퍼 플러시 2초 최적화, 다중 로그 스트림 수집 | [수집 레이턴시 보고서](docs/roles/cloud-b/2026-10-08-cloudwatch-collection-latency-report.md) |
+| **로그 정형화 라우터** | `src/collector/cw_processor.py` | Base64/Gzip 역직렬화, LogGroup 분기, 인메모리 중복 제거 | [스트림 라우터 명세](docs/roles/cloud-b/2026-09-29-nginx-payload-decoder-and-multistream-router.md) |
+| **관제 알림 렌더러** | `src/reporter/slack_notifier.py` | Block Kit 2단계 알림, 집행 상태 분리 표기, 멘션 인젝션 방어 | [Slack 2단계 실측서](docs/roles/cloud-b/2026-10-23-p4-2-slack-sequential-measurement.md) |
+| **SecOps 대시보드** | `docs/roles/cloud-b/grafana/p5-2.json` | 4사분면 Logs Insights 쿼리, 오케스트레이터 반환 2.7042s 관측(전체 SLA와 구분), 사건 타임라인 추적 | [Grafana 쿼리 대조서](docs/roles/cloud-b/2026-10-30-p5-2-panel-verification.md) |
+
+</div>
+
+> **클라우드 B 독립 기술 포트폴리오**: [docs/roles/cloud-b/README.md](docs/roles/cloud-b/README.md) (총 18편의 로깅 및 관제 보고서 수록)
+
+---
+
+### 5.4 네트워크 (동형 / [@RockCandy444](https://github.com/RockCandy444)) — 모의 침투 및 네트워크 검증 엔지니어
+
+모의 공격 시뮬레이션 환경 구축, Wireshark/tcpdump L4 패킷 플래그 분석, L4/L7 전파 지연 실측 및 한계 규명을 전담했습니다.
+
+* **핵심 기술 과제 및 CS 메커니즘**:
+  1. **모의 공격 재현 환경 구축 및 매초 신규 TCP 연결 계측**:
+     - 단순 기존 SSH 세션 유지 여부로 차단을 판정하는 결함을 배제하기 위해, **매초 새로운 TCP 3-Way Handshake를 능동 시도하는 계측기(`ec2_hydra_measurement.py`)** 구현.
+     - Hydra SSH 무차별 대입 공격 및 curl 기반 웹 비인가 디렉터리 스캔 환경을 격리 노드에서 구성.
+  2. **Wireshark/tcpdump L4 TCP 패킷 플래그 정밀 분석**:
+     - *정상 구간*: 공격 인입 초기 클라이언트 SYN $\rightarrow$ 타깃 SYN-ACK $\rightarrow$ 클라이언트 ACK 정상 수립 관측.
+     - *차단 구간*: L4 보안 그룹 교체 집행 후, **36개 연속 신규 SYN 패킷에 대해 타깃 서버가 아무런 응답을 주지 않고(무응답) 클라이언트 타임아웃으로 드롭되는 패킷 흐름 입증**.
+  3. **제어 평면과 데이터 평면의 전파 지연 간극 실측 규명**:
+     - *문제 발견*: Lambda 차단 API(Boto3) 호출은 1.40초 만에 종료되었으나, 실제 데이터 평면에서는 이후에도 HTTP 200 통신이 지속되는 현상 관측.
+     - *원인 분석*: API 반환(제어 평면)과 AWS WAF 글로벌/리전 배포망에 IP 차단 룰이 동기화되는 시점(데이터 평면) 간에 물리적 전파 지연이 존재함을 패킷으로 규명.
+  4. **L4 SG vs L7 WAF 계층별 트레이드오프 및 솔직한 한계 공유**:
+     - *L4 Security Group*: 서버 5회 실패 후 **5.48초 만에 신규 SYN이 즉각 드롭**되었으나, 인스턴스 전체 포트를 제한하여 정상 서비스에 영향을 미칠 수 있는 광범위 격리 특성을 가집니다.
+     - *L7 AWS WAF*: 공격자 IP만 선별 차단하지만 Lambda 시작부터 첫 403 응답까지 **18.20초**(첫 공격 기준 **21.29초**)가 소요되어 10초 SLA에는 미달함을 투명하게 규명했습니다.
+     - *상호 보완성 및 가용성 부수 효과 방어*: L4 SG 격리는 정상 사용자 통신까지 중단되는 가용성 부수 효과가 따르므로, 대민 서비스는 L7 WAF IPSet 선별 차단을 1차 방어선으로 두고 L4 SG는 호스트 침해 시 인스턴스를 즉각 분리하는 최후의 비상 차단으로 역할을 분리하여 상호 보완하도록 설계.
+
+<div align="center">
+
+![WAF Measured Timeline](docs/assets/3.waf-measured-timeline-dark.png)
+*제어 평면 API 성공과 데이터 평면 실제 403 차단 간의 전파 지연 워터폴 타임라인*
+
+</div>
+
+<div align="center">
+
+| 담당 영역 | 세부 구현 모듈 | 핵심 엔지니어링 원리 | 상세 기술 문서 |
+| :--- | :--- | :--- | :---: |
+| **공격 시뮬레이션** | `network/attack_simulation.sh` | Hydra 9.2 자동화, 합성 계정 오답 주입, 안전성 플래그 적용 | [모의 공격 가이드](docs/roles/network/demo-attack-runner.md) |
+| **패킷 계측기** | `network/ec2_hydra_measurement.py` | 매초 신규 TCP SYN 탐침, tcpdump 패킷 캡처, TShark 분석 | [타임라인 텔레메트리](docs/roles/network/roundtrip-timeline-telemetry.md) |
+| **L4 패킷 분석** | `tests/unit/test_network.py` | 3-Way Handshake 수립 $\rightarrow$ 격리 후 36개 SYN 무응답 분석 | [L4 패킷 분석서](docs/roles/network/2026-10-25-p4-3-final-showcase-verification.md) |
+| **전파 지연 규명** | `network/waf_packet_measurement.py` | 제어 API(1.4s) vs 실제 데이터 평면 차단(18.2s/21.29s) 분리 규명 | [L4 vs L7 지연 분석](docs/roles/network/2026-10-21-l4-vs-l7-propagation-latency-analysis.md) |
+
+</div>
+
+> **네트워크 독립 기술 포트폴리오**: [docs/roles/network/README.md](docs/roles/network/README.md) (총 16편의 모의 침투 및 패킷 분석 보고서 수록)
+
+---
+
+## 6. 플랫폼 엔지니어링 기반 R&R 분업 및 팀 거버넌스 체계
+
+CloudShield는 4인이 각자의 도메인 로직에 깊이 몰입할 수 있도록 **플랫폼 엔지니어링 선행 투자 모델**을 적용하여 팀을 운영했습니다.
 
 ```mermaid
 flowchart LR
@@ -140,7 +264,7 @@ flowchart LR
 
     subgraph Remote ["원격 GitHub Actions 자동 검증"]
         direction TB
-        R1["1. CI (Ruff / Pytest / Contract Drift)<br>- 스키마 무단 변경 즉시 차단"]
+        R1["1. CI (Ruff / Pytest 1,907개 / Contract Drift)<br>- 스키마 무단 변경 즉시 차단"]
         R2["2. PR Title Lint (Conventional Commits)<br>- 필수 직무 스코프 규격 검사"]
         R3["3. 경로 기반 자동 라벨러 (labeler.yml)<br>- role:*, area:*, type:* 자동 부착"]
         R4["4. 노션 칸반 수명주기 자동 동기화<br>- [진행 중] → [검토 중] → [완료]"]
@@ -149,98 +273,78 @@ flowchart LR
     Local ==>|Push / PR| Remote
 ```
 
-* **Contract-First 불변 모델 (`src/contracts/`)**:
-  - `IncidentReport` (`src/contracts/incident.py`): Pydantic V2 기반 불변(`frozen=True`, `extra="forbid"`) 데이터 스키마. IPv4 유효성 및 EC2 인스턴스 ID 정밀 검증기 내장.
-  - `CloudWatchLogsPayload` & `SyslogAuthEvent` (`src/contracts/events.py`): Gzip/Base64 압축 해제 팩토리 및 Syslog 정규식 파서 제공.
-* **Moto 로컬 테스트베드 (`tests/conftest.py`)**:
-  - 실제 AWS 과금 및 키 유출 위험 없이 로컬에서 WAFv2 IPSet, EC2 Quarantine SG, IAM Session 모킹 검증.
-* **노션 칸반 자동 동기화 (`.github/workflows/notion_sync.yml`)**:
-  - Issue/PR 수명주기와 노션 [프로젝트 일정] DB의 `[진행 중]` $\rightarrow$ `[검토 중]` $\rightarrow$ `[완료]` 및 작업 기간을 100% 자동 동기화.
-
-> **개발 하네스 상세 아키텍처 및 보고서**: [docs/07_collaboration_and_agent_setup.md](docs/07_collaboration_and_agent_setup.md) 및 [docs/roles/cloud-a/2026-09-04-agent-governance-harness.md](docs/roles/cloud-a/2026-09-04-agent-governance-harness.md)
+### 6.1 플랫폼 엔지니어링 기반 작업 분담 구조
+* **도메인 엔지니어의 인지 부하 최소화**:
+  - 네트워크, 보안, 클라우드 B 팀원이 환경 설정, 배포 배관, Git 충돌, AWS 과금 등 인프라 부하 없이 고유 도메인 연구에만 집중할 수 있도록 플랫폼 엔지니어가 CI/CD 하네스, Pydantic V2 계약 인터페이스, Moto 모킹 테스트베드를 선제 구축했습니다.
+* **커밋 단위의 직무별 특성**:
+  - 도메인 팀원은 패킷 덤프 분석, 시그니처 룰 검증, Grafana 대시보드 등 장기간의 연구를 거친 대형 기능 단위 압축 커밋을 발행했습니다.
+  - 플랫폼 엔지니어는 GitHub Actions 러너 튜닝, 라벨러, 테스트베드 픽스처 확장 등 인프라 배관을 세밀하게 분할 검증하는 원자적 커밋 빈도가 높았습니다.
+* **파이프라인 수호를 위한 Fast-Track 핫픽스 단일화**:
+  - 팀 헌법(`AGENTS.md` 4.5절)에 따라 4인 병렬 개발 환경에서 공통 배관 장애 발생 시 스키마 오염을 방지하기 위해 `hotfix` 권한을 테크 리드 단일 창구로 제한 운영했습니다.
+* **실제 비즈니스 요구사항 분담 증빙**:
+  - [공식 노션 프로젝트 일정 DB](https://app.notion.com/p/A-d5f04d37c22582ad9e7f81acd36191d0)의 100개 작업 카드 기준 실질 분담률은 **승윤 30%, 동형 26%, 시훈 23%, 찬원 21%**로 4개 직무가 대등하게 마일스톤을 책임졌습니다.
 
 ---
 
-## 7. 협업 규칙 및 Git 컨벤션
+## 7. 실증 침해 시나리오 2종 비교
 
-### 7.1 브랜치 전략 (GitHub Flow)
-* `main` 브랜치에 직접 Push하지 않으며, 반드시 PR을 통해 리뷰 및 CI 통과 후 Squash Merge합니다.
-* 브랜치 네이밍 규칙:
-  - `feat/<직무>-<기능명>` (예: `feat/security-rules-engine`, `feat/cloud-b-slack-card`)
-  - `fix/<이슈명>`
-  - `chore/<작업명>`
+<div align="center">
 
-### 7.2 커밋 메시지 컨벤션
-* **형식**: `<type>(<scope>): <한글 요약>` (마침표 없음)
-* **Type**: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`, `style`, `perf`, `ci`
-* **Scope**: 담당 직무 및 도메인 명시 필수 (`contract`, `cloud-a`, `cloud-b`, `security`, `network`, `infra`)
-* **예시**:
-  - `feat(security): SSH 무차별 대입 1차 시그니처 룰 구현`
-  - `feat(cloud-a): Boto3 WAF IPSet 등록 모듈 구현`
-  - `chore(cloud-b): CloudWatch Agent 설정 파일 JSON 검증`
+| 구분 | [시나리오 1] SSH Brute Force (L4/L7 복합 대응) | [시나리오 2] Web L7 Directory Scanning (L7 대응) |
+| :--- | :--- | :--- |
+| **공격 도구** | Hydra 9.2 (`network/attack_simulation.sh`) | Curl, Gobuster, Nikto |
+| **인입 경로** | SSH 포트(TCP 22) 패스워드 무차별 대입 | Web HTTP/HTTPS(80/443) 비인가 디렉터리 경로 탐색 |
+| **타깃 로그** | `/var/log/auth.log` (`SyslogAuthEvent`) | `/var/log/nginx/access.log` (`NginxAccessLogEvent`) |
+| **1차 탐지 룰** | 동일 IP 기준 5분 내 5회 이상 인증 실패 (`SSH_BRUTE_FORCE`) | 짧은 시간 내 비인가 디렉터리 경로 탐색 (`WEB_DIRECTORY_SCANNING`) |
+| **MITRE ATT&CK** | `T1110.001` (Brute Force: Password Guessing) | `T1595.003` (Active Scanning: Wordlist Scanning) |
+| **차단 조치** | **L4 Quarantine SG 교체 + L7 WAF IPSet `/32` 복합 차단** (`BLOCK_AND_QUARANTINE`) | **L7 AWS WAF IPSet `/32` 인바운드 차단 등록** (`BLOCK_WAF`) |
+| **실측 소요 지연** | **`5.48s`** (서버 5회 실패 후 첫 무응답 SYN) | **`18.20s`** (Lambda 시작 후 첫 403 응답 / 전파 지연 관측) |
+| **전파 채널** | Slack Block Kit (`quarantine_applied: true`, `waf_blocked: true`, `T1110.001`) | Slack Block Kit (`waf_blocked: true`, 공격자 IP/32, `T1595.003`) |
+| **복구 절차** | `restore_baseline_sg.py` (SG 원복) + `unblock_waf_ip.py` (WAF IP 해제) | `unblock_waf_ip.py` (WAF IPSet 공격자 IP 삭제) |
 
-### 7.3 로컬 검증 3대 명령어
-모든 커밋 및 PR 생성 전 아래 명령어를 반드시 통과해야 합니다:
+</div>
+
+---
+
+## 8. 로컬 검증 및 실행 가이드
+
+모든 커밋과 PR은 단일 검증 스크립트를 통해 품질 게이트를 통과해야 합니다.
+
+### 8.1 로컬 품질 게이트 일괄 실행
 ```powershell
-uv run ruff check .
-uv run ruff format --check .
-uv run pytest
+# R&R 도메인 경계선, Ruff Lint, Ruff Format, Pytest 1,907개 일괄 검증
+powershell .\scripts\check.ps1
+```
+
+### 8.2 무상태 Grafana 관제 대시보드 기동
+```powershell
+# 1. 관리자 비밀번호 환경변수 설정
+$env:GRAFANA_ADMIN_PASSWORD = "YourSecurePassword123!"
+
+# 2. Docker Compose로 무상태 Grafana 기동 (127.0.0.1:3000 바인딩)
+docker compose -f infra/grafana/docker-compose.yml up -d
+
+# 3. 브라우저 접속: http://127.0.0.1:3000 (cloudshield-cloudwatch 데이터소스 자동 로드)
 ```
 
 ---
 
-## 8. 디렉토리 구조 및 모듈 책임 맵
+## 9. 주요 문서 및 외부 링크 네비게이션 허브
 
-```text
-aleph-project/
-├── .agent-role                       # 로컬 코딩 에이전트 역할 잠금 (Role-Lock)
-├── .github/
-│   ├── CODEOWNERS                    # 직무별 파일 단독 소유권 및 필수 리뷰어 지정
-│   ├── pull_request_template.md      # 변경 원리 3줄 요약 PR 템플릿
-│   └── workflows/
-│       ├── ci.yml                    # Ruff 린트, Pytest, Contract Drift Guard 검증
-│       ├── pr_title_lint.yml         # Conventional Commit 및 직무 스코프 검사
-│       ├── labeler.yml               # 경로 기반 role:*, area:*, type:* 자동 라벨러
-│       └── notion_sync.yml           # GitHub <-> 노션 칸반 일정 자동 동기화 배관
-├── src/
-│   ├── contracts/                    # [절대 동결] 직무 간 Pydantic V2 인터페이스 규격
-│   │   ├── incident.py               # IncidentReport 불변 모델
-│   │   └── events.py                 # SyslogAuthEvent 및 CW Logs 페이로드 모델
-│   ├── collector/                    # [클라우드 B] CW Logs 수신 및 Gzip 디코더
-│   ├── detection/                    # [보안] 1차 룰 엔진(rules.py) 및 침해사고 매퍼(incident_mapper.py)
-│   ├── remediation/                  # [클라우드 A] DynamoDB 윈도우 집계 및 Boto3 WAF/SG 차단 오케스트레이터
-│   └── reporter/                     # [클라우드 B] Slack Block Kit 카드 알림 모듈
-├── network/                          # [네트워크] Hydra/Nmap 모의 공격 스크립트 및 패킷 분석
-├── infra/                            # [클라우드 A] Terraform AWS 인프라 IaC 모듈
-├── scripts/
-│   ├── check.ps1                     # 로컬 품질 검사 일괄 실행 스크립트
-│   ├── get_my_tasks.py               # 노션 [시작 전] 티켓 자동 조회 CLI
-│   ├── list_team_members.py          # 노션 워크스페이스 팀원 목록 조회 CLI
-│   ├── verify_rnr_scope.py           # R&R 도메인 경계선 하드가드 검증 CLI
-│   └── verify_notion_api.py          # 노션 API 연동 상태 진단 스크립트
-├── tests/
-│   ├── conftest.py                   # Moto 가상 AWS 리소스 및 표준 Mock 픽스처
-│   ├── mock_data/                    # 표준 공격 로그 및 Mock 인시던트 데이터셋 6종
-│   ├── test_contracts.py             # 데이터 계약 불변성 및 Drift Guard 검증
-│   └── unit/                         # 직무별 모듈 단위 테스트 슈트
-├── docs/                             # 프로젝트 아카이브 및 직무별 작업 공간
-├── pyproject.toml                    # uv 기반 Python 3.12+ 의존성 고정 명세서
-└── README.md                         # 프로젝트 메인 개요 및 아키텍처 문서
-```
+<div align="center">
 
----
-
-## 9. 주요 문서 네비게이션 허브
-
-| 구분 | 문서명 | 링크 |
+| 구분 | 주요 문서 / 산출물 | 설명 및 바로가기 링크 |
 | :--- | :--- | :---: |
-| **프로젝트 기획** | 프로젝트 종합 개요 및 직무별 엔지니어링 성과 | [docs/01_project_overview.md](docs/01_project_overview.md) |
-| **아키텍처 명세** | 통합 엔드투엔드 파이프라인 명세서 | [docs/06_integrated_pipeline.md](docs/06_integrated_pipeline.md) |
-| **데이터 규격** | 직무 간 인터페이스 데이터 규격서 | [docs/08_interface_contracts.md](docs/08_interface_contracts.md) |
-| **하네스 & 협업** | 개발 하네스 및 에이전트 협업 체계 구축 계획 | [docs/07_collaboration_and_agent_setup.md](docs/07_collaboration_and_agent_setup.md) |
-| **팀 프로젝트 메모리** | 팀 프로젝트 메모리 스냅샷 (ADR & Decisions) | [docs/project-memory.md](docs/project-memory.md) |
-| **팀원 온보딩** | 팀원 온보딩 퀵스타트 가이드 | [docs/onboarding_guide.md](docs/onboarding_guide.md) |
-| **에이전트 세션** | 에이전트 세션 스타터 및 협업 가이드 | [docs/agent_session_starter.md](docs/agent_session_starter.md) |
-| **기여 가이드** | 프로젝트 기여 및 작업 흐름 가이드 | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| **협업 지침** | AI 코딩 에이전트 작업 지침 (Working Agreement) | [AGENTS.md](AGENTS.md) |
+| **공식 노션 워크스페이스** | 노션 칸반 보드 및 일일 스크럼 회의록 | [공식 노션 페이지 바로가기 ↗](https://app.notion.com/p/A-d5f04d37c22582ad9e7f81acd36191d0) |
+| **최종 발표 슬라이드** | 독립형 로컬 구동 HTML 프레젠테이션 | [최종 발표 슬라이드덱](docs/assets/presentation_standalone.html) |
+| **중간 발표 슬라이드** | 중간 주제 발표자료 HTML | [중간 발표 슬라이드덱](docs/assets/index_midterm.html) |
+| **종합 보고서** | CloudShield 프로젝트 종합 상세 보고서 | [프로젝트 종합 보고서](docs/assets/CloudShield_보고서.html) |
+| **데모 비디오** | 3분 30초 2분할 SSH 관통 대응 및 복구 녹화본 | [3분 30초 데모 비디오 (MP4)](docs/assets/cloudshield-ssh-take2-source.mp4) |
+| **플랫폼 포트폴리오** | 클라우드 A (승윤) 기술 포트폴리오 | [클라우드 A 기술 포트폴리오](docs/roles/cloud-a/README.md) |
+| **보안 포트폴리오** | 보안 (찬원) 기술 포트폴리오 | [보안 기술 포트폴리오](docs/roles/security/README.md) |
+| **관제 포트폴리오** | 클라우드 B (시훈) 기술 포트폴리오 | [클라우드 B 기술 포트폴리오](docs/roles/cloud-b/README.md) |
+| **네트워크 포트폴리오** | 네트워크 (동형) 기술 포트폴리오 | [네트워크 기술 포트폴리오](docs/roles/network/README.md) |
+| **팀 프로젝트 헌법** | AI 코딩 에이전트 작업 지침 | [AGENTS.md](AGENTS.md) |
+| **기여 가이드** | 프로젝트 기여 및 Git 협업 컨벤션 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
+</div>
