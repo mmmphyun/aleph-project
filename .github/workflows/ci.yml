@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/**", "fix/**"]
+    branches: [main, "feat/**", "fix/**", "hotfix/**"]
   pull_request:
     branches: [main]
 
@@ -54,13 +54,28 @@ jobs:
             exit 1
           fi
 
+      - name: Check Change Scope
+        id: change_scope
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          if uv run python scripts/is_docs_only.py; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "순수 문서 변경만 감지되었습니다. 테라폼 초기화 및 단위 테스트를 스킵합니다."
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "코드 및 설정 변경이 감지되었습니다. 전체 테스트를 실행합니다."
+          fi
+
       - name: Set up Terraform
+        if: steps.change_scope.outputs.docs_only != 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.16.5"
           terraform_wrapper: false
 
       - name: Cache Terraform Providers
+        if: steps.change_scope.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: ~/.terraform.d/plugin-cache
@@ -69,6 +84,7 @@ jobs:
             ${{ runner.os }}-terraform-
 
       - name: Initialize Terraform Modules for Mock Tests
+        if: steps.change_scope.outputs.docs_only != 'true'
         run: |
           mkdir -p ~/.terraform.d/plugin-cache
           export TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
@@ -77,6 +93,7 @@ jobs:
           terraform -chdir=infra/terraform/modules/waf init -backend=false -input=false
 
       - name: Run Contract & Unit Tests
+        if: steps.change_scope.outputs.docs_only != 'true'
         env:
           CLOUDSHIELD_REQUIRE_WAF_TERRAFORM: "1"
           CLOUDSHIELD_TF_DATA_VPC: "${{ github.workspace }}/infra/terraform/modules/vpc/.terraform"
